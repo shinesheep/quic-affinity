@@ -18,6 +18,7 @@ The repository currently includes a minimal `qaffd` with these operations:
 
 - `REGISTER_WORKER`
 - `REGISTER_WORKER_LEASE`
+- `WORKER_HEARTBEAT`
 - `UNREGISTER_WORKER`
 - `REGISTER_CID`
 - `RETIRE_CID`
@@ -28,7 +29,7 @@ The repository currently includes a minimal `qaffd` with these operations:
 - `CIDS`
 - `STOP`
 
-Worker registration uses Unix-domain `SCM_RIGHTS` fd passing. `qaffd` attaches the BPF program to the reuseport group when the first worker socket is registered. `REGISTER_WORKER_LEASE` keeps the worker's control connection open as a liveness lease; if that connection is closed by worker crash or exit, `qaffd` automatically unregisters the worker. Worker unregistration retires CIDs owned by that worker, removes the worker ID from the reuseport sockarray, and closes qaffd's duplicated socket fd.
+Worker registration uses Unix-domain `SCM_RIGHTS` fd passing. `qaffd` attaches the BPF program to the reuseport group when the first worker socket is registered. `REGISTER_WORKER_LEASE` keeps the worker's control connection open as a liveness lease; if that connection is closed by worker crash or exit, `qaffd` automatically unregisters the worker. `WORKER_HEARTBEAT` refreshes the lease on that same control connection, and `--worker-heartbeat-timeout-ms` can remove stuck leased workers that stop heartbeating. Worker unregistration retires CIDs owned by that worker, removes the worker ID from the reuseport sockarray, and closes qaffd's duplicated socket fd.
 
 The listener config includes `short_cid_len` and `fallback_worker_id`. Fallback is used for unregistered CIDs, parse failures, and the first client Initial before the server has issued a routable CID.
 
@@ -120,13 +121,14 @@ Initial request types:
 ```text
 REGISTER_WORKER(listener_id, worker_id, socket_fd)
 REGISTER_WORKER_LEASE(listener_id, worker_id, socket_fd)
+WORKER_HEARTBEAT(listener_id, worker_id)
 REGISTER_CID(listener_id, worker_id, cid)
 RETIRE_CID(listener_id, cid)
 READ_STATS(listener_id)
 UNREGISTER_WORKER(listener_id, worker_id)
 ```
 
-Worker socket registration needs `SCM_RIGHTS` fd passing. New integrations should prefer `REGISTER_WORKER_LEASE` and keep the control fd open for the lifetime of the worker. The one-shot `REGISTER_WORKER` path remains for compatibility, but it cannot detect worker process death because `qaffd` owns a duplicated socket fd after registration.
+Worker socket registration needs `SCM_RIGHTS` fd passing. New integrations should prefer `REGISTER_WORKER_LEASE` and keep the control fd open for the lifetime of the worker. If heartbeat timeout is enabled, the worker must periodically send `WORKER_HEARTBEAT` on the lease fd. The one-shot `REGISTER_WORKER` path remains for compatibility, but it cannot detect worker process death because `qaffd` owns a duplicated socket fd after registration.
 
 ## Graceful Reload
 
@@ -179,7 +181,7 @@ qaffctl listeners
 qaffctl cids LISTENER_ID --limit 20
 ```
 
-`qaffctl health`, `qaffctl config`, and `qaffctl cids --count` expose `cid_map_count`, `cid_owner_count`, and `cid_index_mismatch`. CID bytes are not printed by default. `qaffctl` currently talks to `qaffd` over the daemon Unix socket. Direct pinned-map inspection remains future work.
+`qaffctl health`, `qaffctl config`, and `qaffctl cids --count` expose `cid_map_count`, `cid_owner_count`, and `cid_index_mismatch`. `qaffctl workers` reports worker IDs, lease state, registration age, and last-seen age. CID bytes are not printed by default. `qaffctl` currently talks to `qaffd` over the daemon Unix socket. Direct pinned-map inspection remains future work.
 
 ## Open Decisions
 

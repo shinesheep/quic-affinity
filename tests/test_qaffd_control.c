@@ -295,6 +295,8 @@ static pid_t start_qaffd(const char *qaffd_path,
         bpf_path,
         "--short-cid-len",
         "8",
+        "--worker-heartbeat-timeout-ms",
+        "500",
         (char *)NULL);
   perror("execl qaffd");
   _exit(127);
@@ -339,6 +341,10 @@ static int control_call_register_worker_lease(const char *socket_path,
   }
   *lease_fd = fd;
   return 0;
+}
+
+static int control_call_worker_heartbeat(int lease_fd, uint32_t worker_id) {
+  return qaff_control_worker_heartbeat(lease_fd, worker_id);
 }
 
 static int control_call_unregister_worker(const char *socket_path,
@@ -395,6 +401,20 @@ static int control_call_workers(const char *socket_path,
     return -1;
   }
   int rc = qaff_control_workers(fd, workers, workers_cap, workers_len);
+  close(fd);
+  return rc;
+}
+
+static int control_call_workers_info(
+    const char *socket_path,
+    struct qaff_control_worker_info *workers,
+    size_t workers_cap,
+    size_t *workers_len) {
+  int fd = qaff_control_connect(socket_path);
+  if (fd < 0) {
+    return -1;
+  }
+  int rc = qaff_control_workers_info(fd, workers, workers_cap, workers_len);
   close(fd);
   return rc;
 }
@@ -511,6 +531,26 @@ static int run_case(const char *qaffd_path,
                                 sizeof(leased_workers) / sizeof(leased_workers[0])) != 0) {
     return 1;
   }
+  if (control_call_worker_heartbeat(lease_fd, 0) != 0) {
+    perror("qaff_control_worker_heartbeat");
+    return 1;
+  }
+
+  struct qaff_control_worker_info worker_infos[QAFF_CONTROL_MAX_WORKERS];
+  size_t worker_infos_len = 0;
+  if (control_call_workers_info(socket_path,
+                                worker_infos,
+                                QAFF_CONTROL_MAX_WORKERS,
+                                &worker_infos_len) != 0) {
+    perror("qaff_control_workers_info");
+    return 1;
+  }
+  if (worker_infos_len != 1 ||
+      worker_infos[0].worker_id != 0 ||
+      (worker_infos[0].flags & QAFF_CONTROL_WORKER_FLAG_LEASED) == 0) {
+    fprintf(stderr, "%s: unexpected leased worker info\n", test->name);
+    return 1;
+  }
   if (control_call_register_cid(socket_path, 0, k_dcid) != 0) {
     perror("qaff_control_register_cid leased");
     return 1;
@@ -544,6 +584,42 @@ static int run_case(const char *qaffd_path,
       cid_config.cid_owner_count != 0 ||
       cid_config.cid_index_mismatch != 0) {
     fprintf(stderr, "%s: leaked CID after worker lease close\n", test->name);
+    return 1;
+  }
+
+  lease_port = 0;
+  leased_worker = make_worker_socket(test->family, &lease_port);
+  if (leased_worker < 0) {
+    perror("make_worker_socket timeout_worker");
+    return 1;
+  }
+  if (control_call_register_worker_lease(socket_path,
+                                         0,
+                                         leased_worker,
+                                         &lease_fd) != 0) {
+    perror("qaff_control_register_worker_lease timeout");
+    return 1;
+  }
+  if (control_call_register_cid(socket_path, 0, k_dcid) != 0) {
+    perror("qaff_control_register_cid timeout");
+    return 1;
+  }
+  if (wait_registered_workers_len(socket_path, 0) != 0) {
+    perror("wait heartbeat timeout cleanup");
+    return 1;
+  }
+  close(lease_fd);
+  lease_fd = -1;
+  close(leased_worker);
+  leased_worker = -1;
+  if (control_call_cids(socket_path, &cid_config) != 0) {
+    perror("qaff_control_cids after heartbeat timeout");
+    return 1;
+  }
+  if (cid_config.cid_map_count != 0 ||
+      cid_config.cid_owner_count != 0 ||
+      cid_config.cid_index_mismatch != 0) {
+    fprintf(stderr, "%s: leaked CID after heartbeat timeout\n", test->name);
     return 1;
   }
 

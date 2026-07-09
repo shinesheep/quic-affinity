@@ -14,6 +14,7 @@
 #include <sys/socket.h>
 #include <sys/stat.h>
 #include <sys/un.h>
+#include <time.h>
 #include <unistd.h>
 
 #include <bpf/bpf.h>
@@ -36,6 +37,7 @@ struct qaffd_options {
   const char *state_path;
   uint8_t short_cid_len;
   uint32_t fallback_worker_id;
+  uint64_t worker_heartbeat_timeout_ms;
 };
 
 struct qaffd_state {
@@ -44,6 +46,8 @@ struct qaffd_state {
   int worker_fds[QAFFD_MAX_WORKERS];
   int worker_lease_fds[QAFFD_MAX_WORKERS];
   int worker_registered[QAFFD_MAX_WORKERS];
+  uint64_t worker_registered_at_ms[QAFFD_MAX_WORKERS];
+  uint64_t worker_last_seen_ms[QAFFD_MAX_WORKERS];
   struct qaffd_cid_entry *cid_entries;
   size_t cid_entries_len;
   size_t cid_entries_cap;
@@ -51,6 +55,7 @@ struct qaffd_state {
   const char *state_path;
   uint8_t short_cid_len;
   uint32_t fallback_worker_id;
+  uint64_t worker_heartbeat_timeout_ms;
   int attached;
   int stop;
   int listener_locked;
@@ -84,6 +89,21 @@ static int install_signal_handlers(void) {
     return -1;
   }
   return 0;
+}
+
+static uint64_t now_ms(void) {
+  struct timespec ts;
+  if (clock_gettime(CLOCK_MONOTONIC, &ts) != 0) {
+    return 0;
+  }
+  return (uint64_t)ts.tv_sec * 1000u + (uint64_t)ts.tv_nsec / 1000000u;
+}
+
+static uint64_t elapsed_ms(uint64_t now, uint64_t then) {
+  if (then == 0 || now < then) {
+    return 0;
+  }
+  return now - then;
 }
 
 static uint32_t worker_count(const struct qaffd_state *state) {
@@ -250,13 +270,22 @@ static void fill_workers_reply(const struct qaffd_state *state,
                                struct qaff_control_msg *reply) {
   uint32_t total = 0;
   uint32_t written = 0;
+  uint64_t now = now_ms();
 
   for (uint32_t i = 0; i < QAFFD_MAX_WORKERS; i++) {
     if (!state->worker_registered[i]) {
       continue;
     }
     if (written < QAFF_CONTROL_MAX_WORKERS) {
-      reply->workers[written++] = i;
+      reply->workers[written] = i;
+      reply->worker_infos[written].worker_id = i;
+      reply->worker_infos[written].flags =
+          state->worker_lease_fds[i] >= 0 ? QAFF_CONTROL_WORKER_FLAG_LEASED : 0;
+      reply->worker_infos[written].registered_ms_ago =
+          elapsed_ms(now, state->worker_registered_at_ms[i]);
+      reply->worker_infos[written].last_seen_ms_ago =
+          elapsed_ms(now, state->worker_last_seen_ms[i]);
+      written++;
     }
     total++;
   }
@@ -268,7 +297,8 @@ static void fill_workers_reply(const struct qaffd_state *state,
 static void usage(FILE *out) {
   fprintf(out,
           "Usage: qaffd --socket PATH --bpf PATH --short-cid-len N "
-          "[--fallback-worker ID] [--pin-root PATH] [--state-path PATH]\n");
+          "[--fallback-worker ID] [--pin-root PATH] [--state-path PATH] "
+          "[--worker-heartbeat-timeout-ms N]\n");
 }
 
 static int parse_args(int argc, char **argv, struct qaffd_options *options) {
@@ -297,6 +327,14 @@ static int parse_args(int argc, char **argv, struct qaffd_options *options) {
         return -1;
       }
       options->fallback_worker_id = (uint32_t)value;
+    } else if (strcmp(argv[i], "--worker-heartbeat-timeout-ms") == 0 &&
+               i + 1 < argc) {
+      char *end = NULL;
+      unsigned long long value = strtoull(argv[++i], &end, 10);
+      if (end == argv[i] || *end != '\0') {
+        return -1;
+      }
+      options->worker_heartbeat_timeout_ms = (uint64_t)value;
     } else {
       return -1;
     }
@@ -646,6 +684,7 @@ static int load_state(struct qaffd_state *state) {
     return -1;
   }
 
+  uint64_t loaded_at = now_ms();
   while (fgets(line, sizeof(line), in) != NULL) {
     uint32_t worker_id = 0;
     if (sscanf(line, "worker %u", &worker_id) == 1) {
@@ -655,6 +694,8 @@ static int load_state(struct qaffd_state *state) {
         return -1;
       }
       state->worker_registered[worker_id] = 1;
+      state->worker_registered_at_ms[worker_id] = loaded_at;
+      state->worker_last_seen_ms[worker_id] = loaded_at;
       continue;
     }
 
@@ -669,6 +710,8 @@ static int load_state(struct qaffd_state *state) {
         return -1;
       }
       state->worker_registered[worker_id] = 1;
+      state->worker_registered_at_ms[worker_id] = loaded_at;
+      state->worker_last_seen_ms[worker_id] = loaded_at;
       continue;
     }
 
@@ -711,6 +754,11 @@ static int recover_cids_from_map(struct qaffd_state *state) {
       return -1;
     }
     state->worker_registered[worker_id] = 1;
+    if (state->worker_registered_at_ms[worker_id] == 0) {
+      uint64_t recovered_at = now_ms();
+      state->worker_registered_at_ms[worker_id] = recovered_at;
+      state->worker_last_seen_ms[worker_id] = recovered_at;
+    }
 
     key = next_key;
     previous = &key;
@@ -756,6 +804,9 @@ static int handle_register_worker(struct qaffd_state *state,
   }
   state->worker_fds[request->worker_id] = socket_fd;
   state->worker_registered[request->worker_id] = 1;
+  uint64_t now = now_ms();
+  state->worker_registered_at_ms[request->worker_id] = now;
+  state->worker_last_seen_ms[request->worker_id] = now;
 
   if (!state->listener_locked) {
     state->listener_addr = local_addr;
@@ -791,6 +842,8 @@ static int handle_unregister_worker(struct qaffd_state *state,
     state->worker_lease_fds[request->worker_id] = -1;
   }
   state->worker_registered[request->worker_id] = 0;
+  state->worker_registered_at_ms[request->worker_id] = 0;
+  state->worker_last_seen_ms[request->worker_id] = 0;
   if (worker_count(state) == 0) {
     state->attached = 0;
     state->listener_locked = 0;
@@ -862,6 +915,47 @@ static int unregister_worker_id(struct qaffd_state *state, uint32_t worker_id) {
   memset(&request, 0, sizeof(request));
   request.worker_id = worker_id;
   return handle_unregister_worker(state, &request);
+}
+
+static int handle_worker_lease_event(struct qaffd_state *state,
+                                     uint32_t worker_id,
+                                     int lease_fd) {
+  struct qaff_control_msg request;
+  int received_fd = -1;
+  if (recv_request(lease_fd, &request, &received_fd) != 0) {
+    if (received_fd >= 0) {
+      close(received_fd);
+    }
+    return unregister_worker_id(state, worker_id);
+  }
+  if (received_fd >= 0) {
+    close(received_fd);
+  }
+
+  struct qaff_control_msg reply;
+  reply_init(&reply, &request);
+  if (request.magic != QAFF_CONTROL_MAGIC ||
+      request.version != QAFF_CONTROL_VERSION ||
+      request.op != QAFF_CONTROL_WORKER_HEARTBEAT ||
+      request.worker_id != worker_id ||
+      !state->worker_registered[worker_id] ||
+      state->worker_lease_fds[worker_id] != lease_fd) {
+    reply.status = EPROTO;
+  } else {
+    state->worker_last_seen_ms[worker_id] = now_ms();
+  }
+
+  if (write_exact(lease_fd, &reply, sizeof(reply)) != 0) {
+    return unregister_worker_id(state, worker_id);
+  }
+  if (reply.status != 0) {
+    int saved_errno = reply.status;
+    unregister_worker_id(state, worker_id);
+    errno = saved_errno;
+    return -1;
+  }
+
+  return 0;
 }
 
 static int handle_request(struct qaffd_state *state,
@@ -1055,6 +1149,58 @@ static nfds_t build_pollfds(const struct qaffd_state *state,
   return count;
 }
 
+static int expire_worker_heartbeat_timeouts(struct qaffd_state *state) {
+  if (state->worker_heartbeat_timeout_ms == 0) {
+    return 0;
+  }
+
+  uint64_t now = now_ms();
+  int rc = 0;
+  for (uint32_t i = 0; i < QAFFD_MAX_WORKERS; i++) {
+    if (state->worker_lease_fds[i] < 0 || !state->worker_registered[i]) {
+      continue;
+    }
+    if (elapsed_ms(now, state->worker_last_seen_ms[i]) <
+        state->worker_heartbeat_timeout_ms) {
+      continue;
+    }
+    if (unregister_worker_id(state, i) != 0 && errno != ENOENT) {
+      rc = -1;
+    }
+  }
+  return rc;
+}
+
+static int worker_heartbeat_poll_timeout(const struct qaffd_state *state) {
+  if (state->worker_heartbeat_timeout_ms == 0) {
+    return -1;
+  }
+
+  uint64_t now = now_ms();
+  uint64_t min_remaining = UINT64_MAX;
+  for (uint32_t i = 0; i < QAFFD_MAX_WORKERS; i++) {
+    if (state->worker_lease_fds[i] < 0 || !state->worker_registered[i]) {
+      continue;
+    }
+    uint64_t age = elapsed_ms(now, state->worker_last_seen_ms[i]);
+    if (age >= state->worker_heartbeat_timeout_ms) {
+      return 0;
+    }
+    uint64_t remaining = state->worker_heartbeat_timeout_ms - age;
+    if (remaining < min_remaining) {
+      min_remaining = remaining;
+    }
+  }
+
+  if (min_remaining == UINT64_MAX) {
+    return -1;
+  }
+  if (min_remaining > (uint64_t)INT_MAX) {
+    return INT_MAX;
+  }
+  return (int)min_remaining;
+}
+
 int main(int argc, char **argv) {
   struct qaffd_options daemon_options;
   if (parse_args(argc, argv, &daemon_options) != 0) {
@@ -1074,6 +1220,8 @@ int main(int argc, char **argv) {
   state.state_path = daemon_options.state_path;
   state.short_cid_len = daemon_options.short_cid_len;
   state.fallback_worker_id = daemon_options.fallback_worker_id;
+  state.worker_heartbeat_timeout_ms =
+      daemon_options.worker_heartbeat_timeout_ms;
   for (size_t i = 0; i < QAFFD_MAX_WORKERS; i++) {
     state.worker_fds[i] = -1;
     state.worker_lease_fds[i] = -1;
@@ -1128,15 +1276,24 @@ int main(int argc, char **argv) {
   uint32_t poll_worker_ids[QAFFD_MAX_WORKERS + 1];
 
   while (!state.stop && !g_stop_requested) {
+    if (expire_worker_heartbeat_timeouts(&state) != 0) {
+      perror("expire_worker_heartbeat_timeouts");
+    }
+
     nfds_t pollfds_len = build_pollfds(&state,
                                        server_fd,
                                        pollfds,
                                        poll_worker_ids,
                                        QAFFD_MAX_WORKERS + 1);
+    int poll_timeout = worker_heartbeat_poll_timeout(&state);
     int poll_rc;
     do {
-      poll_rc = poll(pollfds, pollfds_len, -1);
+      poll_rc = poll(pollfds, pollfds_len, poll_timeout);
     } while (poll_rc < 0 && errno == EINTR && !g_stop_requested);
+
+    if (poll_rc == 0) {
+      continue;
+    }
 
     if (poll_rc < 0) {
       if (g_stop_requested) {
@@ -1175,7 +1332,13 @@ int main(int argc, char **argv) {
         continue;
       }
 
-      if (unregister_worker_id(&state, worker_id) != 0 && errno != ENOENT) {
+      if (pollfds[i].revents & POLLIN) {
+        if (handle_worker_lease_event(&state, worker_id, pollfds[i].fd) != 0 &&
+            errno != ENOENT) {
+          perror("handle_worker_lease_event");
+        }
+      } else if (unregister_worker_id(&state, worker_id) != 0 &&
+                 errno != ENOENT) {
         perror("unregister_worker_lease");
       }
     }

@@ -143,6 +143,14 @@ int qaff_control_register_worker_lease(int control_fd,
   return qaff_round_trip(control_fd, &msg, socket_fd, &reply);
 }
 
+int qaff_control_worker_heartbeat(int control_fd, uint32_t worker_id) {
+  struct qaff_control_msg msg;
+  struct qaff_control_msg reply;
+  qaff_control_msg_init(&msg, QAFF_CONTROL_WORKER_HEARTBEAT);
+  msg.worker_id = worker_id;
+  return qaff_round_trip(control_fd, &msg, -1, &reply);
+}
+
 int qaff_control_unregister_worker(int control_fd, uint32_t worker_id) {
   struct qaff_control_msg msg;
   struct qaff_control_msg reply;
@@ -263,6 +271,34 @@ int qaff_control_workers(int control_fd,
   }
   for (size_t i = 0; i < ncopy; i++) {
     workers[i] = reply.workers[i];
+  }
+
+  return 0;
+}
+
+int qaff_control_workers_info(int control_fd,
+                              struct qaff_control_worker_info *workers,
+                              size_t workers_cap,
+                              size_t *workers_len) {
+  if (workers_len == NULL || (workers_cap > 0 && workers == NULL)) {
+    errno = EINVAL;
+    return -1;
+  }
+
+  struct qaff_control_msg msg;
+  struct qaff_control_msg reply;
+  qaff_control_msg_init(&msg, QAFF_CONTROL_WORKERS);
+  if (qaff_round_trip(control_fd, &msg, -1, &reply) != 0) {
+    return -1;
+  }
+
+  *workers_len = reply.workers_len;
+  size_t ncopy = reply.workers_len;
+  if (ncopy > workers_cap) {
+    ncopy = workers_cap;
+  }
+  for (size_t i = 0; i < ncopy; i++) {
+    workers[i] = reply.worker_infos[i];
   }
 
   return 0;

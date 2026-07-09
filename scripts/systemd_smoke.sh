@@ -72,6 +72,7 @@ QAFF_SOCKET=${socket_path}
 QAFF_BPF_OBJECT=/usr/libexec/quic-affinity/qaff_reuseport.bpf.o
 QAFF_SHORT_CID_LEN=8
 QAFF_FALLBACK_WORKER=0
+QAFF_WORKER_HEARTBEAT_TIMEOUT_MS=0
 QAFF_PIN_ROOT=${pin_root}
 QAFF_STATE_PATH=${state_path}
 EOF

@@ -277,20 +277,24 @@ static int cmd_workers(int argc, char **argv) {
     return 1;
   }
 
-  uint32_t workers[QAFF_CONTROL_MAX_WORKERS];
+  struct qaff_control_worker_info workers[QAFF_CONTROL_MAX_WORKERS];
   size_t workers_len = 0;
-  if (qaff_control_workers(fd,
-                           workers,
-                           QAFF_CONTROL_MAX_WORKERS,
-                           &workers_len) != 0) {
-    perror("qaff_control_workers");
+  if (qaff_control_workers_info(fd,
+                                workers,
+                                QAFF_CONTROL_MAX_WORKERS,
+                                &workers_len) != 0) {
+    perror("qaff_control_workers_info");
     close(fd);
     return 1;
   }
 
   printf("workers_len=%zu\n", workers_len);
   for (size_t i = 0; i < workers_len && i < QAFF_CONTROL_MAX_WORKERS; i++) {
-    printf("worker=%u\n", workers[i]);
+    printf("worker=%u leased=%u registered_ms_ago=%llu last_seen_ms_ago=%llu\n",
+           workers[i].worker_id,
+           (workers[i].flags & QAFF_CONTROL_WORKER_FLAG_LEASED) ? 1u : 0u,
+           (unsigned long long)workers[i].registered_ms_ago,
+           (unsigned long long)workers[i].last_seen_ms_ago);
   }
 
   close(fd);

@@ -16,6 +16,8 @@ extern "C" {
 #define QAFF_CONTROL_MAX_WORKERS 64u
 #define QAFF_CONTROL_MAX_PATH 256u
 
+#define QAFF_CONTROL_WORKER_FLAG_LEASED 0x1u
+
 enum qaff_control_op {
   QAFF_CONTROL_REGISTER_WORKER = 1,
   QAFF_CONTROL_REGISTER_CID = 2,
@@ -28,6 +30,7 @@ enum qaff_control_op {
   QAFF_CONTROL_UNREGISTER_WORKER = 9,
   QAFF_CONTROL_CIDS = 10,
   QAFF_CONTROL_REGISTER_WORKER_LEASE = 11,
+  QAFF_CONTROL_WORKER_HEARTBEAT = 12,
 };
 
 struct qaff_control_config {
@@ -43,6 +46,13 @@ struct qaff_control_config {
   char state_path[QAFF_CONTROL_MAX_PATH];
 };
 
+struct qaff_control_worker_info {
+  uint32_t worker_id;
+  uint32_t flags;
+  uint64_t registered_ms_ago;
+  uint64_t last_seen_ms_ago;
+};
+
 struct qaff_control_msg {
   uint32_t magic;
   uint16_t version;
@@ -54,6 +64,7 @@ struct qaff_control_msg {
   struct qaff_stats stats;
   struct qaff_control_config config;
   uint32_t workers[QAFF_CONTROL_MAX_WORKERS];
+  struct qaff_control_worker_info worker_infos[QAFF_CONTROL_MAX_WORKERS];
   uint32_t workers_len;
 };
 
@@ -66,6 +77,8 @@ int qaff_control_register_worker(int control_fd,
 int qaff_control_register_worker_lease(int control_fd,
                                        uint32_t worker_id,
                                        int socket_fd);
+
+int qaff_control_worker_heartbeat(int control_fd, uint32_t worker_id);
 
 int qaff_control_unregister_worker(int control_fd, uint32_t worker_id);
 
@@ -90,6 +103,11 @@ int qaff_control_workers(int control_fd,
                          uint32_t *workers,
                          size_t workers_cap,
                          size_t *workers_len);
+
+int qaff_control_workers_info(int control_fd,
+                              struct qaff_control_worker_info *workers,
+                              size_t workers_cap,
+                              size_t *workers_len);
 
 int qaff_control_stop(int control_fd);
 
