@@ -54,11 +54,12 @@ options.short_cid_len = 8;
 
 For the stateful CID registry mode, every server-issued CID routed by `quic-affinity` must use this configured length once 1-RTT short headers are expected.
 
-For routable CID profile v1, set `short_cid_len` to
-`QAFF_CID_PROFILE_V1_LEN`, enable `cid_profile_v1_enabled`, and copy the
-16-byte listener key into `cid_profile_v1_key`. The dataplane checks the CID map
-first; on map miss, it validates the profile tag and routes to the embedded
-worker ID.
+For routable CID profile v2, set `short_cid_len` to
+`QAFF_CID_PROFILE_V2_LEN`, enable `cid_profile_v2_enabled`, set
+`cid_profile_v2_config_id`, and copy the 16-byte listener key into
+`cid_profile_v1_key`. The dataplane checks the CID map first; on map miss, it
+validates the profile tag, config ID, and worker generation before routing to
+the embedded worker ID. Profile v1 remains available for compatibility.
 
 Zero-length server CIDs are incompatible with CID-based worker affinity.
 
@@ -82,11 +83,11 @@ The BPF program applies to the reuseport group after attachment.
 
 When using `qaffd`, the privileged daemon owns BPF setup:
 
-1. Start `qaffd` with a Unix socket path, BPF object path, `short_cid_len`, optional `fallback_worker_id`, optional `--cid-profile-v1-key`, and optional restart-recovery paths.
+1. Start `qaffd` with a Unix socket path, BPF object path, `short_cid_len`, optional `fallback_worker_id`, optional profile key/config arguments, optional socket permission arguments, and optional restart-recovery paths.
 2. Each worker creates and binds its UDP `SO_REUSEPORT` socket.
 3. Each worker passes its socket fd to `qaffd` with `REGISTER_WORKER_LEASE` and keeps that control connection open for the worker lifetime.
 4. `qaffd` registers the socket in the sockarray and attaches BPF on first worker registration.
-5. Workers register and retire opaque server-issued CIDs through the control API, or issue profile v1 CIDs when the listener key is enabled.
+5. Workers register and retire opaque server-issued CIDs through the control API, or issue profile CIDs when the listener key is enabled.
 6. Drained workers unregister their socket after their CIDs have been retired.
 
 If the leased control connection closes unexpectedly, `qaffd` treats the worker as dead, unregisters it, closes qaffd's duplicated worker socket fd, and bulk-retires that worker's CIDs. `--worker-heartbeat-timeout-ms` also lets `qaffd` remove leased workers that keep the connection open but stop sending `WORKER_HEARTBEAT` messages; `0` disables heartbeat timeouts. The older one-shot `REGISTER_WORKER` operation remains available for compatibility, but it cannot detect worker process death on its own because fd passing gives `qaffd` a separate reference to the UDP socket.

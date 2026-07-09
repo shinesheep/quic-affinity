@@ -39,7 +39,9 @@ struct qaff_control_config {
   uint8_t short_cid_len;
   uint8_t attached;
   uint8_t cid_profile_v1_enabled;
-  uint8_t reserved;
+  uint8_t cid_profile_v2_enabled;
+  uint8_t cid_profile_v2_config_id;
+  uint8_t reserved[3];
   uint32_t worker_count;
   uint32_t fallback_worker_id;
   uint64_t cid_map_count;

@@ -136,8 +136,8 @@ Implemented:
 - libbpf object loader that can reuse `qaffinity` maps and attach the reuseport program to a socket.
 - `sk_reuseport` eBPF source that routes long-header and configured-length short-header packets by registered DCID or routable CID profile.
 - Stats read API for dataplane counters.
-- Routable CID profile v1 helper and BPF dataplane routing for 8-byte server CIDs with worker ID, nonce, and keyed tag.
-- `qaffd` control plane with Unix socket fd passing for worker registration, CID lifecycle, worker unregister, map pinning, restart recovery, and observability.
+- Routable CID profile v1/v2 helpers and BPF dataplane routing; v2 adds config ID, worker generation, and a 32-bit keyed tag.
+- `qaffd` control plane with Unix socket fd passing for worker registration, CID lifecycle, worker unregister, map pinning, map schema validation, restart recovery, authorization, audit logs, and observability.
 - Parser unit test, privileged reuseport smoke test, qaffd/qaffctl control tests, restart smoke, quiche probes, and packaging smoke.
 - CMake install rules for `qaffd`, `qaffctl`, public headers, `libqaffinity.a`, and the eBPF object.
 - systemd, tmpfiles, sysusers, and environment-file templates under `packaging/systemd/`.
@@ -191,21 +191,24 @@ build/qaffd --socket /tmp/qaffd.sock --bpf build/qaff_reuseport.bpf.o --short-ci
 
 `--fallback-worker` selects the worker socket used when the incoming packet cannot be parsed or its DCID is not registered yet. This is the expected path for the first client Initial, because that DCID is client-generated.
 
-To enable routable CID profile v1 in the BPF dataplane, store a 16-byte listener key as 32 hex digits in a file readable by `qaffd`:
+To enable routable CID profile v2 in the BPF dataplane, store a 16-byte listener key as 32 hex digits in a file readable by `qaffd`:
 
 ```sh
-install -m 0600 -D /dev/stdin /etc/quic-affinity/profile-v1.key <<EOF
+install -m 0600 -D /dev/stdin /etc/quic-affinity/profile-v2.key <<EOF
 707172737475767778797a7b7c7d7e7f
 EOF
 build/qaffd --socket /tmp/qaffd.sock \
   --bpf build/qaff_reuseport.bpf.o \
-  --short-cid-len 8 \
-  --cid-profile-v1-key-file /etc/quic-affinity/profile-v1.key
+  --short-cid-len 12 \
+  --cid-profile-v2-key-file /etc/quic-affinity/profile-v2.key \
+  --cid-profile-v2-config-id 7
 ```
 
-The CID map still has priority. On a map miss, BPF validates a v1 profile CID with the configured key and selects the embedded worker ID if the tag is valid.
+The CID map still has priority. On a map miss, BPF validates a v2 profile CID with the configured key, config ID, and worker generation, then selects the embedded worker ID if all checks pass. Profile v1 remains available for compatibility, but v2 is the recommended low-state profile.
 
-New worker integrations should use the leased worker registration API and keep the control fd open for the worker lifetime. If that fd closes unexpectedly, `qaffd` automatically unregisters the worker, closes its duplicated UDP socket fd, and retires the worker's CIDs. For leased workers, `qaffd` also opens a pidfd when the kernel supports it and unregisters the worker if the registering process exits. `--worker-heartbeat-timeout-ms` enables stuck-worker cleanup for leased workers; the default `0` disables heartbeat timeouts. `qaffd` records Unix peer credentials for worker registration. Existing worker IDs, worker CID registration, CID retirement, and worker unregistration can be mutated only by the original worker process or by the configured management identity. `--allow-worker-uid` and `--allow-worker-gid` define that management identity and restrict worker registration by Unix peer credentials.
+New worker integrations should use the leased worker registration API and keep the control fd open for the worker lifetime. If that fd closes unexpectedly, `qaffd` automatically unregisters the worker, closes its duplicated UDP socket fd, and retires the worker's CIDs. For leased workers, `qaffd` also opens a pidfd when the kernel supports it and unregisters the worker if the registering process exits. `--worker-heartbeat-timeout-ms` enables stuck-worker cleanup for leased workers; the default `0` disables heartbeat timeouts. `qaffd` records Unix peer credentials for worker registration. Existing worker IDs, worker CID registration, CID retirement, and worker unregistration can be mutated only by the original worker process or by the configured management identity. `--allow-worker-uid` and `--allow-worker-gid` define that management identity and restrict worker registration by Unix peer credentials. The control socket defaults to mode `0600`; deployments that need group access can use `--socket-mode 0660 --socket-gid GID`.
+
+`qaffd` writes audit records to stderr for worker registration, worker removal, CID registration/retirement, and denied mutations. Audit records include event names and peer credentials, but do not print CID bytes or profile keys.
 
 For restart recovery, run `qaffd` with a writable bpffs pin root and a state snapshot path:
 
@@ -216,6 +219,8 @@ build/qaffd --socket /tmp/qaffd.sock \
   --pin-root /sys/fs/bpf/quic-affinity/listeners/udp-ipv4-127.0.0.1-4433 \
   --state-path /var/lib/quic-affinity/udp-ipv4-127.0.0.1-4433.state
 ```
+
+Pinned maps are schema-checked on open. `qaffd` rejects pinned maps with unexpected type, key size, value size, or max entries, and rejects pin roots that are not directories or are writable by group/other.
 
 Inspect and stop it with `qaffctl`:
 

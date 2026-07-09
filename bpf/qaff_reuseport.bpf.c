@@ -26,6 +26,13 @@ struct {
 
 struct {
   __uint(type, BPF_MAP_TYPE_ARRAY);
+  __uint(max_entries, 4096);
+  __type(key, __u32);
+  __type(value, __u32);
+} qaff_worker_generations SEC(".maps");
+
+struct {
+  __uint(type, BPF_MAP_TYPE_ARRAY);
   __uint(max_entries, QAFF_STAT_MAX);
   __type(key, __u32);
   __type(value, __u64);
@@ -122,9 +129,10 @@ static __always_inline int qaff_extract_dcid(struct sk_reuseport_md *ctx,
                         config->short_cid_len);
 }
 
-static __always_inline __u16 qaff_profile_v1_tag(
+static __always_inline __u32 qaff_profile_hash32(
     const struct qaff_config_value *config,
-    const struct qaff_cid_key *key) {
+    const struct qaff_cid_key *key,
+    __u32 prefix_len) {
   __u32 h = 2166136261u;
 
 #pragma unroll
@@ -134,13 +142,26 @@ static __always_inline __u16 qaff_profile_v1_tag(
   }
 
 #pragma unroll
-  for (__u32 i = 0; i < 6; i++) {
+  for (__u32 i = 0; i < 8; i++) {
+    if (i >= prefix_len) {
+      break;
+    }
     h ^= key->bytes[i];
     h *= 16777619u;
   }
 
   h ^= h >> 16;
-  return (__u16)h;
+  h *= 2246822519u;
+  h ^= h >> 13;
+  h *= 3266489917u;
+  h ^= h >> 16;
+  return h;
+}
+
+static __always_inline __u16 qaff_profile_v1_tag(
+    const struct qaff_config_value *config,
+    const struct qaff_cid_key *key) {
+  return (__u16)qaff_profile_hash32(config, key, 6);
 }
 
 static __always_inline int qaff_profile_v1_worker(
@@ -166,6 +187,48 @@ static __always_inline int qaff_profile_v1_worker(
   }
 
   *worker_id = ((__u32)key->bytes[1] << 8) | (__u32)key->bytes[2];
+  return 1;
+}
+
+static __always_inline int qaff_profile_v2_worker(
+    const struct qaff_config_value *config,
+    const struct qaff_cid_key *key,
+    __u32 *worker_id) {
+  if (!config || !config->cid_profile_v2_enabled) {
+    return 0;
+  }
+  if (key->len != QAFF_CID_PROFILE_V2_LEN) {
+    return 0;
+  }
+
+  __u8 version = key->bytes[0] >> 4;
+  if (version != QAFF_CID_PROFILE_V2_VERSION) {
+    return 0;
+  }
+  if (key->bytes[1] != config->cid_profile_v2_config_id) {
+    return -1;
+  }
+
+  __u32 expected = qaff_profile_hash32(config, key, 8);
+  __u32 got = ((__u32)key->bytes[8] << 24) |
+              ((__u32)key->bytes[9] << 16) |
+              ((__u32)key->bytes[10] << 8) |
+              (__u32)key->bytes[11];
+  if (got != expected) {
+    return -1;
+  }
+
+  __u32 decoded_worker = ((__u32)key->bytes[2] << 8) | (__u32)key->bytes[3];
+  __u32 decoded_generation = (__u32)key->bytes[4];
+  __u32 *current_generation =
+      bpf_map_lookup_elem(&qaff_worker_generations, &decoded_worker);
+  if (!current_generation ||
+      *current_generation == 0 ||
+      *current_generation != decoded_generation) {
+    return -1;
+  }
+
+  *worker_id = decoded_worker;
   return 1;
 }
 
@@ -197,7 +260,10 @@ int qaff_select(struct sk_reuseport_md *ctx) {
       qaff_count(QAFF_STAT_WORKER_MISSING);
     } else {
       __u32 profile_worker = 0;
-      int profile_rc = qaff_profile_v1_worker(config, &key, &profile_worker);
+      int profile_rc = qaff_profile_v2_worker(config, &key, &profile_worker);
+      if (profile_rc == 0) {
+        profile_rc = qaff_profile_v1_worker(config, &key, &profile_worker);
+      }
       if (profile_rc > 0) {
         qaff_count(QAFF_STAT_CID_PROFILE_HIT);
         if (bpf_sk_select_reuseport(ctx,

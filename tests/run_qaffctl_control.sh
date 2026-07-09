@@ -28,9 +28,10 @@ fi
 
 printf '%s\n' 707172737475767778797a7b7c7d7e7f >"$key_file"
 chmod 600 "$key_file"
-"$qaffd_bin" --socket "$sock" --bpf "$bpf_obj" --short-cid-len 8 \
+"$qaffd_bin" --socket "$sock" --bpf "$bpf_obj" --short-cid-len 12 \
   --fallback-worker 1 \
-  --cid-profile-v1-key-file "$key_file" &
+  --cid-profile-v2-key-file "$key_file" \
+  --cid-profile-v2-config-id 7 &
 daemon_pid=$!
 
 ready=0
@@ -62,8 +63,10 @@ grep -q '^cid_owner_count=0$' /tmp/qaffctl-control-$$.health
 grep -q '^cid_index_mismatch=0$' /tmp/qaffctl-control-$$.health
 
 "$qaffctl_bin" config "$sock" >/tmp/qaffctl-control-$$.config
-grep -q '^short_cid_len=8$' /tmp/qaffctl-control-$$.config
-grep -q '^cid_profile_v1_enabled=1$' /tmp/qaffctl-control-$$.config
+grep -q '^short_cid_len=12$' /tmp/qaffctl-control-$$.config
+grep -q '^cid_profile_v1_enabled=0$' /tmp/qaffctl-control-$$.config
+grep -q '^cid_profile_v2_enabled=1$' /tmp/qaffctl-control-$$.config
+grep -q '^cid_profile_v2_config_id=7$' /tmp/qaffctl-control-$$.config
 grep -q '^attached=0$' /tmp/qaffctl-control-$$.config
 grep -q '^worker_count=0$' /tmp/qaffctl-control-$$.config
 grep -q '^fallback_worker_id=1$' /tmp/qaffctl-control-$$.config

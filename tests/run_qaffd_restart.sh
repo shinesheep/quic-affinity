@@ -16,7 +16,9 @@ caps=cap_bpf,cap_net_admin,cap_perfmon,cap_sys_resource+ep
 
 cleanup() {
   rm -f "$state_path"
-  rm -f "$pin_root/qaff_cids" "$pin_root/qaff_workers" "$pin_root/qaff_stats" "$pin_root/qaff_config" 2>/dev/null || true
+  rm -f "$pin_root/qaff_cids" "$pin_root/qaff_workers" \
+    "$pin_root/qaff_worker_generations" "$pin_root/qaff_stats" \
+    "$pin_root/qaff_config" 2>/dev/null || true
   rmdir "$pin_root" 2>/dev/null || true
 }
 trap cleanup EXIT INT TERM

@@ -29,6 +29,30 @@ static void roundtrips_v1_cid(void) {
   assert(fields.nonce == 0x010203);
 }
 
+static void roundtrips_v2_cid(void) {
+  struct qaff_cid_profile_key key = test_key();
+  uint8_t cid[QAFF_CID_PROFILE_V2_LEN];
+
+  int rc = qaff_cid_profile_v2_generate(&key,
+                                        9,
+                                        42,
+                                        3,
+                                        0x010203,
+                                        cid,
+                                        sizeof(cid));
+  assert(rc == 0);
+  assert((cid[0] >> 4) == QAFF_CID_PROFILE_V2_VERSION);
+
+  struct qaff_cid_profile_v2_fields fields;
+  rc = qaff_cid_profile_v2_parse(&key, cid, sizeof(cid), &fields);
+  assert(rc == 0);
+  assert(fields.version == QAFF_CID_PROFILE_V2_VERSION);
+  assert(fields.config_id == 9);
+  assert(fields.worker_id == 42);
+  assert(fields.generation == 3);
+  assert(fields.nonce == 0x010203);
+}
+
 static void rejects_tampered_cid(void) {
   struct qaff_cid_profile_key key = test_key();
   uint8_t cid[QAFF_CID_PROFILE_V1_LEN];
@@ -54,9 +78,28 @@ static void rejects_wrong_key(void) {
   assert(errno == EBADMSG);
 }
 
+static void rejects_tampered_v2_cid(void) {
+  struct qaff_cid_profile_key key = test_key();
+  uint8_t cid[QAFF_CID_PROFILE_V2_LEN];
+  assert(qaff_cid_profile_v2_generate(&key,
+                                      1,
+                                      7,
+                                      2,
+                                      9,
+                                      cid,
+                                      sizeof(cid)) == 0);
+
+  cid[4] ^= 0x01;
+  struct qaff_cid_profile_v2_fields fields;
+  int rc = qaff_cid_profile_v2_parse(&key, cid, sizeof(cid), &fields);
+  assert(rc != 0);
+  assert(errno == EBADMSG);
+}
+
 static void rejects_invalid_bounds(void) {
   struct qaff_cid_profile_key key = test_key();
   uint8_t cid[QAFF_CID_PROFILE_V1_LEN];
+  uint8_t cid_v2[QAFF_CID_PROFILE_V2_LEN];
 
   assert(qaff_cid_profile_v1_generate(&key, 0x10000, 1, cid, sizeof(cid)) != 0);
   assert(errno == EINVAL);
@@ -64,11 +107,29 @@ static void rejects_invalid_bounds(void) {
   assert(errno == EINVAL);
   assert(qaff_cid_profile_v1_generate(&key, 1, 1, cid, sizeof(cid) - 1) != 0);
   assert(errno == EINVAL);
+  assert(qaff_cid_profile_v2_generate(&key,
+                                      0x100,
+                                      1,
+                                      1,
+                                      1,
+                                      cid_v2,
+                                      sizeof(cid_v2)) != 0);
+  assert(errno == EINVAL);
+  assert(qaff_cid_profile_v2_generate(&key,
+                                      1,
+                                      1,
+                                      0,
+                                      1,
+                                      cid_v2,
+                                      sizeof(cid_v2)) != 0);
+  assert(errno == EINVAL);
 }
 
 int main(void) {
   roundtrips_v1_cid();
+  roundtrips_v2_cid();
   rejects_tampered_cid();
+  rejects_tampered_v2_cid();
   rejects_wrong_key();
   rejects_invalid_bounds();
   return 0;

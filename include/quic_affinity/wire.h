@@ -9,8 +9,12 @@
 
 #define QAFF_MAX_CID_LEN 32
 #define QAFF_CID_PROFILE_V1_LEN 8u
+#define QAFF_CID_PROFILE_V2_LEN 12u
 #define QAFF_CID_PROFILE_KEY_LEN 16u
 #define QAFF_CID_PROFILE_V1_VERSION 1u
+#define QAFF_CID_PROFILE_V2_VERSION 2u
+#define QAFF_WORKER_GENERATION_DEFAULT 1u
+#define QAFF_WORKER_GENERATION_MAX 255u
 
 struct qaff_cid_key {
 #if defined(__KERNEL__) || defined(QAFF_BPF)
@@ -26,13 +30,15 @@ struct qaff_config_value {
 #if defined(__KERNEL__) || defined(QAFF_BPF)
   __u8 short_cid_len;
   __u8 cid_profile_v1_enabled;
-  __u8 reserved[2];
+  __u8 cid_profile_v2_enabled;
+  __u8 cid_profile_v2_config_id;
   __u32 fallback_worker_id;
   __u8 cid_profile_v1_key[QAFF_CID_PROFILE_KEY_LEN];
 #else
   uint8_t short_cid_len;
   uint8_t cid_profile_v1_enabled;
-  uint8_t reserved[2];
+  uint8_t cid_profile_v2_enabled;
+  uint8_t cid_profile_v2_config_id;
   uint32_t fallback_worker_id;
   uint8_t cid_profile_v1_key[QAFF_CID_PROFILE_KEY_LEN];
 #endif

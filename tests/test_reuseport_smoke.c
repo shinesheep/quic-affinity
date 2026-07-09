@@ -198,25 +198,41 @@ static int send_quic_like_packet(int fd,
                                  int family,
                                  uint16_t port,
                                  int short_header,
-                                 const uint8_t *dcid) {
-  uint8_t long_packet[] = {
-    0xc3,
-    0x00, 0x00, 0x00, 0x01,
-    0x08,
-    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-    0x00,
-    0x01, 0x02, 0x03, 0x04,
-  };
-  uint8_t short_packet[] = {
-    0x43,
-    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-    0x01, 0x02, 0x03, 0x04,
-  };
-  memcpy(long_packet + 6, dcid, sizeof(k_dcid));
-  memcpy(short_packet + 1, dcid, sizeof(k_dcid));
+                                 const uint8_t *dcid,
+                                 size_t dcid_len) {
+  if (dcid_len > QAFF_MAX_CID_LEN || (short_header && dcid_len != sizeof(k_dcid))) {
+    errno = EINVAL;
+    return -1;
+  }
+
+  uint8_t long_packet[1 + 4 + 1 + QAFF_MAX_CID_LEN + 1 + 4];
+  size_t long_packet_len = 0;
+  long_packet[long_packet_len++] = 0xc3;
+  long_packet[long_packet_len++] = 0x00;
+  long_packet[long_packet_len++] = 0x00;
+  long_packet[long_packet_len++] = 0x00;
+  long_packet[long_packet_len++] = 0x01;
+  long_packet[long_packet_len++] = (uint8_t)dcid_len;
+  memcpy(long_packet + long_packet_len, dcid, dcid_len);
+  long_packet_len += dcid_len;
+  long_packet[long_packet_len++] = 0x00;
+  long_packet[long_packet_len++] = 0x01;
+  long_packet[long_packet_len++] = 0x02;
+  long_packet[long_packet_len++] = 0x03;
+  long_packet[long_packet_len++] = 0x04;
+
+  uint8_t short_packet[1 + sizeof(k_dcid) + 4];
+  size_t short_packet_len = 0;
+  short_packet[short_packet_len++] = 0x43;
+  memcpy(short_packet + short_packet_len, dcid, sizeof(k_dcid));
+  short_packet_len += sizeof(k_dcid);
+  short_packet[short_packet_len++] = 0x01;
+  short_packet[short_packet_len++] = 0x02;
+  short_packet[short_packet_len++] = 0x03;
+  short_packet[short_packet_len++] = 0x04;
 
   const uint8_t *packet = short_header ? short_packet : long_packet;
-  size_t packet_len = short_header ? sizeof(short_packet) : sizeof(long_packet);
+  size_t packet_len = short_header ? short_packet_len : long_packet_len;
 
   ssize_t sent;
   if (family == AF_INET) {
@@ -356,8 +372,8 @@ static int run_case(const char *object_path, const struct test_case *test) {
   struct qaff_context *ctx = NULL;
   struct qaff_bpf_object *object = NULL;
   struct qaff_cid_profile_key key = profile_key();
-  uint8_t profile_cid[QAFF_CID_PROFILE_V1_LEN];
-  uint8_t tampered_profile_cid[QAFF_CID_PROFILE_V1_LEN];
+  uint8_t profile_cid[QAFF_CID_PROFILE_V2_LEN];
+  uint8_t tampered_profile_cid[QAFF_CID_PROFILE_V2_LEN];
 
   for (size_t i = 0; i < WORKER_COUNT; i++) {
     workers[i] = make_worker_socket(test->family, &port);
@@ -383,17 +399,20 @@ static int run_case(const char *object_path, const struct test_case *test) {
   qaff_options_init(&options);
   options.short_cid_len = sizeof(k_dcid);
   options.fallback_worker_id = test->fallback_worker;
-  options.cid_profile_v1_enabled = 1;
+  options.cid_profile_v2_enabled = 1;
+  options.cid_profile_v2_config_id = 7;
   memcpy(options.cid_profile_v1_key,
          key.bytes,
          sizeof(options.cid_profile_v1_key));
 
-  if (qaff_cid_profile_v1_generate(&key,
+  if (qaff_cid_profile_v2_generate(&key,
+                                   options.cid_profile_v2_config_id,
                                    TARGET_WORKER,
+                                   QAFF_WORKER_GENERATION_DEFAULT,
                                    0x010203,
                                    profile_cid,
                                    sizeof(profile_cid)) != 0) {
-    perror("qaff_cid_profile_v1_generate");
+    perror("qaff_cid_profile_v2_generate");
     return 1;
   }
   memcpy(tampered_profile_cid, profile_cid, sizeof(tampered_profile_cid));
@@ -457,7 +476,8 @@ static int run_case(const char *object_path, const struct test_case *test) {
                               test->family,
                               port,
                               attempt == 1,
-                              k_dcid) != 0) {
+                              k_dcid,
+                              sizeof(k_dcid)) != 0) {
       perror("send_quic_like_packet");
       return 1;
     }
@@ -478,8 +498,9 @@ static int run_case(const char *object_path, const struct test_case *test) {
   if (send_quic_like_packet(senders[0].fd,
                             test->family,
                             port,
-                            1,
-                            profile_cid) != 0) {
+                            0,
+                            profile_cid,
+                            sizeof(profile_cid)) != 0) {
     perror("send profile packet");
     return 1;
   }
@@ -498,8 +519,9 @@ static int run_case(const char *object_path, const struct test_case *test) {
   if (send_quic_like_packet(senders[1].fd,
                             test->family,
                             port,
-                            1,
-                            tampered_profile_cid) != 0) {
+                            0,
+                            tampered_profile_cid,
+                            sizeof(tampered_profile_cid)) != 0) {
     perror("send tampered profile packet");
     return 1;
   }
@@ -519,7 +541,8 @@ static int run_case(const char *object_path, const struct test_case *test) {
                             test->family,
                             port,
                             0,
-                            k_unknown_dcid) != 0) {
+                            k_unknown_dcid,
+                            sizeof(k_unknown_dcid)) != 0) {
     perror("send_quic_like_packet");
     return 1;
   }

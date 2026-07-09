@@ -3,9 +3,10 @@
 This document defines the first QUIC-stack-neutral server CID profile for
 `quic-affinity`.
 
-The profile is optional. Existing CID map registration remains valid and takes
-priority. When profile v1 is enabled for a listener, the BPF dataplane can
+Routable profiles are optional. Existing CID map registration remains valid and
+takes priority. When a profile is enabled for a listener, the BPF dataplane can
 validate a profile CID and select the embedded worker ID after a CID map miss.
+Profile v2 is recommended for new low-state deployments.
 
 ## Goals
 
@@ -43,9 +44,28 @@ stale, or wrongly-keyed CIDs before registration. It is not a confidentiality
 scheme and should not be treated as a strong cryptographic MAC. A later profile
 version can replace the tag algorithm while keeping v1 parsing stable.
 
-Deployments that do not want to expose worker IDs should use a future encrypted
-or wider-authenticated profile, or keep using opaque CIDs plus explicit CID map
-registration.
+Deployments that do not want to expose worker IDs should use opaque CIDs plus
+explicit CID map registration until an encrypted profile exists.
+
+## v2 Layout
+
+`QAFF_CID_PROFILE_V2_LEN` is 12 bytes:
+
+```text
+byte 0       high nibble: version = 2
+             low nibble: profile flags, currently 0
+byte 1       config_id
+bytes 2..3   worker_id, big endian, 16-bit
+byte 4       worker generation
+bytes 5..7   nonce, big endian, 24-bit
+bytes 8..11  keyed tag, big endian, 32-bit
+```
+
+The v2 tag is still BPF-friendly rather than a cryptographic MAC, but it raises
+the active-forgery space from v1's 16-bit tag to 32 bits and binds config ID,
+worker ID, generation, and nonce. BPF also checks that the embedded generation
+matches the current `qaff_worker_generations` map entry for the worker. This
+prevents stale profile CIDs from routing to a new worker after worker ID reuse.
 
 ## API
 
@@ -54,6 +74,13 @@ Generate:
 ```c
 uint8_t cid[QAFF_CID_PROFILE_V1_LEN];
 qaff_cid_profile_v1_generate(&key, worker_id, nonce, cid, sizeof(cid));
+```
+
+Generate v2:
+
+```c
+uint8_t cid[QAFF_CID_PROFILE_V2_LEN];
+qaff_cid_profile_v2_generate(&key, config_id, worker_id, generation, nonce, cid, sizeof(cid));
 ```
 
 Parse:
@@ -65,14 +92,15 @@ qaff_cid_profile_v1_parse(&key, cid, cid_len, &fields);
 
 There are two valid integration choices.
 
-In low-state mode, enable the listener profile key and issue profile CIDs
+In low-state mode, enable the v2 listener profile key and issue profile CIDs
 without per-CID registration:
 
 ```c
 struct qaff_options options;
 qaff_options_init(&options);
-options.short_cid_len = QAFF_CID_PROFILE_V1_LEN;
-options.cid_profile_v1_enabled = 1;
+options.short_cid_len = QAFF_CID_PROFILE_V2_LEN;
+options.cid_profile_v2_enabled = 1;
+options.cid_profile_v2_config_id = config_id;
 memcpy(options.cid_profile_v1_key, key.bytes, sizeof(options.cid_profile_v1_key));
 ```
 
@@ -83,11 +111,13 @@ group or other permissions:
 ```sh
 qaffd --socket /tmp/qaffd.sock \
       --bpf /usr/libexec/quic-affinity/qaff_reuseport.bpf.o \
-      --short-cid-len 8 \
-      --cid-profile-v1-key-file /etc/quic-affinity/profile-v1.key
+      --short-cid-len 12 \
+      --cid-profile-v2-key-file /etc/quic-affinity/profile-v2.key \
+      --cid-profile-v2-config-id 7
 ```
 
-`--cid-profile-v1-key HEX32` also exists for tests and local development, but
+`--cid-profile-v1-key HEX32` and `--cid-profile-v2-key HEX32` also exist for
+tests and local development, but
 production deployments should prefer the file form so the key is not exposed in
 process arguments.
 
@@ -101,9 +131,10 @@ qaff_control_register_cid(control_fd, fields.worker_id, cid, cid_len);
 ## Operational Notes
 
 - Use a separate key per listener or deployment domain.
-- The current BPF config accepts one v1 key at a time. Key rotation needs a
+- The current BPF config accepts one active profile key/config at a time. Key rotation needs a
   drain window using CID registration, a second listener instance, or a future
   multi-key config extension.
-- Keep `qaffd --short-cid-len` equal to `QAFF_CID_PROFILE_V1_LEN` when using
-  v1 CIDs for 1-RTT short headers.
-- Do not reuse a worker ID while live CIDs still point to the old worker.
+- Keep `qaffd --short-cid-len` equal to the active profile length when using
+  profile CIDs for 1-RTT short headers.
+- Prefer v2 when worker IDs may be reused; v2 generation checks reject stale
+  CIDs after worker replacement.

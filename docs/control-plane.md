@@ -31,9 +31,11 @@ The repository currently includes a minimal `qaffd` with these operations:
 
 Worker registration uses Unix-domain `SCM_RIGHTS` fd passing. `qaffd` attaches the BPF program to the reuseport group when the first worker socket is registered. `REGISTER_WORKER_LEASE` keeps the worker's control connection open as a liveness lease; if that connection is closed by worker crash or exit, `qaffd` automatically unregisters the worker. For leased workers, `qaffd` also opens a pidfd when supported and unregisters the worker if the registering process exits. `WORKER_HEARTBEAT` refreshes the lease on that same control connection, and `--worker-heartbeat-timeout-ms` can remove stuck leased workers that stop heartbeating. `qaffd` records Unix peer credentials for worker registration and can restrict registration with `--allow-worker-uid` and `--allow-worker-gid`. Existing worker IDs, worker CID registration, CID retirement, and worker unregistration can be mutated only by the original worker process or by the configured management identity. Worker unregistration retires CIDs owned by that worker, removes the worker ID from the reuseport sockarray, and closes qaffd's duplicated socket fd.
 
-The listener config includes `short_cid_len`, `fallback_worker_id`, and optional routable CID profile v1 settings. Fallback is used for unregistered opaque CIDs, invalid profile CIDs, parse failures, and the first client Initial before the server has issued a routable CID.
+The listener config includes `short_cid_len`, `fallback_worker_id`, and optional routable CID profile settings. Fallback is used for unregistered opaque CIDs, invalid profile CIDs, parse failures, and the first client Initial before the server has issued a routable CID. Profile v2 adds a config ID, worker generation, and a 32-bit keyed tag.
 
-In daemon-controlled mode, `REGISTER_CID` is accepted only for currently registered worker IDs. `qaffd` keeps a CID owner index so `UNREGISTER_WORKER` can bulk-retire CIDs owned by the removed worker. The QUIC stack should still drain and retire CIDs first when possible, so delayed packets are less likely to fall back. Profile-routed CIDs do not consume CID map entries, so worker ID reuse must still wait until old profile CIDs have drained.
+In daemon-controlled mode, `REGISTER_CID` is accepted only for currently registered worker IDs. `qaffd` keeps a CID owner index so `UNREGISTER_WORKER` can bulk-retire CIDs owned by the removed worker. The QUIC stack should still drain and retire CIDs first when possible, so delayed packets are less likely to fall back. Profile-routed CIDs do not consume CID map entries. For profile v2, qaffd increments a per-worker generation on replacement and BPF rejects stale CIDs whose generation no longer matches.
+
+The control socket defaults to `0600`. Deployments that need operator group access can use `--socket-mode 0660 --socket-gid GID`; world permissions are rejected.
 
 The current MVP supports one listener per `qaffd` process. Multi-listener management remains future work.
 
@@ -147,7 +149,7 @@ The current daemon maintains a daemon-side CID owner index for CIDs registered t
 
 ## Restart Recovery
 
-`qaffd --pin-root PATH` opens existing pinned maps from bpffs or creates and pins new maps under `PATH`. `qaffd --state-path PATH` persists the daemon-side worker list in a regular filesystem snapshot. CID ownership is recovered from the pinned `qaff_cids` map.
+`qaffd --pin-root PATH` opens existing pinned maps from bpffs or creates and pins new maps under `PATH`. The pin root must not be writable by group or other users. Existing pinned maps are schema-checked for type, key size, value size, and max entries before reuse. `qaffd --state-path PATH` persists the daemon-side worker list and worker generations in a regular filesystem snapshot. CID ownership is recovered from the pinned `qaff_cids` map.
 
 On daemon restart:
 
@@ -181,7 +183,7 @@ qaffctl listeners
 qaffctl cids LISTENER_ID --limit 20
 ```
 
-`qaffctl health`, `qaffctl config`, and `qaffctl cids --count` expose `cid_map_count`, `cid_owner_count`, and `cid_index_mismatch`. `qaffctl workers` reports worker IDs, lease state, pidfd availability, peer pid/uid/gid when available, registration age, and last-seen age. CID bytes and profile keys are not printed by default. `qaffctl` currently talks to `qaffd` over the daemon Unix socket. Direct pinned-map inspection remains future work.
+`qaffctl health`, `qaffctl config`, and `qaffctl cids --count` expose `cid_map_count`, `cid_owner_count`, and `cid_index_mismatch`. `qaffctl workers` reports worker IDs, lease state, pidfd availability, peer pid/uid/gid when available, registration age, and last-seen age. CID bytes and profile keys are not printed by default. `qaffd` emits audit records to stderr for worker lifecycle, CID lifecycle, and denied mutations. `qaffctl` currently talks to `qaffd` over the daemon Unix socket. Direct pinned-map inspection remains future work.
 
 ## Open Decisions
 

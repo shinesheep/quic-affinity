@@ -58,6 +58,7 @@ int qaff_bpf_object_open(struct qaff_context *ctx,
 
   if (qaff_reuse_map(object->obj, "qaff_cids", qaff_get_cid_map_fd(ctx), 1) != 0 ||
       qaff_reuse_map(object->obj, "qaff_workers", qaff_get_worker_sock_map_fd(ctx), 1) != 0 ||
+      qaff_reuse_map(object->obj, "qaff_worker_generations", qaff_get_worker_generation_map_fd(ctx), 1) != 0 ||
       qaff_reuse_map(object->obj, "qaff_stats", qaff_get_stats_map_fd(ctx), 1) != 0 ||
       qaff_reuse_map(object->obj, "qaff_config", qaff_get_config_map_fd(ctx), 1) != 0) {
     goto fail;

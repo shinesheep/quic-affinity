@@ -17,11 +17,14 @@ struct qaff_bpf_object;
 struct qaff_options {
   int cid_map_fd;
   int worker_sock_map_fd;
+  int worker_generation_map_fd;
   int stats_map_fd;
   int config_map_fd;
   const char *pin_root;
   uint8_t short_cid_len;
   uint8_t cid_profile_v1_enabled;
+  uint8_t cid_profile_v2_enabled;
+  uint8_t cid_profile_v2_config_id;
   uint8_t cid_profile_v1_key[QAFF_CID_PROFILE_KEY_LEN];
   uint32_t fallback_worker_id;
 };
@@ -48,11 +51,17 @@ int qaff_register_worker_socket(struct qaff_context *ctx,
                                 uint32_t worker_id,
                                 int socket_fd);
 
+int qaff_register_worker_socket_generation(struct qaff_context *ctx,
+                                           uint32_t worker_id,
+                                           int socket_fd,
+                                           uint32_t generation);
+
 int qaff_unregister_worker_socket(struct qaff_context *ctx,
                                   uint32_t worker_id);
 
 int qaff_get_cid_map_fd(const struct qaff_context *ctx);
 int qaff_get_worker_sock_map_fd(const struct qaff_context *ctx);
+int qaff_get_worker_generation_map_fd(const struct qaff_context *ctx);
 int qaff_get_stats_map_fd(const struct qaff_context *ctx);
 int qaff_get_config_map_fd(const struct qaff_context *ctx);
 
