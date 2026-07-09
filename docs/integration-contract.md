@@ -85,6 +85,8 @@ When using `qaffd`, the privileged daemon owns BPF setup:
 
 If the leased control connection closes unexpectedly, `qaffd` treats the worker as dead, unregisters it, closes qaffd's duplicated worker socket fd, and bulk-retires that worker's CIDs. `--worker-heartbeat-timeout-ms` also lets `qaffd` remove leased workers that keep the connection open but stop sending `WORKER_HEARTBEAT` messages; `0` disables heartbeat timeouts. The older one-shot `REGISTER_WORKER` operation remains available for compatibility, but it cannot detect worker process death on its own because fd passing gives `qaffd` a separate reference to the UDP socket.
 
+`qaffd` records the registering process' Unix peer credentials and exposes them through `qaffctl workers`. Deployments can use `--allow-worker-uid` and `--allow-worker-gid` to reject worker registration from unexpected local users or groups.
+
 The current MVP supports one listener per `qaffd` process.
 
 For restart recovery, use both:

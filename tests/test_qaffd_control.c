@@ -282,6 +282,11 @@ static int connect_retry(const char *socket_path, int attempts) {
 static pid_t start_qaffd(const char *qaffd_path,
                          const char *socket_path,
                          const char *bpf_path) {
+  char uid_arg[32];
+  char gid_arg[32];
+  snprintf(uid_arg, sizeof(uid_arg), "%u", (unsigned int)getuid());
+  snprintf(gid_arg, sizeof(gid_arg), "%u", (unsigned int)getgid());
+
   pid_t pid = fork();
   if (pid != 0) {
     return pid;
@@ -297,6 +302,10 @@ static pid_t start_qaffd(const char *qaffd_path,
         "8",
         "--worker-heartbeat-timeout-ms",
         "500",
+        "--allow-worker-uid",
+        uid_arg,
+        "--allow-worker-gid",
+        gid_arg,
         (char *)NULL);
   perror("execl qaffd");
   _exit(127);
@@ -547,7 +556,10 @@ static int run_case(const char *qaffd_path,
   }
   if (worker_infos_len != 1 ||
       worker_infos[0].worker_id != 0 ||
-      (worker_infos[0].flags & QAFF_CONTROL_WORKER_FLAG_LEASED) == 0) {
+      (worker_infos[0].flags & QAFF_CONTROL_WORKER_FLAG_LEASED) == 0 ||
+      (worker_infos[0].flags & QAFF_CONTROL_WORKER_FLAG_CRED) == 0 ||
+      worker_infos[0].uid != (uint32_t)getuid() ||
+      worker_infos[0].gid != (uint32_t)getgid()) {
     fprintf(stderr, "%s: unexpected leased worker info\n", test->name);
     return 1;
   }

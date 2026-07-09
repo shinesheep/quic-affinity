@@ -1,3 +1,4 @@
+#define _GNU_SOURCE
 #define _POSIX_C_SOURCE 200809L
 
 #include "quic_affinity/control.h"
@@ -38,6 +39,17 @@ struct qaffd_options {
   uint8_t short_cid_len;
   uint32_t fallback_worker_id;
   uint64_t worker_heartbeat_timeout_ms;
+  int allow_worker_uid_set;
+  int allow_worker_gid_set;
+  uint32_t allow_worker_uid;
+  uint32_t allow_worker_gid;
+};
+
+struct qaffd_peer_cred {
+  int valid;
+  uint32_t pid;
+  uint32_t uid;
+  uint32_t gid;
 };
 
 struct qaffd_state {
@@ -48,6 +60,7 @@ struct qaffd_state {
   int worker_registered[QAFFD_MAX_WORKERS];
   uint64_t worker_registered_at_ms[QAFFD_MAX_WORKERS];
   uint64_t worker_last_seen_ms[QAFFD_MAX_WORKERS];
+  struct qaffd_peer_cred worker_creds[QAFFD_MAX_WORKERS];
   struct qaffd_cid_entry *cid_entries;
   size_t cid_entries_len;
   size_t cid_entries_cap;
@@ -56,6 +69,10 @@ struct qaffd_state {
   uint8_t short_cid_len;
   uint32_t fallback_worker_id;
   uint64_t worker_heartbeat_timeout_ms;
+  int allow_worker_uid_set;
+  int allow_worker_gid_set;
+  uint32_t allow_worker_uid;
+  uint32_t allow_worker_gid;
   int attached;
   int stop;
   int listener_locked;
@@ -104,6 +121,48 @@ static uint64_t elapsed_ms(uint64_t now, uint64_t then) {
     return 0;
   }
   return now - then;
+}
+
+static int get_peer_cred(int fd, struct qaffd_peer_cred *out) {
+  memset(out, 0, sizeof(*out));
+#ifdef SO_PEERCRED
+  struct ucred cred;
+  socklen_t len = sizeof(cred);
+  if (getsockopt(fd, SOL_SOCKET, SO_PEERCRED, &cred, &len) != 0) {
+    return -1;
+  }
+  if (cred.pid < 0 || cred.uid > UINT32_MAX || cred.gid > UINT32_MAX) {
+    errno = EOVERFLOW;
+    return -1;
+  }
+  out->valid = 1;
+  out->pid = (uint32_t)cred.pid;
+  out->uid = (uint32_t)cred.uid;
+  out->gid = (uint32_t)cred.gid;
+#else
+  (void)fd;
+#endif
+  return 0;
+}
+
+static int validate_worker_peer(const struct qaffd_state *state,
+                                const struct qaffd_peer_cred *peer) {
+  if (!state->allow_worker_uid_set && !state->allow_worker_gid_set) {
+    return 0;
+  }
+  if (peer == NULL || !peer->valid) {
+    errno = EACCES;
+    return -1;
+  }
+  if (state->allow_worker_uid_set && peer->uid != state->allow_worker_uid) {
+    errno = EACCES;
+    return -1;
+  }
+  if (state->allow_worker_gid_set && peer->gid != state->allow_worker_gid) {
+    errno = EACCES;
+    return -1;
+  }
+  return 0;
 }
 
 static uint32_t worker_count(const struct qaffd_state *state) {
@@ -281,6 +340,12 @@ static void fill_workers_reply(const struct qaffd_state *state,
       reply->worker_infos[written].worker_id = i;
       reply->worker_infos[written].flags =
           state->worker_lease_fds[i] >= 0 ? QAFF_CONTROL_WORKER_FLAG_LEASED : 0;
+      if (state->worker_creds[i].valid) {
+        reply->worker_infos[written].flags |= QAFF_CONTROL_WORKER_FLAG_CRED;
+        reply->worker_infos[written].pid = state->worker_creds[i].pid;
+        reply->worker_infos[written].uid = state->worker_creds[i].uid;
+        reply->worker_infos[written].gid = state->worker_creds[i].gid;
+      }
       reply->worker_infos[written].registered_ms_ago =
           elapsed_ms(now, state->worker_registered_at_ms[i]);
       reply->worker_infos[written].last_seen_ms_ago =
@@ -298,7 +363,8 @@ static void usage(FILE *out) {
   fprintf(out,
           "Usage: qaffd --socket PATH --bpf PATH --short-cid-len N "
           "[--fallback-worker ID] [--pin-root PATH] [--state-path PATH] "
-          "[--worker-heartbeat-timeout-ms N]\n");
+          "[--worker-heartbeat-timeout-ms N] [--allow-worker-uid UID] "
+          "[--allow-worker-gid GID]\n");
 }
 
 static int parse_args(int argc, char **argv, struct qaffd_options *options) {
@@ -335,6 +401,22 @@ static int parse_args(int argc, char **argv, struct qaffd_options *options) {
         return -1;
       }
       options->worker_heartbeat_timeout_ms = (uint64_t)value;
+    } else if (strcmp(argv[i], "--allow-worker-uid") == 0 && i + 1 < argc) {
+      char *end = NULL;
+      unsigned long value = strtoul(argv[++i], &end, 10);
+      if (end == argv[i] || *end != '\0' || value > UINT32_MAX) {
+        return -1;
+      }
+      options->allow_worker_uid_set = 1;
+      options->allow_worker_uid = (uint32_t)value;
+    } else if (strcmp(argv[i], "--allow-worker-gid") == 0 && i + 1 < argc) {
+      char *end = NULL;
+      unsigned long value = strtoul(argv[++i], &end, 10);
+      if (end == argv[i] || *end != '\0' || value > UINT32_MAX) {
+        return -1;
+      }
+      options->allow_worker_gid_set = 1;
+      options->allow_worker_gid = (uint32_t)value;
     } else {
       return -1;
     }
@@ -772,9 +854,13 @@ static int recover_cids_from_map(struct qaffd_state *state) {
 
 static int handle_register_worker(struct qaffd_state *state,
                                   const struct qaff_control_msg *request,
-                                  int socket_fd) {
+                                  int socket_fd,
+                                  const struct qaffd_peer_cred *peer) {
   if (socket_fd < 0 || request->worker_id >= QAFFD_MAX_WORKERS) {
     errno = EINVAL;
+    return -1;
+  }
+  if (validate_worker_peer(state, peer) != 0) {
     return -1;
   }
 
@@ -807,6 +893,8 @@ static int handle_register_worker(struct qaffd_state *state,
   uint64_t now = now_ms();
   state->worker_registered_at_ms[request->worker_id] = now;
   state->worker_last_seen_ms[request->worker_id] = now;
+  state->worker_creds[request->worker_id] =
+      peer != NULL ? *peer : (struct qaffd_peer_cred){0};
 
   if (!state->listener_locked) {
     state->listener_addr = local_addr;
@@ -844,6 +932,9 @@ static int handle_unregister_worker(struct qaffd_state *state,
   state->worker_registered[request->worker_id] = 0;
   state->worker_registered_at_ms[request->worker_id] = 0;
   state->worker_last_seen_ms[request->worker_id] = 0;
+  memset(&state->worker_creds[request->worker_id],
+         0,
+         sizeof(state->worker_creds[request->worker_id]));
   if (worker_count(state) == 0) {
     state->attached = 0;
     state->listener_locked = 0;
@@ -964,6 +1055,8 @@ static int handle_request(struct qaffd_state *state,
   struct qaff_control_msg request;
   int received_fd = -1;
   int lease_worker_id = -1;
+  struct qaffd_peer_cred peer_cred;
+  memset(&peer_cred, 0, sizeof(peer_cred));
   *keep_client_fd = 0;
 
   if (recv_request(client_fd, &request, &received_fd) != 0) {
@@ -985,7 +1078,8 @@ static int handle_request(struct qaffd_state *state,
   } else {
     switch (request.op) {
     case QAFF_CONTROL_REGISTER_WORKER:
-      if (handle_register_worker(state, &request, received_fd) != 0) {
+      if (get_peer_cred(client_fd, &peer_cred) != 0 ||
+          handle_register_worker(state, &request, received_fd, &peer_cred) != 0) {
         reply.status = errno ? errno : EIO;
         if (received_fd >= 0) {
           close(received_fd);
@@ -995,7 +1089,8 @@ static int handle_request(struct qaffd_state *state,
       }
       break;
     case QAFF_CONTROL_REGISTER_WORKER_LEASE:
-      if (handle_register_worker(state, &request, received_fd) != 0) {
+      if (get_peer_cred(client_fd, &peer_cred) != 0 ||
+          handle_register_worker(state, &request, received_fd, &peer_cred) != 0) {
         reply.status = errno ? errno : EIO;
         if (received_fd >= 0) {
           close(received_fd);
@@ -1222,6 +1317,10 @@ int main(int argc, char **argv) {
   state.fallback_worker_id = daemon_options.fallback_worker_id;
   state.worker_heartbeat_timeout_ms =
       daemon_options.worker_heartbeat_timeout_ms;
+  state.allow_worker_uid_set = daemon_options.allow_worker_uid_set;
+  state.allow_worker_gid_set = daemon_options.allow_worker_gid_set;
+  state.allow_worker_uid = daemon_options.allow_worker_uid;
+  state.allow_worker_gid = daemon_options.allow_worker_gid;
   for (size_t i = 0; i < QAFFD_MAX_WORKERS; i++) {
     state.worker_fds[i] = -1;
     state.worker_lease_fds[i] = -1;

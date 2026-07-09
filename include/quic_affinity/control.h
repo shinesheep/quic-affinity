@@ -17,6 +17,7 @@ extern "C" {
 #define QAFF_CONTROL_MAX_PATH 256u
 
 #define QAFF_CONTROL_WORKER_FLAG_LEASED 0x1u
+#define QAFF_CONTROL_WORKER_FLAG_CRED 0x2u
 
 enum qaff_control_op {
   QAFF_CONTROL_REGISTER_WORKER = 1,
@@ -49,6 +50,10 @@ struct qaff_control_config {
 struct qaff_control_worker_info {
   uint32_t worker_id;
   uint32_t flags;
+  uint32_t pid;
+  uint32_t uid;
+  uint32_t gid;
+  uint32_t reserved;
   uint64_t registered_ms_ago;
   uint64_t last_seen_ms_ago;
 };
