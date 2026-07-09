@@ -71,7 +71,7 @@ The BPF program applies to the reuseport group after attachment.
 
 When using `qaffd`, the privileged daemon owns BPF setup:
 
-1. Start `qaffd` with a Unix socket path, BPF object path, `short_cid_len`, and optional `fallback_worker_id`.
+1. Start `qaffd` with a Unix socket path, BPF object path, `short_cid_len`, optional `fallback_worker_id`, and optional restart-recovery paths.
 2. Each worker creates and binds its UDP `SO_REUSEPORT` socket.
 3. Each worker passes its socket fd to `qaffd` with `REGISTER_WORKER`.
 4. `qaffd` registers the socket in the sockarray and attaches BPF on first worker registration.
@@ -79,6 +79,15 @@ When using `qaffd`, the privileged daemon owns BPF setup:
 6. Drained workers unregister their socket after their CIDs have been retired.
 
 The current MVP supports one listener per `qaffd` process.
+
+For restart recovery, use both:
+
+```sh
+qaffd --pin-root /sys/fs/bpf/quic-affinity/listeners/<listener-id> \
+      --state-path /var/lib/quic-affinity/<listener-id>.state
+```
+
+`--pin-root` must point to a writable bpffs directory. `--state-path` must point to a normal filesystem path, not bpffs.
 
 Stats and shutdown are available through `qaffctl`:
 

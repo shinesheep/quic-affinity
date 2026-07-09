@@ -1,12 +1,20 @@
 #include "quic_affinity/quic_affinity.h"
 
 #include <errno.h>
+#include <limits.h>
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/stat.h>
+#include <sys/types.h>
 #include <unistd.h>
 
 #include <bpf/bpf.h>
 #include <linux/bpf.h>
+
+#ifndef PATH_MAX
+#define PATH_MAX 4096
+#endif
 
 struct qaff_context {
   int cid_map_fd;
@@ -17,6 +25,7 @@ struct qaff_context {
   int owns_worker_sock_map;
   int owns_stats_map;
   int owns_config_map;
+  const char *pin_root;
   uint8_t short_cid_len;
   uint32_t fallback_worker_id;
 };
@@ -30,7 +39,102 @@ void qaff_options_init(struct qaff_options *options) {
   options->worker_sock_map_fd = -1;
   options->stats_map_fd = -1;
   options->config_map_fd = -1;
+  options->pin_root = NULL;
   options->fallback_worker_id = 0;
+}
+
+static int qaff_mkdir_p(const char *path) {
+  char tmp[PATH_MAX];
+  size_t len = strlen(path);
+  if (len == 0 || len >= sizeof(tmp)) {
+    errno = ENAMETOOLONG;
+    return -1;
+  }
+
+  memcpy(tmp, path, len + 1);
+  for (char *p = tmp + 1; *p; p++) {
+    if (*p != '/') {
+      continue;
+    }
+    *p = '\0';
+    if (mkdir(tmp, 0700) != 0 && errno != EEXIST) {
+      return -1;
+    }
+    *p = '/';
+  }
+
+  if (mkdir(tmp, 0700) != 0 && errno != EEXIST) {
+    return -1;
+  }
+  return 0;
+}
+
+static int qaff_pin_path(const char *pin_root,
+                         const char *name,
+                         char *out,
+                         size_t out_len) {
+  int n = snprintf(out, out_len, "%s/%s", pin_root, name);
+  if (n < 0 || (size_t)n >= out_len) {
+    errno = ENAMETOOLONG;
+    return -1;
+  }
+  return 0;
+}
+
+static int qaff_open_or_pin_map(const char *pin_root,
+                                const char *name,
+                                int created_fd) {
+  if (pin_root == NULL) {
+    return created_fd;
+  }
+
+  if (qaff_mkdir_p(pin_root) != 0) {
+    close(created_fd);
+    return -1;
+  }
+
+  char path[PATH_MAX];
+  if (qaff_pin_path(pin_root, name, path, sizeof(path)) != 0) {
+    close(created_fd);
+    return -1;
+  }
+
+  int pinned_fd = bpf_obj_get(path);
+  if (pinned_fd >= 0) {
+    close(created_fd);
+    return pinned_fd;
+  }
+  if (errno != ENOENT) {
+    int saved_errno = errno;
+    close(created_fd);
+    errno = saved_errno;
+    return -1;
+  }
+
+  if (bpf_obj_pin(created_fd, path) != 0) {
+    int saved_errno = errno;
+    close(created_fd);
+    errno = saved_errno;
+    return -1;
+  }
+
+  return created_fd;
+}
+
+static int qaff_get_pinned_map(const char *pin_root, const char *name) {
+  if (pin_root == NULL) {
+    errno = ENOENT;
+    return -1;
+  }
+  if (qaff_mkdir_p(pin_root) != 0) {
+    return -1;
+  }
+
+  char path[PATH_MAX];
+  if (qaff_pin_path(pin_root, name, path, sizeof(path)) != 0) {
+    return -1;
+  }
+  return bpf_obj_get(path);
 }
 
 static int qaff_create_hash_map(const char *name,
@@ -103,14 +207,27 @@ int qaff_open(const struct qaff_options *options, struct qaff_context **out) {
   ctx->worker_sock_map_fd = options->worker_sock_map_fd;
   ctx->stats_map_fd = options->stats_map_fd;
   ctx->config_map_fd = options->config_map_fd;
+  ctx->pin_root = options->pin_root;
   ctx->short_cid_len = options->short_cid_len;
   ctx->fallback_worker_id = options->fallback_worker_id;
 
   if (ctx->cid_map_fd < 0) {
-    ctx->cid_map_fd = qaff_create_hash_map("qaff_cids",
-                                           sizeof(struct qaff_cid_key),
-                                           sizeof(uint32_t),
-                                           1024 * 1024);
+    ctx->cid_map_fd = qaff_get_pinned_map(ctx->pin_root, "qaff_cids");
+    if (ctx->cid_map_fd < 0 && errno != ENOENT) {
+      goto fail;
+    }
+    if (ctx->cid_map_fd < 0) {
+      ctx->cid_map_fd = qaff_create_hash_map("qaff_cids",
+                                             sizeof(struct qaff_cid_key),
+                                             sizeof(uint32_t),
+                                             1024 * 1024);
+    }
+    if (ctx->cid_map_fd < 0) {
+      goto fail;
+    }
+    ctx->cid_map_fd = qaff_open_or_pin_map(ctx->pin_root,
+                                           "qaff_cids",
+                                           ctx->cid_map_fd);
     if (ctx->cid_map_fd < 0) {
       goto fail;
     }
@@ -118,7 +235,20 @@ int qaff_open(const struct qaff_options *options, struct qaff_context **out) {
   }
 
   if (ctx->worker_sock_map_fd < 0) {
-    ctx->worker_sock_map_fd = qaff_create_sockhash_map("qaff_workers", 4096);
+    ctx->worker_sock_map_fd = qaff_get_pinned_map(ctx->pin_root,
+                                                  "qaff_workers");
+    if (ctx->worker_sock_map_fd < 0 && errno != ENOENT) {
+      goto fail;
+    }
+    if (ctx->worker_sock_map_fd < 0) {
+      ctx->worker_sock_map_fd = qaff_create_sockhash_map("qaff_workers", 4096);
+    }
+    if (ctx->worker_sock_map_fd < 0) {
+      goto fail;
+    }
+    ctx->worker_sock_map_fd = qaff_open_or_pin_map(ctx->pin_root,
+                                                   "qaff_workers",
+                                                   ctx->worker_sock_map_fd);
     if (ctx->worker_sock_map_fd < 0) {
       goto fail;
     }
@@ -126,7 +256,19 @@ int qaff_open(const struct qaff_options *options, struct qaff_context **out) {
   }
 
   if (ctx->stats_map_fd < 0) {
-    ctx->stats_map_fd = qaff_create_stats_map("qaff_stats");
+    ctx->stats_map_fd = qaff_get_pinned_map(ctx->pin_root, "qaff_stats");
+    if (ctx->stats_map_fd < 0 && errno != ENOENT) {
+      goto fail;
+    }
+    if (ctx->stats_map_fd < 0) {
+      ctx->stats_map_fd = qaff_create_stats_map("qaff_stats");
+    }
+    if (ctx->stats_map_fd < 0) {
+      goto fail;
+    }
+    ctx->stats_map_fd = qaff_open_or_pin_map(ctx->pin_root,
+                                             "qaff_stats",
+                                             ctx->stats_map_fd);
     if (ctx->stats_map_fd < 0) {
       goto fail;
     }
@@ -134,7 +276,19 @@ int qaff_open(const struct qaff_options *options, struct qaff_context **out) {
   }
 
   if (ctx->config_map_fd < 0) {
-    ctx->config_map_fd = qaff_create_config_map("qaff_config");
+    ctx->config_map_fd = qaff_get_pinned_map(ctx->pin_root, "qaff_config");
+    if (ctx->config_map_fd < 0 && errno != ENOENT) {
+      goto fail;
+    }
+    if (ctx->config_map_fd < 0) {
+      ctx->config_map_fd = qaff_create_config_map("qaff_config");
+    }
+    if (ctx->config_map_fd < 0) {
+      goto fail;
+    }
+    ctx->config_map_fd = qaff_open_or_pin_map(ctx->pin_root,
+                                              "qaff_config",
+                                              ctx->config_map_fd);
     if (ctx->config_map_fd < 0) {
       goto fail;
     }

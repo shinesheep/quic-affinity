@@ -19,6 +19,7 @@ struct qaff_options {
   int worker_sock_map_fd;
   int stats_map_fd;
   int config_map_fd;
+  const char *pin_root;
   uint8_t short_cid_len;
   uint32_t fallback_worker_id;
 };

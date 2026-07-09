@@ -174,6 +174,16 @@ build/qaffd --socket /tmp/qaffd.sock --bpf build/qaff_reuseport.bpf.o --short-ci
 
 `--fallback-worker` selects the worker socket used when the incoming packet cannot be parsed or its DCID is not registered yet. This is the expected path for the first client Initial, because that DCID is client-generated.
 
+For restart recovery, run `qaffd` with a writable bpffs pin root and a state snapshot path:
+
+```sh
+build/qaffd --socket /tmp/qaffd.sock \
+  --bpf build/qaff_reuseport.bpf.o \
+  --short-cid-len 8 \
+  --pin-root /sys/fs/bpf/quic-affinity/listeners/udp-ipv4-127.0.0.1-4433 \
+  --state-path /var/lib/quic-affinity/udp-ipv4-127.0.0.1-4433.state
+```
+
 Inspect and stop it with `qaffctl`:
 
 ```sh
@@ -185,7 +195,7 @@ build/qaffctl unregister-worker /tmp/qaffd.sock 2
 build/qaffctl stop /tmp/qaffd.sock
 ```
 
-The `qaffd_control` test starts `qaffd`, registers IPv4 and IPv6 reuseport workers through the control API, registers a CID, verifies hit and fallback routing, unregisters workers, and verifies that CIDs owned by removed workers are retired before later packets fall back.
+The `qaffd_control` test starts `qaffd`, registers IPv4 and IPv6 reuseport workers through the control API, registers a CID, verifies hit and fallback routing, unregisters workers, and verifies that CIDs owned by removed workers are retired before later packets fall back. The `qaffd_restart` test verifies pinned map and state recovery when bpffs is writable; it is skipped on systems where `/sys/fs/bpf` is unavailable or read-only.
 
 ## Examples
 

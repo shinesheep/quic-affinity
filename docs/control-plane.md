@@ -80,11 +80,10 @@ Per listener:
 
 ```text
 /sys/fs/bpf/quic-affinity/listeners/<listener-id>/
-  cids
-  workers
-  stats
-  config
-  program
+  qaff_cids
+  qaff_workers
+  qaff_stats
+  qaff_config
 ```
 
 `listener-id` should be deterministic and safe for file names. A practical MVP format:
@@ -141,6 +140,19 @@ The control plane must avoid reusing a worker ID while CIDs still point to the o
 
 The current daemon maintains a daemon-side CID owner index for CIDs registered through the control API. This enables bulk CID cleanup during `UNREGISTER_WORKER`; map pinning and recovery of that index across daemon restarts remain future work.
 
+## Restart Recovery
+
+`qaffd --pin-root PATH` opens existing pinned maps from bpffs or creates and pins new maps under `PATH`. `qaffd --state-path PATH` persists the daemon-side worker list and CID owner index in a regular filesystem snapshot.
+
+On daemon restart:
+
+1. `qaffd` opens pinned maps from `--pin-root`.
+2. It reloads worker IDs and CID ownership from `--state-path`.
+3. Existing socket-group BPF attachment can continue using the pinned maps while worker sockets remain open.
+4. New control operations, including `UNREGISTER_WORKER`, operate on the recovered map and owner state.
+
+The state snapshot is not stored in bpffs. Use a normal persistent location such as `/var/lib/quic-affinity/<listener-id>.state`.
+
 ## qaffctl MVP
 
 Initial commands:
@@ -161,10 +173,9 @@ qaffctl listeners
 qaffctl cids LISTENER_ID --limit 20
 ```
 
-Before map pinning exists, `qaffctl` talks to `qaffd` over the daemon Unix socket.
+`qaffctl` currently talks to `qaffd` over the daemon Unix socket. Direct pinned-map inspection remains future work.
 
 ## Open Decisions
 
 - Whether qaffd should create worker sockets itself or accept worker socket fds.
-- Whether map pinning should be optional in embedded mode.
 - How to represent CID keys in CLI output without leaking sensitive routing material by default.

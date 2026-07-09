@@ -139,6 +139,20 @@ add_test(NAME qaffd_control
     ${CMAKE_CURRENT_BINARY_DIR}/qaff_reuseport.bpf.o)
 set_tests_properties(qaffd_control PROPERTIES SKIP_RETURN_CODE 77)
 
+add_executable(test_qaffd_restart
+  tests/test_qaffd_restart.c)
+
+target_link_libraries(test_qaffd_restart PRIVATE qaffinity)
+target_compile_options(test_qaffd_restart PRIVATE -Wall -Wextra -Wpedantic)
+
+add_test(NAME qaffd_restart
+  COMMAND /bin/sh
+    ${CMAKE_CURRENT_SOURCE_DIR}/tests/run_qaffd_restart.sh
+    $<TARGET_FILE:qaffd>
+    $<TARGET_FILE:test_qaffd_restart>
+    ${CMAKE_CURRENT_BINARY_DIR}/qaff_reuseport.bpf.o)
+set_tests_properties(qaffd_restart PROPERTIES SKIP_RETURN_CODE 77)
+
 add_test(NAME qaffctl_control
   COMMAND /bin/sh
     ${CMAKE_CURRENT_SOURCE_DIR}/tests/run_qaffctl_control.sh
@@ -206,6 +220,7 @@ if(QAFF_BUILD_BPF)
     add_dependencies(test_reuseport_smoke qaff_bpf)
     add_dependencies(qaffd qaff_bpf)
     add_dependencies(test_qaffd_control qaff_bpf)
+    add_dependencies(test_qaffd_restart qaff_bpf)
   else()
     message(WARNING "clang not found; eBPF object will not be built")
   endif()
