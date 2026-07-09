@@ -1,0 +1,275 @@
+# quic-affinity Bootstrap
+
+## Objective
+
+Build a general-purpose Linux project that gives QUIC servers worker affinity based on QUIC connection IDs.
+
+The target deployment is a Linux server with multiple worker processes or threads bound to the same UDP address and port through `SO_REUSEPORT`. When a client's source IP or port changes, packets for the same QUIC connection should still reach the worker that owns the connection state.
+
+The project should be usable as open-source infrastructure, not as a feature coupled to a single QUIC server.
+
+## Background
+
+QUIC is connection-ID based. A QUIC connection can survive NAT rebinding and connection migration because packets carry a Destination Connection ID (DCID) that identifies the receiving endpoint's connection context.
+
+Linux `SO_REUSEPORT` is useful for scaling UDP servers across processes, but the default packet distribution is not QUIC-aware. If a client changes source address or source port, the kernel can select a different worker socket. That worker may not have the QUIC connection state, forcing cross-process forwarding or causing packet loss.
+
+The immediate problem is not QUIC itself. The problem is that the Linux UDP distribution point sits before the user-space QUIC stack and does not know how to route by DCID unless we teach it.
+
+## Design Requirements
+
+1. The solution must be better than a server-specific `quic_bpf` feature.
+2. The solution must be generic enough to become a standalone open-source project.
+3. The dataplane should avoid steady-state user-space forwarding.
+4. The control plane should be observable and operationally safe.
+5. The integration surface should work across multiple QUIC stacks.
+6. The design must explicitly handle unroutable CIDs and first-flight packets.
+
+## Better Than Server-Specific quic_bpf
+
+The project should exceed server-specific QUIC eBPF routing in these areas:
+
+- QUIC stack neutrality.
+- Stable SDK and C ABI for registering workers and CIDs.
+- Support for both opaque CID registration and routable CID profiles.
+- Graceful reload and worker lifecycle handling.
+- CID map garbage collection and retirement semantics.
+- Metrics for route hits, fallback, invalid packets, and worker selection.
+- Integration examples for more than one QUIC implementation.
+- Explicit behavior for Initial packets, unknown versions, zero-length CIDs, short CIDs, and malformed packets.
+
+## Architecture
+
+The system has three layers.
+
+### eBPF Dataplane
+
+The dataplane attaches to a `SO_REUSEPORT` group using `SO_ATTACH_REUSEPORT_EBPF` and a `BPF_PROG_TYPE_SK_REUSEPORT` program.
+
+Responsibilities:
+
+- Parse the first QUIC packet in the UDP datagram.
+- Extract the DCID.
+- Select a worker socket from a reuseport socket array.
+- Prefer direct CID routing.
+- Fall back when the packet is not routable by CID.
+- Maintain low-cost counters for observability.
+
+The dataplane must stay simple. It should not implement full QUIC parsing, TLS parsing, or complex cryptographic operations.
+
+### User-Space Control Plane
+
+The control plane manages state that is too complex for eBPF.
+
+Responsibilities:
+
+- Register worker sockets and stable worker IDs.
+- Maintain CID-to-worker maps.
+- Remove CIDs on retirement.
+- Clean up state when workers exit.
+- Support graceful reload and config rotation.
+- Expose metrics and diagnostics.
+- Provide a CLI for inspection.
+
+The likely daemon name is `qaffd`; the CLI name is `qaffctl`.
+
+### Integration SDK
+
+The SDK lets QUIC servers integrate without knowing BPF internals.
+
+Initial API concepts:
+
+```c
+int qaff_register_worker(int udp_fd, uint32_t worker_id);
+int qaff_register_cid(const uint8_t *cid, size_t cid_len, uint32_t worker_id);
+int qaff_retire_cid(const uint8_t *cid, size_t cid_len);
+int qaff_set_listener_config(int udp_fd, const struct qaff_listener_config *config);
+```
+
+The C ABI should be the stable foundation. Language bindings can wrap it.
+
+## Routing Flow
+
+```text
+UDP packet arrives
+  -> eBPF parses QUIC header
+  -> eBPF extracts DCID
+  -> if DCID exists in CID map:
+       select owner worker
+     else if DCID matches routable CID profile:
+       decode worker id and select worker
+     else:
+       use fallback routing
+```
+
+## First Initial Packet
+
+The first client Initial packet is special.
+
+The client's Initial DCID is client-generated. At that point the server has not yet issued a server CID, so no server-side worker ID can be embedded in that DCID.
+
+Correct behavior:
+
+1. Route the first Initial by fallback, usually 4-tuple hash.
+2. The selected worker accepts the new connection.
+3. That worker generates the server CID.
+4. The server CID is registered in the CID map or generated using a routable CID profile.
+5. Later packets use server-issued DCIDs and can be routed back to the owning worker.
+
+If Retry is enabled, the Retry path can make the second Initial routable if the Retry SCID is generated by the selected worker using a compatible CID strategy.
+
+## CID Strategies
+
+### Stateful CID Registry
+
+In this mode, CIDs are opaque. The QUIC server registers every server-issued CID with the control plane.
+
+Advantages:
+
+- Maximum compatibility.
+- Strong privacy properties.
+- No imposed CID wire format.
+- Works with existing QUIC stacks.
+
+Disadvantages:
+
+- One map entry per active CID.
+- Requires correct CID retirement and garbage collection.
+- Map capacity must be sized for peak active CIDs, not just active connections.
+
+### Routable CID Profile
+
+In this mode, CIDs encode routing information such as config ID, worker ID, nonce, and authentication tag.
+
+Advantages:
+
+- Lower per-connection state.
+- Better for very large connection counts.
+- Can route after control-plane restart if config is preserved.
+
+Disadvantages:
+
+- Requires CID generation changes in the QUIC stack.
+- Needs careful privacy design.
+- Requires key/config rotation.
+- Complex cryptography is not a good fit for eBPF, so the profile should be BPF-friendly.
+
+## Short Header Constraint
+
+QUIC short headers do not carry a DCID length field. A generic parser cannot know the short-header DCID length unless the listener configuration provides it or the CID is self-describing.
+
+Supported options:
+
+- Fixed server CID length per listener.
+- Self-describing CID profile.
+- Registry mode with configured CID length.
+
+Zero-length server CIDs are incompatible with CID-based worker affinity and should be rejected or handled as fallback-only.
+
+## Fallback Policy
+
+Fallback is required for:
+
+- First client Initial packets.
+- Unroutable DCIDs.
+- Unknown or unsupported QUIC versions.
+- Packets with malformed headers.
+- Zero-length or too-short CIDs.
+- CIDs from old configurations no longer present in the map.
+
+Initial fallback can use a 4-tuple hash. The fallback decision should be observable. For deployments that require stronger consistency during handshakes, the control plane may maintain temporary fallback tables keyed by 4-tuple or by 4-tuple plus client SCID.
+
+## Failure Semantics
+
+The project should prefer drop-or-fallback behavior over sending incorrect stateless resets.
+
+Important cases:
+
+- If the owning worker is gone, route to fallback only if the deployment explicitly permits it.
+- If CID map lookup fails for a packet that should be routable, increment a counter.
+- If a worker is draining, existing CIDs should continue routing to it until retired or timed out.
+- During graceful reload, old and new workers may coexist in the socket group.
+
+## Observability
+
+Minimum counters:
+
+- packets_total
+- cid_map_hit_total
+- routable_cid_hit_total
+- fallback_total
+- parse_error_total
+- unknown_version_total
+- zero_length_cid_total
+- invalid_cid_total
+- worker_selected_total by worker
+- worker_missing_total
+
+The CLI should be able to show:
+
+- registered workers
+- socket indexes
+- active CID count
+- map capacity
+- listener config
+- recent route error counters
+
+## Repository Plan
+
+```text
+quic-affinity/
+  bpf/
+  qaffd/
+  libqaffinity/
+  bindings/
+    rust/
+    go/
+    cpp/
+  examples/
+    quiche/
+    quic-go/
+  tests/
+    migration/
+  tools/
+    qaffctl/
+  docs/
+```
+
+## MVP
+
+The MVP should avoid over-design and prove the core routing claim.
+
+Scope:
+
+1. Fixed-length DCID parser for QUIC v1.
+2. `SO_REUSEPORT_EBPF` program.
+3. BPF CID-to-worker map.
+4. Worker socket registration.
+5. CID registration and retirement through a C ABI.
+6. One real QUIC-stack example.
+7. NAT rebinding test where source port changes and the packet still reaches the same worker.
+8. Basic counters exposed by `qaffctl`.
+
+Out of scope for MVP:
+
+- Full QUIC-LB encrypted CID support.
+- Kubernetes packaging.
+- Multi-host load balancing.
+- Advanced SNI-based fallback.
+- Multiple CID profile formats.
+
+## Open Questions
+
+- Which QUIC stack should be the first integration target?
+- Should the first routable CID profile be plaintext worker ID plus keyed tag, or should MVP stay registry-only?
+- Should the control plane be a daemon from day one, or should the first version be a library plus CLI?
+- What is the minimum supported kernel version?
+- How should socket index stability be handled during worker removal from the reuseport group?
+
+## References
+
+- Linux `SO_REUSEPORT` and `SO_ATTACH_REUSEPORT_EBPF`: https://man7.org/linux/man-pages/man7/socket.7.html
+- QUIC Transport, RFC 9000: https://www.rfc-editor.org/rfc/rfc9000.html
+- NGINX HTTP/3 `quic_bpf`: https://nginx.org/en/docs/http/ngx_http_v3_module.html
+- QUIC-LB draft: https://www.ietf.org/archive/id/draft-ietf-quic-load-balancers-21.html
+
