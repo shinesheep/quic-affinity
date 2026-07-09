@@ -29,7 +29,7 @@ The repository currently includes a minimal `qaffd` with these operations:
 - `CIDS`
 - `STOP`
 
-Worker registration uses Unix-domain `SCM_RIGHTS` fd passing. `qaffd` attaches the BPF program to the reuseport group when the first worker socket is registered. `REGISTER_WORKER_LEASE` keeps the worker's control connection open as a liveness lease; if that connection is closed by worker crash or exit, `qaffd` automatically unregisters the worker. `WORKER_HEARTBEAT` refreshes the lease on that same control connection, and `--worker-heartbeat-timeout-ms` can remove stuck leased workers that stop heartbeating. `qaffd` records Unix peer credentials for worker registration and can restrict registration with `--allow-worker-uid` and `--allow-worker-gid`. Worker unregistration retires CIDs owned by that worker, removes the worker ID from the reuseport sockarray, and closes qaffd's duplicated socket fd.
+Worker registration uses Unix-domain `SCM_RIGHTS` fd passing. `qaffd` attaches the BPF program to the reuseport group when the first worker socket is registered. `REGISTER_WORKER_LEASE` keeps the worker's control connection open as a liveness lease; if that connection is closed by worker crash or exit, `qaffd` automatically unregisters the worker. For leased workers, `qaffd` also opens a pidfd when supported and unregisters the worker if the registering process exits. `WORKER_HEARTBEAT` refreshes the lease on that same control connection, and `--worker-heartbeat-timeout-ms` can remove stuck leased workers that stop heartbeating. `qaffd` records Unix peer credentials for worker registration and can restrict registration with `--allow-worker-uid` and `--allow-worker-gid`. Worker unregistration retires CIDs owned by that worker, removes the worker ID from the reuseport sockarray, and closes qaffd's duplicated socket fd.
 
 The listener config includes `short_cid_len` and `fallback_worker_id`. Fallback is used for unregistered CIDs, parse failures, and the first client Initial before the server has issued a routable CID.
 
@@ -181,7 +181,7 @@ qaffctl listeners
 qaffctl cids LISTENER_ID --limit 20
 ```
 
-`qaffctl health`, `qaffctl config`, and `qaffctl cids --count` expose `cid_map_count`, `cid_owner_count`, and `cid_index_mismatch`. `qaffctl workers` reports worker IDs, lease state, peer pid/uid/gid when available, registration age, and last-seen age. CID bytes are not printed by default. `qaffctl` currently talks to `qaffd` over the daemon Unix socket. Direct pinned-map inspection remains future work.
+`qaffctl health`, `qaffctl config`, and `qaffctl cids --count` expose `cid_map_count`, `cid_owner_count`, and `cid_index_mismatch`. `qaffctl workers` reports worker IDs, lease state, pidfd availability, peer pid/uid/gid when available, registration age, and last-seen age. CID bytes are not printed by default. `qaffctl` currently talks to `qaffd` over the daemon Unix socket. Direct pinned-map inspection remains future work.
 
 ## Open Decisions
 
