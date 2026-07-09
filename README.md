@@ -69,6 +69,67 @@ This mode is better for very high connection counts, but requires the server to 
 5. NAT rebinding test: same QUIC connection, changed source port, same worker.
 6. Basic counters for CID hits, fallback, parse errors, and selected workers.
 
+## Build
+
+Requirements:
+
+- Linux
+- C compiler
+- CMake
+- clang with BPF target support
+- libbpf development headers
+
+Build and test:
+
+```sh
+cmake -B build -S .
+cmake --build build
+ctest --test-dir build --output-on-failure
+```
+
+The build currently produces:
+
+- `build/libqaffinity.a`
+- `build/qaffctl`
+- `build/qaff_reuseport.bpf.o`
+- `build/test_quic_parser`
+
+Example parser check:
+
+```sh
+build/qaffctl parse c30000000108deadbeefaabbccdd0411223344
+```
+
+Expected output:
+
+```text
+parse=ok
+header=long
+version=0x00000001
+dcid_len=8
+dcid=deadbeefaabbccdd
+```
+
+## Current Implementation Status
+
+Implemented:
+
+- Public C headers for parser, registry, worker socket, and BPF loader APIs.
+- QUIC DCID parser for long headers and configured-length short headers.
+- CID key format shared between user space and BPF.
+- libbpf-backed map creation and CID registration helpers.
+- libbpf object loader that can reuse `qaffinity` maps and attach the reuseport program to a socket.
+- `sk_reuseport` eBPF source that routes long-header packets by registered DCID and falls back otherwise.
+- Parser unit test and CLI parser command.
+
+Not implemented yet:
+
+- Multi-worker socket smoke test.
+- Real QUIC stack integration.
+- Short-header routing in BPF; the listener short CID length still needs to be wired into BPF config.
+- Graceful reload, worker lifecycle cleanup, and map pinning.
+- Routable CID profile.
+
 ## Documentation
 
 The design bootstrap document is in [docs/bootstrap.md](docs/bootstrap.md).
@@ -76,4 +137,3 @@ The design bootstrap document is in [docs/bootstrap.md](docs/bootstrap.md).
 ## Status
 
 Pre-implementation bootstrap. APIs, CID profiles, and repository layout are expected to evolve.
-
