@@ -1,4 +1,5 @@
 #include "quic_affinity/quic_affinity.h"
+#include "quic_affinity/cid_profile.h"
 
 #include <arpa/inet.h>
 #include <errno.h>
@@ -29,6 +30,14 @@ static const uint8_t k_dcid[] = {
 static const uint8_t k_unknown_dcid[] = {
   0xba, 0xad, 0xf0, 0x0d, 0x12, 0x34, 0x56, 0x78,
 };
+
+static struct qaff_cid_profile_key profile_key(void) {
+  struct qaff_cid_profile_key key;
+  for (uint8_t i = 0; i < QAFF_CID_PROFILE_KEY_LEN; i++) {
+    key.bytes[i] = (uint8_t)(0x70u + i);
+  }
+  return key;
+}
 
 static int set_nonblocking(int fd) {
   int flags = fcntl(fd, F_GETFL, 0);
@@ -320,14 +329,16 @@ static int expect_case_stats(struct qaff_context *ctx,
   enum qaff_stat_index family_stat =
       test->family == AF_INET ? QAFF_STAT_IPV4 : QAFF_STAT_IPV6;
 
-  if (expect_stat(ctx, QAFF_STAT_PACKETS, 3) != 0 ||
+  if (expect_stat(ctx, QAFF_STAT_PACKETS, 5) != 0 ||
       expect_stat(ctx, QAFF_STAT_CID_MAP_HIT, 2) != 0 ||
-      expect_stat(ctx, QAFF_STAT_FALLBACK, 1) != 0 ||
+      expect_stat(ctx, QAFF_STAT_FALLBACK, 2) != 0 ||
       expect_stat(ctx, QAFF_STAT_PARSE_ERROR, 0) != 0 ||
       expect_stat(ctx, QAFF_STAT_ZERO_LENGTH_CID, 0) != 0 ||
       expect_stat(ctx, QAFF_STAT_WORKER_MISSING, 0) != 0 ||
-      expect_stat(ctx, family_stat, 3) != 0 ||
-      expect_stat(ctx, QAFF_STAT_NOT_UDP, 0) != 0) {
+      expect_stat(ctx, family_stat, 5) != 0 ||
+      expect_stat(ctx, QAFF_STAT_NOT_UDP, 0) != 0 ||
+      expect_stat(ctx, QAFF_STAT_CID_PROFILE_HIT, 1) != 0 ||
+      expect_stat(ctx, QAFF_STAT_CID_PROFILE_REJECT, 1) != 0) {
     fprintf(stderr, "%s: unexpected dataplane stats\n", test->name);
     return -1;
   }
@@ -344,6 +355,9 @@ static int run_case(const char *object_path, const struct test_case *test) {
   };
   struct qaff_context *ctx = NULL;
   struct qaff_bpf_object *object = NULL;
+  struct qaff_cid_profile_key key = profile_key();
+  uint8_t profile_cid[QAFF_CID_PROFILE_V1_LEN];
+  uint8_t tampered_profile_cid[QAFF_CID_PROFILE_V1_LEN];
 
   for (size_t i = 0; i < WORKER_COUNT; i++) {
     workers[i] = make_worker_socket(test->family, &port);
@@ -369,6 +383,21 @@ static int run_case(const char *object_path, const struct test_case *test) {
   qaff_options_init(&options);
   options.short_cid_len = sizeof(k_dcid);
   options.fallback_worker_id = test->fallback_worker;
+  options.cid_profile_v1_enabled = 1;
+  memcpy(options.cid_profile_v1_key,
+         key.bytes,
+         sizeof(options.cid_profile_v1_key));
+
+  if (qaff_cid_profile_v1_generate(&key,
+                                   TARGET_WORKER,
+                                   0x010203,
+                                   profile_cid,
+                                   sizeof(profile_cid)) != 0) {
+    perror("qaff_cid_profile_v1_generate");
+    return 1;
+  }
+  memcpy(tampered_profile_cid, profile_cid, sizeof(tampered_profile_cid));
+  tampered_profile_cid[7] ^= 0x01;
 
   if (qaff_open(&options, &ctx) != 0) {
     if (errno == EPERM || errno == EACCES) {
@@ -444,6 +473,46 @@ static int run_case(const char *object_path, const struct test_case *test) {
       print_stats(ctx);
       return 1;
     }
+  }
+
+  if (send_quic_like_packet(senders[0].fd,
+                            test->family,
+                            port,
+                            1,
+                            profile_cid) != 0) {
+    perror("send profile packet");
+    return 1;
+  }
+
+  int profile_worker = receive_worker(workers, WORKER_COUNT, 1000);
+  if (profile_worker != TARGET_WORKER) {
+    fprintf(stderr,
+            "%s: expected profile worker %d, got %d\n",
+            test->name,
+            TARGET_WORKER,
+            profile_worker);
+    print_stats(ctx);
+    return 1;
+  }
+
+  if (send_quic_like_packet(senders[1].fd,
+                            test->family,
+                            port,
+                            1,
+                            tampered_profile_cid) != 0) {
+    perror("send tampered profile packet");
+    return 1;
+  }
+
+  int tampered_fallback_worker = receive_worker(workers, WORKER_COUNT, 1000);
+  if (tampered_fallback_worker != (int)test->fallback_worker) {
+    fprintf(stderr,
+            "%s: expected tampered profile fallback worker %d, got %d\n",
+            test->name,
+            (int)test->fallback_worker,
+            tampered_fallback_worker);
+    print_stats(ctx);
+    return 1;
   }
 
   if (send_quic_like_packet(senders[0].fd,

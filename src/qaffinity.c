@@ -27,6 +27,8 @@ struct qaff_context {
   int owns_config_map;
   const char *pin_root;
   uint8_t short_cid_len;
+  uint8_t cid_profile_v1_enabled;
+  uint8_t cid_profile_v1_key[QAFF_CID_PROFILE_KEY_LEN];
   uint32_t fallback_worker_id;
 };
 
@@ -40,6 +42,8 @@ void qaff_options_init(struct qaff_options *options) {
   options->stats_map_fd = -1;
   options->config_map_fd = -1;
   options->pin_root = NULL;
+  options->cid_profile_v1_enabled = 0;
+  memset(options->cid_profile_v1_key, 0, sizeof(options->cid_profile_v1_key));
   options->fallback_worker_id = 0;
 }
 
@@ -180,6 +184,10 @@ static int qaff_write_config(struct qaff_context *ctx) {
   struct qaff_config_value value;
   memset(&value, 0, sizeof(value));
   value.short_cid_len = ctx->short_cid_len;
+  value.cid_profile_v1_enabled = ctx->cid_profile_v1_enabled;
+  memcpy(value.cid_profile_v1_key,
+         ctx->cid_profile_v1_key,
+         sizeof(value.cid_profile_v1_key));
   value.fallback_worker_id = ctx->fallback_worker_id;
 
   uint32_t key = 0;
@@ -209,6 +217,10 @@ int qaff_open(const struct qaff_options *options, struct qaff_context **out) {
   ctx->config_map_fd = options->config_map_fd;
   ctx->pin_root = options->pin_root;
   ctx->short_cid_len = options->short_cid_len;
+  ctx->cid_profile_v1_enabled = options->cid_profile_v1_enabled;
+  memcpy(ctx->cid_profile_v1_key,
+         options->cid_profile_v1_key,
+         sizeof(ctx->cid_profile_v1_key));
   ctx->fallback_worker_id = options->fallback_worker_id;
 
   if (ctx->cid_map_fd < 0) {
@@ -441,6 +453,10 @@ const char *qaff_stat_name(uint32_t index) {
     return "ipv6";
   case QAFF_STAT_NOT_UDP:
     return "not_udp";
+  case QAFF_STAT_CID_PROFILE_HIT:
+    return "cid_profile_hit";
+  case QAFF_STAT_CID_PROFILE_REJECT:
+    return "cid_profile_reject";
   default:
     return "unknown";
   }

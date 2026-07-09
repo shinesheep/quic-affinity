@@ -25,7 +25,9 @@ if command -v sudo >/dev/null 2>&1 && command -v setcap >/dev/null 2>&1; then
   sudo -n setcap "$caps" "$qaffd_bin" 2>/dev/null || true
 fi
 
-"$qaffd_bin" --socket "$sock" --bpf "$bpf_obj" --short-cid-len 8 --fallback-worker 1 &
+"$qaffd_bin" --socket "$sock" --bpf "$bpf_obj" --short-cid-len 8 \
+  --fallback-worker 1 \
+  --cid-profile-v1-key 707172737475767778797a7b7c7d7e7f &
 daemon_pid=$!
 
 ready=0
@@ -58,6 +60,7 @@ grep -q '^cid_index_mismatch=0$' /tmp/qaffctl-control-$$.health
 
 "$qaffctl_bin" config "$sock" >/tmp/qaffctl-control-$$.config
 grep -q '^short_cid_len=8$' /tmp/qaffctl-control-$$.config
+grep -q '^cid_profile_v1_enabled=1$' /tmp/qaffctl-control-$$.config
 grep -q '^attached=0$' /tmp/qaffctl-control-$$.config
 grep -q '^worker_count=0$' /tmp/qaffctl-control-$$.config
 grep -q '^fallback_worker_id=1$' /tmp/qaffctl-control-$$.config
@@ -77,6 +80,8 @@ grep -q '^workers_len=0$' /tmp/qaffctl-control-$$.workers
 
 grep -q '^packets=0$' /tmp/qaffctl-control-$$.out
 grep -q '^cid_map_hit=0$' /tmp/qaffctl-control-$$.out
+grep -q '^cid_profile_hit=0$' /tmp/qaffctl-control-$$.out
+grep -q '^cid_profile_reject=0$' /tmp/qaffctl-control-$$.out
 grep -q '^fallback=0$' /tmp/qaffctl-control-$$.out
 
 "$qaffctl_bin" stop "$sock"

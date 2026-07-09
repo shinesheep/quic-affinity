@@ -31,9 +31,9 @@ The repository currently includes a minimal `qaffd` with these operations:
 
 Worker registration uses Unix-domain `SCM_RIGHTS` fd passing. `qaffd` attaches the BPF program to the reuseport group when the first worker socket is registered. `REGISTER_WORKER_LEASE` keeps the worker's control connection open as a liveness lease; if that connection is closed by worker crash or exit, `qaffd` automatically unregisters the worker. For leased workers, `qaffd` also opens a pidfd when supported and unregisters the worker if the registering process exits. `WORKER_HEARTBEAT` refreshes the lease on that same control connection, and `--worker-heartbeat-timeout-ms` can remove stuck leased workers that stop heartbeating. `qaffd` records Unix peer credentials for worker registration and can restrict registration with `--allow-worker-uid` and `--allow-worker-gid`. Worker unregistration retires CIDs owned by that worker, removes the worker ID from the reuseport sockarray, and closes qaffd's duplicated socket fd.
 
-The listener config includes `short_cid_len` and `fallback_worker_id`. Fallback is used for unregistered CIDs, parse failures, and the first client Initial before the server has issued a routable CID.
+The listener config includes `short_cid_len`, `fallback_worker_id`, and optional routable CID profile v1 settings. Fallback is used for unregistered opaque CIDs, invalid profile CIDs, parse failures, and the first client Initial before the server has issued a routable CID.
 
-In daemon-controlled mode, `REGISTER_CID` is accepted only for currently registered worker IDs. `qaffd` keeps a CID owner index so `UNREGISTER_WORKER` can bulk-retire CIDs owned by the removed worker. The QUIC stack should still drain and retire CIDs first when possible, so delayed packets are less likely to fall back.
+In daemon-controlled mode, `REGISTER_CID` is accepted only for currently registered worker IDs. `qaffd` keeps a CID owner index so `UNREGISTER_WORKER` can bulk-retire CIDs owned by the removed worker. The QUIC stack should still drain and retire CIDs first when possible, so delayed packets are less likely to fall back. Profile-routed CIDs do not consume CID map entries, so worker ID reuse must still wait until old profile CIDs have drained.
 
 The current MVP supports one listener per `qaffd` process. Multi-listener management remains future work.
 

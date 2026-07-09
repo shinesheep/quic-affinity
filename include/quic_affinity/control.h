@@ -38,7 +38,8 @@ enum qaff_control_op {
 struct qaff_control_config {
   uint8_t short_cid_len;
   uint8_t attached;
-  uint16_t reserved;
+  uint8_t cid_profile_v1_enabled;
+  uint8_t reserved;
   uint32_t worker_count;
   uint32_t fallback_worker_id;
   uint64_t cid_map_count;

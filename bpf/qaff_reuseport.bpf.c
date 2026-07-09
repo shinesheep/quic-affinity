@@ -122,6 +122,53 @@ static __always_inline int qaff_extract_dcid(struct sk_reuseport_md *ctx,
                         config->short_cid_len);
 }
 
+static __always_inline __u16 qaff_profile_v1_tag(
+    const struct qaff_config_value *config,
+    const struct qaff_cid_key *key) {
+  __u32 h = 2166136261u;
+
+#pragma unroll
+  for (__u32 i = 0; i < QAFF_CID_PROFILE_KEY_LEN; i++) {
+    h ^= config->cid_profile_v1_key[i];
+    h *= 16777619u;
+  }
+
+#pragma unroll
+  for (__u32 i = 0; i < 6; i++) {
+    h ^= key->bytes[i];
+    h *= 16777619u;
+  }
+
+  h ^= h >> 16;
+  return (__u16)h;
+}
+
+static __always_inline int qaff_profile_v1_worker(
+    const struct qaff_config_value *config,
+    const struct qaff_cid_key *key,
+    __u32 *worker_id) {
+  if (!config || !config->cid_profile_v1_enabled) {
+    return 0;
+  }
+  if (key->len != QAFF_CID_PROFILE_V1_LEN) {
+    return 0;
+  }
+
+  __u8 version = key->bytes[0] >> 4;
+  if (version != QAFF_CID_PROFILE_V1_VERSION) {
+    return 0;
+  }
+
+  __u16 expected = qaff_profile_v1_tag(config, key);
+  __u16 got = ((__u16)key->bytes[6] << 8) | (__u16)key->bytes[7];
+  if (got != expected) {
+    return -1;
+  }
+
+  *worker_id = ((__u32)key->bytes[1] << 8) | (__u32)key->bytes[2];
+  return 1;
+}
+
 SEC("sk_reuseport")
 int qaff_select(struct sk_reuseport_md *ctx) {
   struct qaff_cid_key key;
@@ -148,6 +195,21 @@ int qaff_select(struct sk_reuseport_md *ctx) {
         return SK_PASS;
       }
       qaff_count(QAFF_STAT_WORKER_MISSING);
+    } else {
+      __u32 profile_worker = 0;
+      int profile_rc = qaff_profile_v1_worker(config, &key, &profile_worker);
+      if (profile_rc > 0) {
+        qaff_count(QAFF_STAT_CID_PROFILE_HIT);
+        if (bpf_sk_select_reuseport(ctx,
+                                    &qaff_workers,
+                                    &profile_worker,
+                                    0) == 0) {
+          return SK_PASS;
+        }
+        qaff_count(QAFF_STAT_WORKER_MISSING);
+      } else if (profile_rc < 0) {
+        qaff_count(QAFF_STAT_CID_PROFILE_REJECT);
+      }
     }
   }
 

@@ -3,9 +3,9 @@
 This document defines the first QUIC-stack-neutral server CID profile for
 `quic-affinity`.
 
-The profile is optional. Existing CID map registration remains valid. The
-profile helps servers generate CIDs that can be decoded by the application or
-control plane into a target worker ID before registration.
+The profile is optional. Existing CID map registration remains valid and takes
+priority. When profile v1 is enabled for a listener, the BPF dataplane can
+validate a profile CID and select the embedded worker ID after a CID map miss.
 
 ## Goals
 
@@ -63,8 +63,30 @@ struct qaff_cid_profile_v1_fields fields;
 qaff_cid_profile_v1_parse(&key, cid, cid_len, &fields);
 ```
 
-After generating a CID, the server still registers it through the normal control
-API:
+There are two valid integration choices.
+
+In low-state mode, enable the listener profile key and issue profile CIDs
+without per-CID registration:
+
+```c
+struct qaff_options options;
+qaff_options_init(&options);
+options.short_cid_len = QAFF_CID_PROFILE_V1_LEN;
+options.cid_profile_v1_enabled = 1;
+memcpy(options.cid_profile_v1_key, key.bytes, sizeof(options.cid_profile_v1_key));
+```
+
+With `qaffd`, pass the same 16-byte listener key as 32 hex digits:
+
+```sh
+qaffd --socket /tmp/qaffd.sock \
+      --bpf /usr/libexec/quic-affinity/qaff_reuseport.bpf.o \
+      --short-cid-len 8 \
+      --cid-profile-v1-key 707172737475767778797a7b7c7d7e7f
+```
+
+In compatibility mode, the server may still register generated CIDs through the
+normal control API. Explicit CID-map entries have priority over profile routing:
 
 ```c
 qaff_control_register_cid(control_fd, fields.worker_id, cid, cid_len);
@@ -73,7 +95,9 @@ qaff_control_register_cid(control_fd, fields.worker_id, cid, cid_len);
 ## Operational Notes
 
 - Use a separate key per listener or deployment domain.
-- Rotate keys by accepting old and new profile keys during a drain window.
+- The current BPF config accepts one v1 key at a time. Key rotation needs a
+  drain window using CID registration, a second listener instance, or a future
+  multi-key config extension.
 - Keep `qaffd --short-cid-len` equal to `QAFF_CID_PROFILE_V1_LEN` when using
   v1 CIDs for 1-RTT short headers.
 - Do not reuse a worker ID while live CIDs still point to the old worker.

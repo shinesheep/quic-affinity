@@ -202,6 +202,7 @@ static int cmd_health(int argc, char **argv) {
 
 static void print_config(const struct qaff_control_config *config) {
   printf("short_cid_len=%u\n", config->short_cid_len);
+  printf("cid_profile_v1_enabled=%u\n", config->cid_profile_v1_enabled);
   printf("attached=%u\n", config->attached);
   printf("worker_count=%u\n", config->worker_count);
   printf("fallback_worker_id=%u\n", config->fallback_worker_id);

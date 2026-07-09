@@ -4,13 +4,11 @@
 #include <stddef.h>
 #include <stdint.h>
 
+#include "quic_affinity/wire.h"
+
 #ifdef __cplusplus
 extern "C" {
 #endif
-
-#define QAFF_CID_PROFILE_V1_LEN 8u
-#define QAFF_CID_PROFILE_KEY_LEN 16u
-#define QAFF_CID_PROFILE_V1_VERSION 1u
 
 struct qaff_cid_profile_key {
   uint8_t bytes[QAFF_CID_PROFILE_KEY_LEN];

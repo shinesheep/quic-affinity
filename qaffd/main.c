@@ -52,6 +52,8 @@ struct qaffd_options {
   const char *pin_root;
   const char *state_path;
   uint8_t short_cid_len;
+  uint8_t cid_profile_v1_enabled;
+  uint8_t cid_profile_v1_key[QAFF_CID_PROFILE_KEY_LEN];
   uint32_t fallback_worker_id;
   uint64_t worker_heartbeat_timeout_ms;
   int allow_worker_uid_set;
@@ -83,6 +85,8 @@ struct qaffd_state {
   const char *pin_root;
   const char *state_path;
   uint8_t short_cid_len;
+  uint8_t cid_profile_v1_enabled;
+  uint8_t cid_profile_v1_key[QAFF_CID_PROFILE_KEY_LEN];
   uint32_t fallback_worker_id;
   uint64_t worker_heartbeat_timeout_ms;
   int allow_worker_uid_set;
@@ -340,6 +344,7 @@ static int read_cid_consistency(const struct qaffd_state *state,
 static void fill_config_reply(const struct qaffd_state *state,
                               struct qaff_control_msg *reply) {
   reply->config.short_cid_len = state->short_cid_len;
+  reply->config.cid_profile_v1_enabled = state->cid_profile_v1_enabled;
   reply->config.attached = state->attached ? 1 : 0;
   reply->config.worker_count = worker_count(state);
   reply->config.fallback_worker_id = state->fallback_worker_id;
@@ -399,8 +404,54 @@ static void usage(FILE *out) {
   fprintf(out,
           "Usage: qaffd --socket PATH --bpf PATH --short-cid-len N "
           "[--fallback-worker ID] [--pin-root PATH] [--state-path PATH] "
+          "[--cid-profile-v1-key HEX32] "
           "[--worker-heartbeat-timeout-ms N] [--allow-worker-uid UID] "
           "[--allow-worker-gid GID]\n");
+}
+
+static int profile_key_hex_value(int c) {
+  if (c >= '0' && c <= '9') {
+    return c - '0';
+  }
+  if (c >= 'a' && c <= 'f') {
+    return c - 'a' + 10;
+  }
+  if (c >= 'A' && c <= 'F') {
+    return c - 'A' + 10;
+  }
+  return -1;
+}
+
+static int parse_fixed_hex(const char *hex, uint8_t *out, size_t out_len) {
+  size_t digits = 0;
+  for (const char *p = hex; *p; p++) {
+    if (*p == ':' || *p == '-') {
+      continue;
+    }
+    if (profile_key_hex_value((unsigned char)*p) < 0) {
+      return -1;
+    }
+    digits++;
+  }
+  if (digits != out_len * 2) {
+    return -1;
+  }
+
+  size_t index = 0;
+  int high = -1;
+  for (const char *p = hex; *p; p++) {
+    if (*p == ':' || *p == '-') {
+      continue;
+    }
+    int v = profile_key_hex_value((unsigned char)*p);
+    if (high < 0) {
+      high = v;
+    } else {
+      out[index++] = (uint8_t)((high << 4) | v);
+      high = -1;
+    }
+  }
+  return index == out_len ? 0 : -1;
 }
 
 static int parse_args(int argc, char **argv, struct qaffd_options *options) {
@@ -429,6 +480,13 @@ static int parse_args(int argc, char **argv, struct qaffd_options *options) {
         return -1;
       }
       options->fallback_worker_id = (uint32_t)value;
+    } else if (strcmp(argv[i], "--cid-profile-v1-key") == 0 && i + 1 < argc) {
+      if (parse_fixed_hex(argv[++i],
+                          options->cid_profile_v1_key,
+                          sizeof(options->cid_profile_v1_key)) != 0) {
+        return -1;
+      }
+      options->cid_profile_v1_enabled = 1;
     } else if (strcmp(argv[i], "--worker-heartbeat-timeout-ms") == 0 &&
                i + 1 < argc) {
       char *end = NULL;
@@ -1383,6 +1441,10 @@ int main(int argc, char **argv) {
   state.pin_root = daemon_options.pin_root;
   state.state_path = daemon_options.state_path;
   state.short_cid_len = daemon_options.short_cid_len;
+  state.cid_profile_v1_enabled = daemon_options.cid_profile_v1_enabled;
+  memcpy(state.cid_profile_v1_key,
+         daemon_options.cid_profile_v1_key,
+         sizeof(state.cid_profile_v1_key));
   state.fallback_worker_id = daemon_options.fallback_worker_id;
   state.worker_heartbeat_timeout_ms =
       daemon_options.worker_heartbeat_timeout_ms;
@@ -1400,6 +1462,10 @@ int main(int argc, char **argv) {
   qaff_options_init(&options);
   options.pin_root = daemon_options.pin_root;
   options.short_cid_len = daemon_options.short_cid_len;
+  options.cid_profile_v1_enabled = daemon_options.cid_profile_v1_enabled;
+  memcpy(options.cid_profile_v1_key,
+         daemon_options.cid_profile_v1_key,
+         sizeof(options.cid_profile_v1_key));
   options.fallback_worker_id = daemon_options.fallback_worker_id;
 
   if (qaff_open(&options, &state.ctx) != 0) {

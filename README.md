@@ -134,9 +134,9 @@ Implemented:
 - CID key format shared between user space and BPF.
 - libbpf-backed map creation and CID registration helpers.
 - libbpf object loader that can reuse `qaffinity` maps and attach the reuseport program to a socket.
-- `sk_reuseport` eBPF source that routes long-header and configured-length short-header packets by registered DCID.
+- `sk_reuseport` eBPF source that routes long-header and configured-length short-header packets by registered DCID or routable CID profile.
 - Stats read API for dataplane counters.
-- Routable CID profile v1 helper for 8-byte server CIDs with worker ID, nonce, and keyed tag.
+- Routable CID profile v1 helper and BPF dataplane routing for 8-byte server CIDs with worker ID, nonce, and keyed tag.
 - `qaffd` control plane with Unix socket fd passing for worker registration, CID lifecycle, worker unregister, map pinning, restart recovery, and observability.
 - Parser unit test, privileged reuseport smoke test, qaffd/qaffctl control tests, restart smoke, quiche probes, and packaging smoke.
 - CMake install rules for `qaffd`, `qaffctl`, public headers, `libqaffinity.a`, and the eBPF object.
@@ -149,7 +149,7 @@ Not implemented yet:
 
 ## Privileged Smoke Test
 
-`reuseport_smoke` creates a multi-worker UDP `SO_REUSEPORT` group, loads the eBPF object, attaches it to the group, registers a CID to one worker, and sends both long-header and short-header QUIC-like packets from explicitly different source ports. It runs the scenario for both IPv4 and IPv6. The expected result is that all packets arrive at the registered worker.
+`reuseport_smoke` creates a multi-worker UDP `SO_REUSEPORT` group, loads the eBPF object, attaches it to the group, registers a CID to one worker, and sends both long-header and short-header QUIC-like packets from explicitly different source ports. It also verifies routable profile CIDs that are not present in the CID map. It runs the scenario for both IPv4 and IPv6. The expected result is that registered and valid profile packets arrive at the owning worker, while unknown or tampered CIDs use fallback routing.
 
 This test needs the kernel capabilities required to create BPF maps and load/attach BPF programs. On systems with `kernel.unprivileged_bpf_disabled=2`, it will be skipped unless run with suitable privileges.
 
@@ -190,6 +190,17 @@ build/qaffd --socket /tmp/qaffd.sock --bpf build/qaff_reuseport.bpf.o --short-ci
 ```
 
 `--fallback-worker` selects the worker socket used when the incoming packet cannot be parsed or its DCID is not registered yet. This is the expected path for the first client Initial, because that DCID is client-generated.
+
+To enable routable CID profile v1 in the BPF dataplane, pass a 16-byte listener key as 32 hex digits:
+
+```sh
+build/qaffd --socket /tmp/qaffd.sock \
+  --bpf build/qaff_reuseport.bpf.o \
+  --short-cid-len 8 \
+  --cid-profile-v1-key 707172737475767778797a7b7c7d7e7f
+```
+
+The CID map still has priority. On a map miss, BPF validates a v1 profile CID with the configured key and selects the embedded worker ID if the tag is valid.
 
 New worker integrations should use the leased worker registration API and keep the control fd open for the worker lifetime. If that fd closes unexpectedly, `qaffd` automatically unregisters the worker, closes its duplicated UDP socket fd, and retires the worker's CIDs. For leased workers, `qaffd` also opens a pidfd when the kernel supports it and unregisters the worker if the registering process exits. `--worker-heartbeat-timeout-ms` enables stuck-worker cleanup for leased workers; the default `0` disables heartbeat timeouts. `--allow-worker-uid` and `--allow-worker-gid` optionally restrict worker registration by Unix peer credentials.
 
@@ -240,6 +251,7 @@ systemctl enable --now qaffd@udp-ipv4-127.0.0.1-4433.service
 ```
 
 The unit expects `qaffd` at `/usr/sbin/qaffd`, `qaffctl` at `/usr/bin/qaffctl`, and the BPF object at `/usr/libexec/quic-affinity/qaff_reuseport.bpf.o`. The bpffs path used by `QAFF_PIN_ROOT` must be writable.
+Optional listener flags, such as `--cid-profile-v1-key ...`, can be supplied through `QAFF_EXTRA_ARGS` in the environment file.
 
 To verify a real systemd deployment on a host with writable bpffs:
 

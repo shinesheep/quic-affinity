@@ -21,6 +21,8 @@ struct qaff_options {
   int config_map_fd;
   const char *pin_root;
   uint8_t short_cid_len;
+  uint8_t cid_profile_v1_enabled;
+  uint8_t cid_profile_v1_key[QAFF_CID_PROFILE_KEY_LEN];
   uint32_t fallback_worker_id;
 };
 
