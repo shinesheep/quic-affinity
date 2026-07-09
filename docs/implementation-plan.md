@@ -20,7 +20,7 @@
 ## Phase 3: Real QUIC Stack Integration
 
 - Pick one first integration target.
-- Add an example that registers server-issued CIDs.
+- Add an example that registers server-issued CIDs. (Initial optional quiche FFI probe exists.)
 - Run a real QUIC connection migration/NAT rebinding test.
 - Define the control-plane split between embedded library mode and `qaffd`.
 

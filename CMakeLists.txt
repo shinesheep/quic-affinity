@@ -10,6 +10,7 @@ set(CMAKE_C_STANDARD_REQUIRED ON)
 set(CMAKE_C_EXTENSIONS OFF)
 
 option(QAFF_BUILD_BPF "Build eBPF dataplane object" ON)
+option(QAFF_BUILD_QUICHE_EXAMPLES "Build optional quiche integration examples" ON)
 
 find_package(PkgConfig REQUIRED)
 pkg_check_modules(LIBBPF REQUIRED libbpf)
@@ -55,6 +56,33 @@ add_executable(qaff_minimal_control
 
 target_link_libraries(qaff_minimal_control PRIVATE qaffinity)
 target_compile_options(qaff_minimal_control PRIVATE -Wall -Wextra -Wpedantic)
+
+set(QAFF_QUICHE_INCLUDE_DIR ${CMAKE_CURRENT_SOURCE_DIR}/third_party/quiche/quiche/include)
+set(QAFF_QUICHE_LIBRARY ${CMAKE_CURRENT_SOURCE_DIR}/third_party/quiche/target/debug/libquiche.so)
+
+if(QAFF_BUILD_QUICHE_EXAMPLES AND
+   EXISTS ${QAFF_QUICHE_INCLUDE_DIR}/quiche.h AND
+   EXISTS ${QAFF_QUICHE_LIBRARY})
+  add_executable(qaff_quiche_control_probe
+    examples/quiche_control_probe/main.c)
+
+  target_include_directories(qaff_quiche_control_probe PRIVATE
+    ${QAFF_QUICHE_INCLUDE_DIR})
+  target_link_libraries(qaff_quiche_control_probe PRIVATE
+    qaffinity
+    ${QAFF_QUICHE_LIBRARY})
+  set_target_properties(qaff_quiche_control_probe PROPERTIES
+    BUILD_RPATH "$ORIGIN;${CMAKE_CURRENT_SOURCE_DIR}/third_party/quiche/target/debug")
+  add_custom_command(TARGET qaff_quiche_control_probe POST_BUILD
+    COMMAND ${CMAKE_COMMAND} -E create_symlink
+      ${QAFF_QUICHE_LIBRARY}
+      $<TARGET_FILE_DIR:qaff_quiche_control_probe>/libquiche.so.0
+    VERBATIM)
+  target_compile_options(qaff_quiche_control_probe PRIVATE
+    -Wall -Wextra -Wpedantic)
+else()
+  message(STATUS "quiche integration example disabled; build quiche FFI under third_party/quiche to enable it")
+endif()
 
 enable_testing()
 
@@ -109,6 +137,17 @@ add_test(NAME minimal_control_example
     $<TARGET_FILE:qaff_minimal_control>
     ${CMAKE_CURRENT_BINARY_DIR}/qaff_reuseport.bpf.o)
 set_tests_properties(minimal_control_example PROPERTIES SKIP_RETURN_CODE 77)
+
+if(TARGET qaff_quiche_control_probe)
+  add_test(NAME quiche_control_probe
+    COMMAND /bin/sh
+      ${CMAKE_CURRENT_SOURCE_DIR}/tests/run_quiche_control_probe.sh
+      $<TARGET_FILE:qaffd>
+      $<TARGET_FILE:qaffctl>
+      $<TARGET_FILE:qaff_quiche_control_probe>
+      ${CMAKE_CURRENT_BINARY_DIR}/qaff_reuseport.bpf.o)
+  set_tests_properties(quiche_control_probe PROPERTIES SKIP_RETURN_CODE 77)
+endif()
 
 if(QAFF_BUILD_BPF)
   find_program(CLANG_EXECUTABLE clang)

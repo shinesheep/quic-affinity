@@ -88,6 +88,21 @@ qaffctl stop /tmp/qaffd.sock
 
 The repository includes `qaff_minimal_control` as a small worker-side example for this mode. It creates UDP reuseport sockets, passes them to `qaffd`, and registers a sample server CID.
 
+## quiche Integration Probe
+
+If quiche FFI is built under `third_party/quiche`, the optional `qaff_quiche_control_probe` target is enabled.
+
+The probe:
+
+1. Creates a real quiche server-side connection with `quiche_accept()`.
+2. Reads the connection source CID with `quiche_conn_source_id()`.
+3. Registers that source CID through `qaffd`.
+4. Calls `quiche_conn_new_scid()` to provision an additional server CID.
+5. Registers the additional CID through `qaffd`.
+6. Drains `quiche_conn_retired_scid_iter()` and calls `RETIRE_CID` for any retired source CIDs.
+
+This is not a complete QUIC server. It is the first integration checkpoint for CID lifecycle hooks.
+
 ## CID Registration
 
 When the QUIC stack creates or advertises a server-side CID, it must register that CID before packets using it are expected to arrive:

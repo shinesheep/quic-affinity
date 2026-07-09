@@ -181,6 +181,24 @@ The `qaffd_control` test starts `qaffd`, registers IPv4 and IPv6 reuseport worke
 
 - `qaff_minimal_registry`: embedded mode. The process creates maps, loads BPF, attaches the program, registers workers, and registers CIDs directly.
 - `qaff_minimal_control`: daemon-controlled mode. `qaffd` owns BPF setup; the worker-side example creates UDP workers and registers worker sockets/CIDs through the Unix socket control API.
+- `qaff_quiche_control_probe`: optional quiche FFI integration probe. It creates a real quiche server connection, registers quiche source CIDs through `qaffd`, and validates the CID lifecycle hook points.
+
+### Optional quiche Probe
+
+The quiche probe is built only when quiche FFI artifacts exist under `third_party/quiche`.
+
+```sh
+mkdir -p third_party
+git clone --depth 1 https://github.com/cloudflare/quiche.git third_party/quiche
+cargo build --manifest-path third_party/quiche/quiche/Cargo.toml \
+  --target-dir third_party/quiche/target \
+  --features ffi
+cmake -B build -S .
+cmake --build build
+ctest --test-dir build --output-on-failure -R quiche_control_probe
+```
+
+`third_party/` is ignored by Git. The probe is intentionally not a full HTTP/3 server yet; it verifies that server-issued CIDs from a real QUIC stack can be registered through the `qaffd` control plane.
 
 ## Documentation
 
