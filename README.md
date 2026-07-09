@@ -91,6 +91,7 @@ The build currently produces:
 
 - `build/libqaffinity.a`
 - `build/qaffctl`
+- `build/qaff_minimal_registry`
 - `build/qaff_reuseport.bpf.o`
 - `build/test_quic_parser`
 
@@ -147,8 +148,10 @@ ctest --test-dir build --output-on-failure -R reuseport_smoke
 
 ## Documentation
 
-The design bootstrap document is in [docs/bootstrap.md](docs/bootstrap.md).
+- Design bootstrap: [docs/bootstrap.md](docs/bootstrap.md)
+- Integration contract: [docs/integration-contract.md](docs/integration-contract.md)
+- Implementation plan: [docs/implementation-plan.md](docs/implementation-plan.md)
 
 ## Status
 
-Pre-implementation bootstrap. APIs, CID profiles, and repository layout are expected to evolve.
+MVP implementation in progress. APIs, CID profiles, and repository layout are expected to evolve.

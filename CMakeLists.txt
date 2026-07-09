@@ -37,6 +37,12 @@ add_executable(qaffctl
 target_link_libraries(qaffctl PRIVATE qaffinity)
 target_compile_options(qaffctl PRIVATE -Wall -Wextra -Wpedantic)
 
+add_executable(qaff_minimal_registry
+  examples/minimal_registry/main.c)
+
+target_link_libraries(qaff_minimal_registry PRIVATE qaffinity)
+target_compile_options(qaff_minimal_registry PRIVATE -Wall -Wextra -Wpedantic)
+
 enable_testing()
 
 add_executable(test_quic_parser
