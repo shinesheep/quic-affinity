@@ -23,9 +23,46 @@ struct qaffd_state {
   struct qaff_context *ctx;
   struct qaff_bpf_object *bpf;
   int worker_fds[QAFFD_MAX_WORKERS];
+  uint8_t short_cid_len;
   int attached;
   int stop;
 };
+
+static uint32_t worker_count(const struct qaffd_state *state) {
+  uint32_t count = 0;
+  for (size_t i = 0; i < QAFFD_MAX_WORKERS; i++) {
+    if (state->worker_fds[i] >= 0) {
+      count++;
+    }
+  }
+  return count;
+}
+
+static void fill_config_reply(const struct qaffd_state *state,
+                              struct qaff_control_msg *reply) {
+  reply->config.short_cid_len = state->short_cid_len;
+  reply->config.attached = state->attached ? 1 : 0;
+  reply->config.worker_count = worker_count(state);
+}
+
+static void fill_workers_reply(const struct qaffd_state *state,
+                               struct qaff_control_msg *reply) {
+  uint32_t total = 0;
+  uint32_t written = 0;
+
+  for (uint32_t i = 0; i < QAFFD_MAX_WORKERS; i++) {
+    if (state->worker_fds[i] < 0) {
+      continue;
+    }
+    if (written < QAFF_CONTROL_MAX_WORKERS) {
+      reply->workers[written++] = i;
+    }
+    total++;
+  }
+
+  reply->workers_len = written;
+  reply->config.worker_count = total;
+}
 
 static void usage(FILE *out) {
   fprintf(out,
@@ -233,6 +270,16 @@ static int handle_request(struct qaffd_state *state, int client_fd) {
         reply.status = errno ? errno : EIO;
       }
       break;
+    case QAFF_CONTROL_HEALTH:
+      fill_config_reply(state, &reply);
+      break;
+    case QAFF_CONTROL_CONFIG:
+      fill_config_reply(state, &reply);
+      break;
+    case QAFF_CONTROL_WORKERS:
+      fill_config_reply(state, &reply);
+      fill_workers_reply(state, &reply);
+      break;
     case QAFF_CONTROL_STOP:
       state->stop = 1;
       break;
@@ -308,6 +355,7 @@ int main(int argc, char **argv) {
 
   struct qaffd_state state;
   memset(&state, 0, sizeof(state));
+  state.short_cid_len = daemon_options.short_cid_len;
   for (size_t i = 0; i < QAFFD_MAX_WORKERS; i++) {
     state.worker_fds[i] = -1;
   }

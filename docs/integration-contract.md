@@ -82,6 +82,9 @@ The current MVP supports one listener per `qaffd` process.
 Stats and shutdown are available through `qaffctl`:
 
 ```sh
+qaffctl health /tmp/qaffd.sock
+qaffctl config /tmp/qaffd.sock
+qaffctl workers /tmp/qaffd.sock
 qaffctl stats /tmp/qaffd.sock
 qaffctl stop /tmp/qaffd.sock
 ```

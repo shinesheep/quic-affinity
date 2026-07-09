@@ -183,6 +183,57 @@ int qaff_control_read_stats(int control_fd, struct qaff_stats *out) {
   return 0;
 }
 
+int qaff_control_health(int control_fd) {
+  struct qaff_control_msg msg;
+  struct qaff_control_msg reply;
+  qaff_control_msg_init(&msg, QAFF_CONTROL_HEALTH);
+  return qaff_round_trip(control_fd, &msg, -1, &reply);
+}
+
+int qaff_control_config(int control_fd, struct qaff_control_config *out) {
+  if (out == NULL) {
+    errno = EINVAL;
+    return -1;
+  }
+
+  struct qaff_control_msg msg;
+  struct qaff_control_msg reply;
+  qaff_control_msg_init(&msg, QAFF_CONTROL_CONFIG);
+  if (qaff_round_trip(control_fd, &msg, -1, &reply) != 0) {
+    return -1;
+  }
+  *out = reply.config;
+  return 0;
+}
+
+int qaff_control_workers(int control_fd,
+                         uint32_t *workers,
+                         size_t workers_cap,
+                         size_t *workers_len) {
+  if (workers_len == NULL || (workers_cap > 0 && workers == NULL)) {
+    errno = EINVAL;
+    return -1;
+  }
+
+  struct qaff_control_msg msg;
+  struct qaff_control_msg reply;
+  qaff_control_msg_init(&msg, QAFF_CONTROL_WORKERS);
+  if (qaff_round_trip(control_fd, &msg, -1, &reply) != 0) {
+    return -1;
+  }
+
+  *workers_len = reply.workers_len;
+  size_t ncopy = reply.workers_len;
+  if (ncopy > workers_cap) {
+    ncopy = workers_cap;
+  }
+  for (size_t i = 0; i < ncopy; i++) {
+    workers[i] = reply.workers[i];
+  }
+
+  return 0;
+}
+
 int qaff_control_stop(int control_fd) {
   struct qaff_control_msg msg;
   struct qaff_control_msg reply;

@@ -159,6 +159,9 @@ Current control operations:
 - register CID
 - retire CID
 - read stats
+- health check
+- read config
+- list registered workers
 - stop daemon
 
 Example:
@@ -172,6 +175,9 @@ Inspect and stop it with `qaffctl`:
 
 ```sh
 build/qaffctl stats /tmp/qaffd.sock
+build/qaffctl health /tmp/qaffd.sock
+build/qaffctl config /tmp/qaffd.sock
+build/qaffctl workers /tmp/qaffd.sock
 build/qaffctl stop /tmp/qaffd.sock
 ```
 

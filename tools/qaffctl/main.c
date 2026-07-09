@@ -14,6 +14,9 @@ static void usage(FILE *out) {
           "  qaffctl version\n"
           "  qaffctl stat-names\n"
           "  qaffctl parse HEX_PACKET [SHORT_CID_LEN]\n"
+          "  qaffctl health SOCKET\n"
+          "  qaffctl config SOCKET\n"
+          "  qaffctl workers SOCKET\n"
           "  qaffctl stats SOCKET\n"
           "  qaffctl stop SOCKET\n");
 }
@@ -156,15 +159,104 @@ static int cmd_stats(int argc, char **argv) {
   return 0;
 }
 
+static int open_control_or_die(const char *socket_path) {
+  int fd = qaff_control_connect(socket_path);
+  if (fd < 0) {
+    perror("qaff_control_connect");
+  }
+  return fd;
+}
+
+static int cmd_health(int argc, char **argv) {
+  if (argc != 3) {
+    usage(stderr);
+    return 2;
+  }
+
+  int fd = open_control_or_die(argv[2]);
+  if (fd < 0) {
+    return 1;
+  }
+
+  if (qaff_control_health(fd) != 0) {
+    perror("qaff_control_health");
+    close(fd);
+    return 1;
+  }
+
+  printf("ok=1\n");
+  close(fd);
+  return 0;
+}
+
+static void print_config(const struct qaff_control_config *config) {
+  printf("short_cid_len=%u\n", config->short_cid_len);
+  printf("attached=%u\n", config->attached);
+  printf("worker_count=%u\n", config->worker_count);
+}
+
+static int cmd_config(int argc, char **argv) {
+  if (argc != 3) {
+    usage(stderr);
+    return 2;
+  }
+
+  int fd = open_control_or_die(argv[2]);
+  if (fd < 0) {
+    return 1;
+  }
+
+  struct qaff_control_config config;
+  if (qaff_control_config(fd, &config) != 0) {
+    perror("qaff_control_config");
+    close(fd);
+    return 1;
+  }
+
+  print_config(&config);
+  close(fd);
+  return 0;
+}
+
+static int cmd_workers(int argc, char **argv) {
+  if (argc != 3) {
+    usage(stderr);
+    return 2;
+  }
+
+  int fd = open_control_or_die(argv[2]);
+  if (fd < 0) {
+    return 1;
+  }
+
+  uint32_t workers[QAFF_CONTROL_MAX_WORKERS];
+  size_t workers_len = 0;
+  if (qaff_control_workers(fd,
+                           workers,
+                           QAFF_CONTROL_MAX_WORKERS,
+                           &workers_len) != 0) {
+    perror("qaff_control_workers");
+    close(fd);
+    return 1;
+  }
+
+  printf("workers_len=%zu\n", workers_len);
+  for (size_t i = 0; i < workers_len && i < QAFF_CONTROL_MAX_WORKERS; i++) {
+    printf("worker=%u\n", workers[i]);
+  }
+
+  close(fd);
+  return 0;
+}
+
 static int cmd_stop(int argc, char **argv) {
   if (argc != 3) {
     usage(stderr);
     return 2;
   }
 
-  int fd = qaff_control_connect(argv[2]);
+  int fd = open_control_or_die(argv[2]);
   if (fd < 0) {
-    perror("qaff_control_connect");
     return 1;
   }
 
@@ -202,6 +294,18 @@ int main(int argc, char **argv) {
 
   if (strcmp(argv[1], "stats") == 0) {
     return cmd_stats(argc, argv);
+  }
+
+  if (strcmp(argv[1], "health") == 0) {
+    return cmd_health(argc, argv);
+  }
+
+  if (strcmp(argv[1], "config") == 0) {
+    return cmd_config(argc, argv);
+  }
+
+  if (strcmp(argv[1], "workers") == 0) {
+    return cmd_workers(argc, argv);
   }
 
   if (strcmp(argv[1], "stop") == 0) {

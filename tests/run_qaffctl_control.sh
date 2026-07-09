@@ -48,6 +48,17 @@ if [ "$ready" -ne 1 ]; then
   exit 1
 fi
 
+"$qaffctl_bin" health "$sock" >/tmp/qaffctl-control-$$.health
+grep -q '^ok=1$' /tmp/qaffctl-control-$$.health
+
+"$qaffctl_bin" config "$sock" >/tmp/qaffctl-control-$$.config
+grep -q '^short_cid_len=8$' /tmp/qaffctl-control-$$.config
+grep -q '^attached=0$' /tmp/qaffctl-control-$$.config
+grep -q '^worker_count=0$' /tmp/qaffctl-control-$$.config
+
+"$qaffctl_bin" workers "$sock" >/tmp/qaffctl-control-$$.workers
+grep -q '^workers_len=0$' /tmp/qaffctl-control-$$.workers
+
 grep -q '^packets=0$' /tmp/qaffctl-control-$$.out
 grep -q '^cid_map_hit=0$' /tmp/qaffctl-control-$$.out
 grep -q '^fallback=0$' /tmp/qaffctl-control-$$.out
@@ -56,4 +67,3 @@ grep -q '^fallback=0$' /tmp/qaffctl-control-$$.out
 wait "$daemon_pid"
 daemon_pid=
 rm -f /tmp/qaffctl-control-$$.out /tmp/qaffctl-control-$$.err
-

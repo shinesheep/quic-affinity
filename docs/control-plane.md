@@ -20,15 +20,21 @@ The repository currently includes a minimal `qaffd` with these operations:
 - `REGISTER_CID`
 - `RETIRE_CID`
 - `READ_STATS`
+- `HEALTH`
+- `CONFIG`
+- `WORKERS`
 - `STOP`
 
 Worker registration uses Unix-domain `SCM_RIGHTS` fd passing. `qaffd` attaches the BPF program to the reuseport group when the first worker socket is registered.
 
 The current MVP supports one listener per `qaffd` process. Multi-listener management remains future work.
 
-`qaffctl` can currently read stats and stop a running daemon:
+`qaffctl` can currently inspect and stop a running daemon:
 
 ```sh
+qaffctl health /tmp/qaffd.sock
+qaffctl config /tmp/qaffd.sock
+qaffctl workers /tmp/qaffd.sock
 qaffctl stats /tmp/qaffd.sock
 qaffctl stop /tmp/qaffd.sock
 ```
@@ -132,6 +138,9 @@ Initial commands:
 
 ```sh
 qaffctl stats LISTENER_ID
+qaffctl health LISTENER_ID
+qaffctl config LISTENER_ID
+qaffctl workers LISTENER_ID
 qaffctl stop LISTENER_ID
 ```
 
@@ -139,7 +148,6 @@ Future commands:
 
 ```sh
 qaffctl listeners
-qaffctl workers LISTENER_ID
 qaffctl cids LISTENER_ID --limit 20
 ```
 
