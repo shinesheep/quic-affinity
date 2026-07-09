@@ -76,14 +76,20 @@ options.cid_profile_v1_enabled = 1;
 memcpy(options.cid_profile_v1_key, key.bytes, sizeof(options.cid_profile_v1_key));
 ```
 
-With `qaffd`, pass the same 16-byte listener key as 32 hex digits:
+With `qaffd`, store the same 16-byte listener key as 32 hex digits in a file
+readable by the daemon. For regular files, `qaffd` rejects key files that grant
+group or other permissions:
 
 ```sh
 qaffd --socket /tmp/qaffd.sock \
       --bpf /usr/libexec/quic-affinity/qaff_reuseport.bpf.o \
       --short-cid-len 8 \
-      --cid-profile-v1-key 707172737475767778797a7b7c7d7e7f
+      --cid-profile-v1-key-file /etc/quic-affinity/profile-v1.key
 ```
+
+`--cid-profile-v1-key HEX32` also exists for tests and local development, but
+production deployments should prefer the file form so the key is not exposed in
+process arguments.
 
 In compatibility mode, the server may still register generated CIDs through the
 normal control API. Explicit CID-map entries have priority over profile routing:

@@ -191,18 +191,21 @@ build/qaffd --socket /tmp/qaffd.sock --bpf build/qaff_reuseport.bpf.o --short-ci
 
 `--fallback-worker` selects the worker socket used when the incoming packet cannot be parsed or its DCID is not registered yet. This is the expected path for the first client Initial, because that DCID is client-generated.
 
-To enable routable CID profile v1 in the BPF dataplane, pass a 16-byte listener key as 32 hex digits:
+To enable routable CID profile v1 in the BPF dataplane, store a 16-byte listener key as 32 hex digits in a file readable by `qaffd`:
 
 ```sh
+install -m 0600 -D /dev/stdin /etc/quic-affinity/profile-v1.key <<EOF
+707172737475767778797a7b7c7d7e7f
+EOF
 build/qaffd --socket /tmp/qaffd.sock \
   --bpf build/qaff_reuseport.bpf.o \
   --short-cid-len 8 \
-  --cid-profile-v1-key 707172737475767778797a7b7c7d7e7f
+  --cid-profile-v1-key-file /etc/quic-affinity/profile-v1.key
 ```
 
 The CID map still has priority. On a map miss, BPF validates a v1 profile CID with the configured key and selects the embedded worker ID if the tag is valid.
 
-New worker integrations should use the leased worker registration API and keep the control fd open for the worker lifetime. If that fd closes unexpectedly, `qaffd` automatically unregisters the worker, closes its duplicated UDP socket fd, and retires the worker's CIDs. For leased workers, `qaffd` also opens a pidfd when the kernel supports it and unregisters the worker if the registering process exits. `--worker-heartbeat-timeout-ms` enables stuck-worker cleanup for leased workers; the default `0` disables heartbeat timeouts. `--allow-worker-uid` and `--allow-worker-gid` optionally restrict worker registration by Unix peer credentials.
+New worker integrations should use the leased worker registration API and keep the control fd open for the worker lifetime. If that fd closes unexpectedly, `qaffd` automatically unregisters the worker, closes its duplicated UDP socket fd, and retires the worker's CIDs. For leased workers, `qaffd` also opens a pidfd when the kernel supports it and unregisters the worker if the registering process exits. `--worker-heartbeat-timeout-ms` enables stuck-worker cleanup for leased workers; the default `0` disables heartbeat timeouts. `qaffd` records Unix peer credentials for worker registration. Existing worker IDs, worker CID registration, CID retirement, and worker unregistration can be mutated only by the original worker process or by the configured management identity. `--allow-worker-uid` and `--allow-worker-gid` define that management identity and restrict worker registration by Unix peer credentials.
 
 For restart recovery, run `qaffd` with a writable bpffs pin root and a state snapshot path:
 
@@ -251,7 +254,7 @@ systemctl enable --now qaffd@udp-ipv4-127.0.0.1-4433.service
 ```
 
 The unit expects `qaffd` at `/usr/sbin/qaffd`, `qaffctl` at `/usr/bin/qaffctl`, and the BPF object at `/usr/libexec/quic-affinity/qaff_reuseport.bpf.o`. The bpffs path used by `QAFF_PIN_ROOT` must be writable.
-Optional listener flags, such as `--cid-profile-v1-key ...`, can be supplied through `QAFF_EXTRA_ARGS` in the environment file.
+Optional listener flags, such as `--cid-profile-v1-key-file ...`, can be supplied through `QAFF_EXTRA_ARGS` in the environment file.
 
 To verify a real systemd deployment on a host with writable bpffs:
 

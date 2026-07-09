@@ -3,6 +3,7 @@
 
 #include "quic_affinity/control.h"
 
+#include <ctype.h>
 #include <errno.h>
 #include <fcntl.h>
 #include <limits.h>
@@ -183,6 +184,56 @@ static int validate_worker_peer(const struct qaffd_state *state,
     return -1;
   }
   return 0;
+}
+
+static int peer_matches_configured_admin(const struct qaffd_state *state,
+                                         const struct qaffd_peer_cred *peer) {
+  if (!state->allow_worker_uid_set && !state->allow_worker_gid_set) {
+    return 0;
+  }
+  return validate_worker_peer(state, peer) == 0;
+}
+
+static int peer_matches_worker(const struct qaffd_state *state,
+                               uint32_t worker_id,
+                               const struct qaffd_peer_cred *peer) {
+  if (worker_id >= QAFFD_MAX_WORKERS || peer == NULL || !peer->valid) {
+    return 0;
+  }
+
+  const struct qaffd_peer_cred *worker = &state->worker_creds[worker_id];
+  return worker->valid &&
+         worker->pid == peer->pid &&
+         worker->uid == peer->uid &&
+         worker->gid == peer->gid;
+}
+
+static int authorize_worker_mutation(const struct qaffd_state *state,
+                                     uint32_t worker_id,
+                                     const struct qaffd_peer_cred *peer) {
+  if (worker_id >= QAFFD_MAX_WORKERS ||
+      !state->worker_registered[worker_id]) {
+    errno = ENOENT;
+    return -1;
+  }
+  if (peer_matches_configured_admin(state, peer) ||
+      peer_matches_worker(state, worker_id, peer)) {
+    return 0;
+  }
+  errno = EACCES;
+  return -1;
+}
+
+static int authorize_daemon_mutation(const struct qaffd_state *state,
+                                     const struct qaffd_peer_cred *peer) {
+  if (!state->allow_worker_uid_set && !state->allow_worker_gid_set) {
+    return 0;
+  }
+  if (peer_matches_configured_admin(state, peer)) {
+    return 0;
+  }
+  errno = EACCES;
+  return -1;
 }
 
 static int open_pidfd_for_peer(const struct qaffd_peer_cred *peer) {
@@ -404,7 +455,7 @@ static void usage(FILE *out) {
   fprintf(out,
           "Usage: qaffd --socket PATH --bpf PATH --short-cid-len N "
           "[--fallback-worker ID] [--pin-root PATH] [--state-path PATH] "
-          "[--cid-profile-v1-key HEX32] "
+          "[--cid-profile-v1-key HEX32 | --cid-profile-v1-key-file PATH] "
           "[--worker-heartbeat-timeout-ms N] [--allow-worker-uid UID] "
           "[--allow-worker-gid GID]\n");
 }
@@ -425,7 +476,7 @@ static int profile_key_hex_value(int c) {
 static int parse_fixed_hex(const char *hex, uint8_t *out, size_t out_len) {
   size_t digits = 0;
   for (const char *p = hex; *p; p++) {
-    if (*p == ':' || *p == '-') {
+    if (*p == ':' || *p == '-' || isspace((unsigned char)*p)) {
       continue;
     }
     if (profile_key_hex_value((unsigned char)*p) < 0) {
@@ -440,7 +491,7 @@ static int parse_fixed_hex(const char *hex, uint8_t *out, size_t out_len) {
   size_t index = 0;
   int high = -1;
   for (const char *p = hex; *p; p++) {
-    if (*p == ':' || *p == '-') {
+    if (*p == ':' || *p == '-' || isspace((unsigned char)*p)) {
       continue;
     }
     int v = profile_key_hex_value((unsigned char)*p);
@@ -452,6 +503,56 @@ static int parse_fixed_hex(const char *hex, uint8_t *out, size_t out_len) {
     }
   }
   return index == out_len ? 0 : -1;
+}
+
+static int read_profile_key_file(const char *path,
+                                 uint8_t *out,
+                                 size_t out_len) {
+  int fd = open(path, O_RDONLY | O_CLOEXEC);
+  if (fd < 0) {
+    return -1;
+  }
+
+  struct stat st;
+  if (fstat(fd, &st) != 0) {
+    int saved_errno = errno;
+    close(fd);
+    errno = saved_errno;
+    return -1;
+  }
+  if (S_ISREG(st.st_mode) && (st.st_mode & 0077) != 0) {
+    close(fd);
+    errno = EACCES;
+    return -1;
+  }
+  char buf[256];
+  if (S_ISREG(st.st_mode) && st.st_size >= (off_t)sizeof(buf)) {
+    close(fd);
+    errno = EINVAL;
+    return -1;
+  }
+
+  ssize_t got = read(fd, buf, sizeof(buf) - 1);
+  if (got < 0) {
+    int saved_errno = errno;
+    close(fd);
+    errno = saved_errno;
+    return -1;
+  }
+  if (close(fd) != 0) {
+    return -1;
+  }
+  if (got == 0) {
+    errno = EINVAL;
+    return -1;
+  }
+  buf[got] = '\0';
+
+  if (parse_fixed_hex(buf, out, out_len) != 0) {
+    errno = EINVAL;
+    return -1;
+  }
+  return 0;
 }
 
 static int parse_args(int argc, char **argv, struct qaffd_options *options) {
@@ -484,6 +585,14 @@ static int parse_args(int argc, char **argv, struct qaffd_options *options) {
       if (parse_fixed_hex(argv[++i],
                           options->cid_profile_v1_key,
                           sizeof(options->cid_profile_v1_key)) != 0) {
+        return -1;
+      }
+      options->cid_profile_v1_enabled = 1;
+    } else if (strcmp(argv[i], "--cid-profile-v1-key-file") == 0 &&
+               i + 1 < argc) {
+      if (read_profile_key_file(argv[++i],
+                                options->cid_profile_v1_key,
+                                sizeof(options->cid_profile_v1_key)) != 0) {
         return -1;
       }
       options->cid_profile_v1_enabled = 1;
@@ -958,6 +1067,10 @@ static int handle_register_worker(struct qaffd_state *state,
   if (validate_worker_peer(state, peer) != 0) {
     return -1;
   }
+  if (state->worker_registered[request->worker_id] &&
+      authorize_worker_mutation(state, request->worker_id, peer) != 0) {
+    return -1;
+  }
 
   struct sockaddr_storage local_addr;
   if (validate_worker_socket(state, socket_fd, &local_addr) != 0) {
@@ -1009,41 +1122,35 @@ static int handle_register_worker(struct qaffd_state *state,
   return save_state(state);
 }
 
-static int handle_unregister_worker(struct qaffd_state *state,
-                                    const struct qaff_control_msg *request) {
-  if (request->worker_id >= QAFFD_MAX_WORKERS ||
-      !state->worker_registered[request->worker_id]) {
-    errno = ENOENT;
+static int unregister_worker_authorized(struct qaffd_state *state,
+                                        uint32_t worker_id) {
+  if (retire_worker_cids(state, worker_id) != 0) {
     return -1;
   }
 
-  if (retire_worker_cids(state, request->worker_id) != 0) {
-    return -1;
-  }
-
-  if (qaff_unregister_worker_socket(state->ctx, request->worker_id) != 0 &&
+  if (qaff_unregister_worker_socket(state->ctx, worker_id) != 0 &&
       errno != ENOENT) {
     return -1;
   }
 
-  if (state->worker_fds[request->worker_id] >= 0) {
-    close(state->worker_fds[request->worker_id]);
-    state->worker_fds[request->worker_id] = -1;
+  if (state->worker_fds[worker_id] >= 0) {
+    close(state->worker_fds[worker_id]);
+    state->worker_fds[worker_id] = -1;
   }
-  if (state->worker_lease_fds[request->worker_id] >= 0) {
-    close(state->worker_lease_fds[request->worker_id]);
-    state->worker_lease_fds[request->worker_id] = -1;
+  if (state->worker_lease_fds[worker_id] >= 0) {
+    close(state->worker_lease_fds[worker_id]);
+    state->worker_lease_fds[worker_id] = -1;
   }
-  if (state->worker_pidfds[request->worker_id] >= 0) {
-    close(state->worker_pidfds[request->worker_id]);
-    state->worker_pidfds[request->worker_id] = -1;
+  if (state->worker_pidfds[worker_id] >= 0) {
+    close(state->worker_pidfds[worker_id]);
+    state->worker_pidfds[worker_id] = -1;
   }
-  state->worker_registered[request->worker_id] = 0;
-  state->worker_registered_at_ms[request->worker_id] = 0;
-  state->worker_last_seen_ms[request->worker_id] = 0;
-  memset(&state->worker_creds[request->worker_id],
+  state->worker_registered[worker_id] = 0;
+  state->worker_registered_at_ms[worker_id] = 0;
+  state->worker_last_seen_ms[worker_id] = 0;
+  memset(&state->worker_creds[worker_id],
          0,
-         sizeof(state->worker_creds[request->worker_id]));
+         sizeof(state->worker_creds[worker_id]));
   if (worker_count(state) == 0) {
     state->attached = 0;
     state->listener_locked = 0;
@@ -1052,11 +1159,19 @@ static int handle_unregister_worker(struct qaffd_state *state,
   return save_state(state);
 }
 
+static int handle_unregister_worker(struct qaffd_state *state,
+                                    const struct qaff_control_msg *request,
+                                    const struct qaffd_peer_cred *peer) {
+  if (authorize_worker_mutation(state, request->worker_id, peer) != 0) {
+    return -1;
+  }
+  return unregister_worker_authorized(state, request->worker_id);
+}
+
 static int handle_register_cid(struct qaffd_state *state,
-                               const struct qaff_control_msg *request) {
-  if (request->worker_id >= QAFFD_MAX_WORKERS ||
-      !state->worker_registered[request->worker_id]) {
-    errno = ENOENT;
+                               const struct qaff_control_msg *request,
+                               const struct qaffd_peer_cred *peer) {
+  if (authorize_worker_mutation(state, request->worker_id, peer) != 0) {
     return -1;
   }
 
@@ -1085,11 +1200,23 @@ static int handle_register_cid(struct qaffd_state *state,
 }
 
 static int handle_retire_cid(struct qaffd_state *state,
-                             const struct qaff_control_msg *request) {
+                             const struct qaff_control_msg *request,
+                             const struct qaffd_peer_cred *peer) {
   struct qaff_cid_key key;
   if (qaff_cid_key_from_bytes(request->cid, request->cid_len, &key) !=
       QAFF_PARSE_OK) {
     errno = EINVAL;
+    return -1;
+  }
+
+  ssize_t index = find_cid_entry(state, &key);
+  if (index < 0) {
+    errno = ENOENT;
+    return -1;
+  }
+  if (authorize_worker_mutation(state,
+                                state->cid_entries[index].worker_id,
+                                peer) != 0) {
     return -1;
   }
 
@@ -1111,10 +1238,12 @@ static void install_worker_lease(struct qaffd_state *state,
 }
 
 static int unregister_worker_id(struct qaffd_state *state, uint32_t worker_id) {
-  struct qaff_control_msg request;
-  memset(&request, 0, sizeof(request));
-  request.worker_id = worker_id;
-  return handle_unregister_worker(state, &request);
+  if (worker_id >= QAFFD_MAX_WORKERS ||
+      !state->worker_registered[worker_id]) {
+    errno = ENOENT;
+    return -1;
+  }
+  return unregister_worker_authorized(state, worker_id);
 }
 
 static int handle_worker_lease_event(struct qaffd_state *state,
@@ -1218,17 +1347,20 @@ static int handle_request(struct qaffd_state *state,
       }
       break;
     case QAFF_CONTROL_UNREGISTER_WORKER:
-      if (handle_unregister_worker(state, &request) != 0) {
+      if (get_peer_cred(client_fd, &peer_cred) != 0 ||
+          handle_unregister_worker(state, &request, &peer_cred) != 0) {
         reply.status = errno ? errno : EIO;
       }
       break;
     case QAFF_CONTROL_REGISTER_CID:
-      if (handle_register_cid(state, &request) != 0) {
+      if (get_peer_cred(client_fd, &peer_cred) != 0 ||
+          handle_register_cid(state, &request, &peer_cred) != 0) {
         reply.status = errno ? errno : EIO;
       }
       break;
     case QAFF_CONTROL_RETIRE_CID:
-      if (handle_retire_cid(state, &request) != 0) {
+      if (get_peer_cred(client_fd, &peer_cred) != 0 ||
+          handle_retire_cid(state, &request, &peer_cred) != 0) {
         reply.status = errno ? errno : EIO;
       }
       break;
@@ -1251,7 +1383,12 @@ static int handle_request(struct qaffd_state *state,
       fill_config_reply(state, &reply);
       break;
     case QAFF_CONTROL_STOP:
-      state->stop = 1;
+      if (get_peer_cred(client_fd, &peer_cred) != 0 ||
+          authorize_daemon_mutation(state, &peer_cred) != 0) {
+        reply.status = errno ? errno : EIO;
+      } else {
+        state->stop = 1;
+      }
       break;
     default:
       reply.status = ENOSYS;

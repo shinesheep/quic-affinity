@@ -156,6 +156,11 @@ static pid_t start_qaffd(const char *qaffd_path,
                          const char *bpf_path,
                          const char *pin_root,
                          const char *state_path) {
+  char uid_arg[32];
+  char gid_arg[32];
+  snprintf(uid_arg, sizeof(uid_arg), "%u", (unsigned int)getuid());
+  snprintf(gid_arg, sizeof(gid_arg), "%u", (unsigned int)getgid());
+
   pid_t pid = fork();
   if (pid != 0) {
     return pid;
@@ -173,6 +178,10 @@ static pid_t start_qaffd(const char *qaffd_path,
         pin_root,
         "--state-path",
         state_path,
+        "--allow-worker-uid",
+        uid_arg,
+        "--allow-worker-gid",
+        gid_arg,
         (char *)NULL);
   perror("execl qaffd");
   _exit(127);

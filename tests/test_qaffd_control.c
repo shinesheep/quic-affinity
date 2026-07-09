@@ -282,11 +282,6 @@ static int connect_retry(const char *socket_path, int attempts) {
 static pid_t start_qaffd(const char *qaffd_path,
                          const char *socket_path,
                          const char *bpf_path) {
-  char uid_arg[32];
-  char gid_arg[32];
-  snprintf(uid_arg, sizeof(uid_arg), "%u", (unsigned int)getuid());
-  snprintf(gid_arg, sizeof(gid_arg), "%u", (unsigned int)getgid());
-
   pid_t pid = fork();
   if (pid != 0) {
     return pid;
@@ -302,10 +297,6 @@ static pid_t start_qaffd(const char *qaffd_path,
         "8",
         "--worker-heartbeat-timeout-ms",
         "500",
-        "--allow-worker-uid",
-        uid_arg,
-        "--allow-worker-gid",
-        gid_arg,
         (char *)NULL);
   perror("execl qaffd");
   _exit(127);
@@ -377,6 +368,81 @@ static int control_call_register_cid(const char *socket_path,
   int rc = qaff_control_register_cid(fd, worker_id, cid, sizeof(k_dcid));
   close(fd);
   return rc;
+}
+
+static int control_call_retire_cid(const char *socket_path, const uint8_t *cid) {
+  int fd = qaff_control_connect(socket_path);
+  if (fd < 0) {
+    return -1;
+  }
+  int rc = qaff_control_retire_cid(fd, cid, sizeof(k_dcid));
+  close(fd);
+  return rc;
+}
+
+static int child_attempt_register_cid(const char *socket_path,
+                                      uint32_t worker_id,
+                                      const uint8_t *cid) {
+  pid_t pid = fork();
+  if (pid < 0) {
+    return -1;
+  }
+  if (pid == 0) {
+    int rc = control_call_register_cid(socket_path, worker_id, cid);
+    if (rc == 0) {
+      _exit(0);
+    }
+    _exit(errno == EACCES ? 10 : 11);
+  }
+
+  int status = 0;
+  if (waitpid(pid, &status, 0) < 0) {
+    return -1;
+  }
+  return WIFEXITED(status) ? WEXITSTATUS(status) : 12;
+}
+
+static int child_attempt_unregister_worker(const char *socket_path,
+                                           uint32_t worker_id) {
+  pid_t pid = fork();
+  if (pid < 0) {
+    return -1;
+  }
+  if (pid == 0) {
+    int rc = control_call_unregister_worker(socket_path, worker_id);
+    if (rc == 0) {
+      _exit(0);
+    }
+    _exit(errno == EACCES ? 10 : 11);
+  }
+
+  int status = 0;
+  if (waitpid(pid, &status, 0) < 0) {
+    return -1;
+  }
+  return WIFEXITED(status) ? WEXITSTATUS(status) : 12;
+}
+
+static int child_attempt_register_worker(const char *socket_path,
+                                         uint32_t worker_id,
+                                         int worker_fd) {
+  pid_t pid = fork();
+  if (pid < 0) {
+    return -1;
+  }
+  if (pid == 0) {
+    int rc = control_call_register_worker(socket_path, worker_id, worker_fd);
+    if (rc == 0) {
+      _exit(0);
+    }
+    _exit(errno == EACCES ? 10 : 11);
+  }
+
+  int status = 0;
+  if (waitpid(pid, &status, 0) < 0) {
+    return -1;
+  }
+  return WIFEXITED(status) ? WEXITSTATUS(status) : 12;
 }
 
 static int control_call_read_stats(const char *socket_path,
@@ -695,6 +761,28 @@ static int run_case(const char *qaffd_path,
     return 1;
   }
 
+  if (child_attempt_register_worker(socket_path, TARGET_WORKER, workers[TARGET_WORKER]) != 10) {
+    fprintf(stderr,
+            "%s: child process unexpectedly replaced worker %d\n",
+            test->name,
+            TARGET_WORKER);
+    return 1;
+  }
+  if (child_attempt_register_cid(socket_path, TARGET_WORKER, k_dcid) != 10) {
+    fprintf(stderr,
+            "%s: child process unexpectedly registered CID for worker %d\n",
+            test->name,
+            TARGET_WORKER);
+    return 1;
+  }
+  if (child_attempt_unregister_worker(socket_path, TARGET_WORKER) != 10) {
+    fprintf(stderr,
+            "%s: child process unexpectedly unregistered worker %d\n",
+            test->name,
+            TARGET_WORKER);
+    return 1;
+  }
+
   if (control_call_unregister_worker(socket_path, 1) != 0) {
     perror("qaff_control_unregister_worker");
     return 1;
@@ -715,6 +803,36 @@ static int run_case(const char *qaffd_path,
   }
   if (control_call_register_cid(socket_path, TARGET_WORKER, k_second_dcid) != 0) {
     perror("qaff_control_register_cid second");
+    return 1;
+  }
+
+  if (child_attempt_register_cid(socket_path, TARGET_WORKER, k_unknown_dcid) != 10) {
+    fprintf(stderr,
+            "%s: child process unexpectedly registered second CID for worker %d\n",
+            test->name,
+            TARGET_WORKER);
+    return 1;
+  }
+  pid_t retire_pid = fork();
+  if (retire_pid < 0) {
+    perror("fork retire child");
+    return 1;
+  }
+  if (retire_pid == 0) {
+    int rc = control_call_retire_cid(socket_path, k_dcid);
+    if (rc == 0) {
+      _exit(0);
+    }
+    _exit(errno == EACCES ? 10 : 11);
+  }
+  int retire_status = 0;
+  if (waitpid(retire_pid, &retire_status, 0) < 0 ||
+      !WIFEXITED(retire_status) ||
+      WEXITSTATUS(retire_status) != 10) {
+    fprintf(stderr,
+            "%s: child process unexpectedly retired CID for worker %d\n",
+            test->name,
+            TARGET_WORKER);
     return 1;
   }
 

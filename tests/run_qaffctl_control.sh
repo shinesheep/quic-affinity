@@ -10,6 +10,7 @@ qaffd_bin=$1
 qaffctl_bin=$2
 bpf_obj=$3
 sock=/tmp/qaffctl-control-$$.sock
+key_file=/tmp/qaffctl-control-$$.profile-key
 caps=cap_bpf,cap_net_admin,cap_perfmon,cap_sys_resource+ep
 
 cleanup() {
@@ -17,7 +18,7 @@ cleanup() {
     kill "$daemon_pid" 2>/dev/null || true
     wait "$daemon_pid" 2>/dev/null || true
   fi
-  rm -f "$sock"
+  rm -f "$sock" "$key_file"
 }
 trap cleanup EXIT INT TERM
 
@@ -25,9 +26,11 @@ if command -v sudo >/dev/null 2>&1 && command -v setcap >/dev/null 2>&1; then
   sudo -n setcap "$caps" "$qaffd_bin" 2>/dev/null || true
 fi
 
+printf '%s\n' 707172737475767778797a7b7c7d7e7f >"$key_file"
+chmod 600 "$key_file"
 "$qaffd_bin" --socket "$sock" --bpf "$bpf_obj" --short-cid-len 8 \
   --fallback-worker 1 \
-  --cid-profile-v1-key 707172737475767778797a7b7c7d7e7f &
+  --cid-profile-v1-key-file "$key_file" &
 daemon_pid=$!
 
 ready=0
