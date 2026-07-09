@@ -49,6 +49,10 @@ static const uint8_t k_second_dcid[] = {
   0xca, 0xfe, 0xba, 0xbe, 0x01, 0x02, 0x03, 0x04,
 };
 
+static const uint8_t k_passive_dcid[] = {
+  0x70, 0x61, 0x73, 0x73, 0x0a, 0x0b, 0x0c, 0x0d,
+};
+
 static int set_nonblocking(int fd) {
   int flags = fcntl(fd, F_GETFL, 0);
   if (flags < 0) {
@@ -295,6 +299,9 @@ static pid_t start_qaffd(const char *qaffd_path,
         bpf_path,
         "--short-cid-len",
         "8",
+        "--passive-affinity",
+        "--passive-min-confidence",
+        "3",
         "--worker-heartbeat-timeout-ms",
         "500",
         (char *)NULL);
@@ -376,6 +383,39 @@ static int control_call_retire_cid(const char *socket_path, const uint8_t *cid) 
     return -1;
   }
   int rc = qaff_control_retire_cid(fd, cid, sizeof(k_dcid));
+  close(fd);
+  return rc;
+}
+
+static int control_call_register_passive_cid(const char *socket_path,
+                                             uint32_t worker_id,
+                                             const uint8_t *cid,
+                                             uint8_t confidence,
+                                             uint8_t source) {
+  int fd = qaff_control_connect(socket_path);
+  if (fd < 0) {
+    return -1;
+  }
+  struct qaff_passive_cid_value value;
+  memset(&value, 0, sizeof(value));
+  value.worker_id = worker_id;
+  value.confidence = confidence;
+  value.source = source;
+  int rc = qaff_control_register_passive_cid(fd,
+                                             cid,
+                                             sizeof(k_dcid),
+                                             &value);
+  close(fd);
+  return rc;
+}
+
+static int control_call_retire_passive_cid(const char *socket_path,
+                                           const uint8_t *cid) {
+  int fd = qaff_control_connect(socket_path);
+  if (fd < 0) {
+    return -1;
+  }
+  int rc = qaff_control_retire_passive_cid(fd, cid, sizeof(k_dcid));
   close(fd);
   return rc;
 }
@@ -875,6 +915,48 @@ static int run_case(const char *qaffd_path,
     }
   }
 
+  if (control_call_register_passive_cid(socket_path,
+                                        TARGET_WORKER,
+                                        k_passive_dcid,
+                                        QAFF_PASSIVE_CONFIDENCE_HIGH,
+                                        QAFF_PASSIVE_SOURCE_EGRESS) != 0) {
+    perror("qaff_control_register_passive_cid");
+    return 1;
+  }
+  if (send_quic_like_packet(senders[0].fd,
+                            test->family,
+                            port,
+                            0,
+                            k_passive_dcid) != 0) {
+    perror("send passive packet");
+    return 1;
+  }
+  int passive_worker = receive_worker(workers, WORKER_COUNT);
+  if (passive_worker != TARGET_WORKER) {
+    fprintf(stderr, "%s: expected passive worker %d, got %d\n",
+            test->name, TARGET_WORKER, passive_worker);
+    return 1;
+  }
+
+  if (control_call_retire_passive_cid(socket_path, k_passive_dcid) != 0) {
+    perror("qaff_control_retire_passive_cid");
+    return 1;
+  }
+  if (send_quic_like_packet(senders[1].fd,
+                            test->family,
+                            port,
+                            0,
+                            k_passive_dcid) != 0) {
+    perror("send retired passive packet");
+    return 1;
+  }
+  int retired_passive_worker = receive_worker(workers, WORKER_COUNT);
+  if (retired_passive_worker != FALLBACK_WORKER) {
+    fprintf(stderr, "%s: expected retired passive fallback worker %d, got %d\n",
+            test->name, FALLBACK_WORKER, retired_passive_worker);
+    return 1;
+  }
+
   if (send_quic_like_packet(senders[0].fd,
                             test->family,
                             port,
@@ -907,6 +989,16 @@ static int run_case(const char *qaffd_path,
   if (control_call_register_cid(socket_path, TARGET_WORKER, k_dcid) == 0) {
     fprintf(stderr,
             "%s: unexpectedly registered CID to unregistered worker\n",
+            test->name);
+    return 1;
+  }
+  if (control_call_register_passive_cid(socket_path,
+                                        TARGET_WORKER,
+                                        k_passive_dcid,
+                                        QAFF_PASSIVE_CONFIDENCE_HIGH,
+                                        QAFF_PASSIVE_SOURCE_EGRESS) == 0) {
+    fprintf(stderr,
+            "%s: unexpectedly registered passive CID to unregistered worker\n",
             test->name);
     return 1;
   }
@@ -960,12 +1052,16 @@ static int run_case(const char *qaffd_path,
 
   enum qaff_stat_index family_stat =
       test->family == AF_INET ? QAFF_STAT_IPV4 : QAFF_STAT_IPV6;
-  if (stats.values[QAFF_STAT_PACKETS] != 5 ||
+  if (stats.values[QAFF_STAT_PACKETS] != 7 ||
       stats.values[QAFF_STAT_CID_MAP_HIT] != 2 ||
-      stats.values[QAFF_STAT_FALLBACK] != 3 ||
+      stats.values[QAFF_STAT_FALLBACK] != 4 ||
       stats.values[QAFF_STAT_PARSE_ERROR] != 0 ||
       stats.values[QAFF_STAT_WORKER_MISSING] != 0 ||
-      stats.values[family_stat] != 5) {
+      stats.values[family_stat] != 7 ||
+      stats.values[QAFF_STAT_PASSIVE_HIT] != 1 ||
+      stats.values[QAFF_STAT_PASSIVE_MISS] != 4 ||
+      stats.values[QAFF_STAT_PASSIVE_REJECT_CONFIDENCE] != 0 ||
+      stats.values[QAFF_STAT_PASSIVE_REJECT_GENERATION] != 0) {
     fprintf(stderr, "%s: unexpected qaffd stats\n", test->name);
     return 1;
   }

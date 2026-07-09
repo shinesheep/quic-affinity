@@ -1404,6 +1404,91 @@ static int handle_retire_cid(struct qaffd_state *state,
   return 0;
 }
 
+static int validate_passive_request(const struct qaffd_state *state,
+                                    struct qaff_passive_cid_value *value) {
+  if (value->worker_id >= QAFFD_MAX_WORKERS ||
+      !state->worker_registered[value->worker_id]) {
+    errno = ENOENT;
+    return -1;
+  }
+  if (value->confidence < QAFF_PASSIVE_CONFIDENCE_LOW ||
+      value->confidence > QAFF_PASSIVE_CONFIDENCE_HIGH) {
+    errno = EINVAL;
+    return -1;
+  }
+  if (value->source != QAFF_PASSIVE_SOURCE_INGRESS &&
+      value->source != QAFF_PASSIVE_SOURCE_EGRESS) {
+    errno = EINVAL;
+    return -1;
+  }
+
+  uint32_t current_generation = state->worker_generations[value->worker_id];
+  if (current_generation == 0) {
+    errno = EINVAL;
+    return -1;
+  }
+  if (value->worker_generation != 0 &&
+      value->worker_generation != current_generation) {
+    errno = EINVAL;
+    return -1;
+  }
+  value->worker_generation = current_generation;
+  return 0;
+}
+
+static int handle_register_passive_cid(struct qaffd_state *state,
+                                       const struct qaff_control_msg *request,
+                                       const struct qaffd_peer_cred *peer) {
+  if (authorize_daemon_mutation(state, peer) != 0) {
+    return -1;
+  }
+
+  struct qaff_passive_cid_value value = request->passive_value;
+  if (value.worker_id != request->worker_id) {
+    errno = EINVAL;
+    return -1;
+  }
+  if (validate_passive_request(state, &value) != 0) {
+    return -1;
+  }
+
+  if (qaff_register_passive_cid(state->ctx,
+                                request->cid,
+                                request->cid_len,
+                                &value) != 0) {
+    return -1;
+  }
+
+  audit_event("passive_cid_registered",
+              peer,
+              "worker_id=%u confidence=%u source=%u cid_len=%u",
+              value.worker_id,
+              value.confidence,
+              value.source,
+              request->cid_len);
+  return 0;
+}
+
+static int handle_retire_passive_cid(struct qaffd_state *state,
+                                     const struct qaff_control_msg *request,
+                                     const struct qaffd_peer_cred *peer) {
+  if (authorize_daemon_mutation(state, peer) != 0) {
+    return -1;
+  }
+
+  if (qaff_retire_passive_cid(state->ctx,
+                              request->cid,
+                              request->cid_len) != 0) {
+    return -1;
+  }
+
+  audit_event("passive_cid_retired",
+              peer,
+              "cid_len=%u",
+              request->cid_len);
+  return 0;
+}
+
 static void install_worker_lease(struct qaffd_state *state,
                                  uint32_t worker_id,
                                  int lease_fd) {
@@ -1537,6 +1622,18 @@ static int handle_request(struct qaffd_state *state,
     case QAFF_CONTROL_RETIRE_CID:
       if (get_peer_cred(client_fd, &peer_cred) != 0 ||
           handle_retire_cid(state, &request, &peer_cred) != 0) {
+        reply.status = errno ? errno : EIO;
+      }
+      break;
+    case QAFF_CONTROL_REGISTER_PASSIVE_CID:
+      if (get_peer_cred(client_fd, &peer_cred) != 0 ||
+          handle_register_passive_cid(state, &request, &peer_cred) != 0) {
+        reply.status = errno ? errno : EIO;
+      }
+      break;
+    case QAFF_CONTROL_RETIRE_PASSIVE_CID:
+      if (get_peer_cred(client_fd, &peer_cred) != 0 ||
+          handle_retire_passive_cid(state, &request, &peer_cred) != 0) {
         reply.status = errno ? errno : EIO;
       }
       break;

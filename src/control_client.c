@@ -193,6 +193,42 @@ int qaff_control_retire_cid(int control_fd,
   return qaff_round_trip(control_fd, &msg, -1, &reply);
 }
 
+int qaff_control_register_passive_cid(
+    int control_fd,
+    const uint8_t *cid,
+    size_t cid_len,
+    const struct qaff_passive_cid_value *value) {
+  if (cid == NULL || cid_len > QAFF_MAX_CID_LEN || value == NULL) {
+    errno = EINVAL;
+    return -1;
+  }
+
+  struct qaff_control_msg msg;
+  struct qaff_control_msg reply;
+  qaff_control_msg_init(&msg, QAFF_CONTROL_REGISTER_PASSIVE_CID);
+  msg.worker_id = value->worker_id;
+  msg.cid_len = (uint32_t)cid_len;
+  memcpy(msg.cid, cid, cid_len);
+  msg.passive_value = *value;
+  return qaff_round_trip(control_fd, &msg, -1, &reply);
+}
+
+int qaff_control_retire_passive_cid(int control_fd,
+                                    const uint8_t *cid,
+                                    size_t cid_len) {
+  if (cid == NULL || cid_len > QAFF_MAX_CID_LEN) {
+    errno = EINVAL;
+    return -1;
+  }
+
+  struct qaff_control_msg msg;
+  struct qaff_control_msg reply;
+  qaff_control_msg_init(&msg, QAFF_CONTROL_RETIRE_PASSIVE_CID);
+  msg.cid_len = (uint32_t)cid_len;
+  memcpy(msg.cid, cid, cid_len);
+  return qaff_round_trip(control_fd, &msg, -1, &reply);
+}
+
 int qaff_control_read_stats(int control_fd, struct qaff_stats *out) {
   if (out == NULL) {
     errno = EINVAL;

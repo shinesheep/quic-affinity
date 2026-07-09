@@ -46,6 +46,8 @@ enum qaff_control_op {
   QAFF_CONTROL_CIDS = 10,
   QAFF_CONTROL_REGISTER_WORKER_LEASE = 11,
   QAFF_CONTROL_WORKER_HEARTBEAT = 12,
+  QAFF_CONTROL_REGISTER_PASSIVE_CID = 13,
+  QAFF_CONTROL_RETIRE_PASSIVE_CID = 14,
 };
 
 /** qaffd listener configuration and CID-index health summary. */
@@ -115,6 +117,7 @@ struct qaff_control_msg {
   uint32_t worker_id;
   uint32_t cid_len;
   uint8_t cid[QAFF_MAX_CID_LEN];
+  struct qaff_passive_cid_value passive_value;
   struct qaff_stats stats;
   struct qaff_control_config config;
   uint32_t workers[QAFF_CONTROL_MAX_WORKERS];
@@ -167,6 +170,18 @@ int qaff_control_register_cid(int control_fd,
 int qaff_control_retire_cid(int control_fd,
                             const uint8_t *cid,
                             size_t cid_len);
+
+/** Register a passive CID routing hint through qaffd. */
+int qaff_control_register_passive_cid(
+    int control_fd,
+    const uint8_t *cid,
+    size_t cid_len,
+    const struct qaff_passive_cid_value *value);
+
+/** Retire a passive CID routing hint through qaffd. */
+int qaff_control_retire_passive_cid(int control_fd,
+                                    const uint8_t *cid,
+                                    size_t cid_len);
 
 /** Read dataplane counters through qaffd. */
 int qaff_control_read_stats(int control_fd, struct qaff_stats *out);
