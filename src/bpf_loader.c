@@ -13,7 +13,9 @@
 
 struct qaff_bpf_object {
   struct bpf_object *obj;
+  struct bpf_link *egress_link;
   int program_fd;
+  int egress_program_fd;
 };
 
 static int qaff_reuse_map(struct bpf_object *obj,
@@ -50,6 +52,7 @@ int qaff_bpf_object_open(struct qaff_context *ctx,
     return -1;
   }
   object->program_fd = -1;
+  object->egress_program_fd = -1;
 
   object->obj = bpf_object__open_file(object_path, NULL);
   if (object->obj == NULL) {
@@ -83,6 +86,16 @@ int qaff_bpf_object_open(struct qaff_context *ctx,
     goto fail;
   }
 
+  struct bpf_program *egress_program =
+      bpf_object__find_program_by_name(object->obj, "qaff_egress_learn");
+  if (egress_program != NULL) {
+    object->egress_program_fd = bpf_program__fd(egress_program);
+    if (object->egress_program_fd < 0) {
+      errno = ENOENT;
+      goto fail;
+    }
+  }
+
   *out = object;
   return 0;
 
@@ -94,6 +107,9 @@ fail:
 void qaff_bpf_object_close(struct qaff_bpf_object *object) {
   if (object == NULL) {
     return;
+  }
+  if (object->egress_link != NULL) {
+    bpf_link__destroy(object->egress_link);
   }
   if (object->obj != NULL) {
     bpf_object__close(object->obj);
@@ -108,6 +124,13 @@ int qaff_bpf_program_fd(const struct qaff_bpf_object *object) {
   return object->program_fd;
 }
 
+int qaff_bpf_egress_program_fd(const struct qaff_bpf_object *object) {
+  if (object == NULL) {
+    return -1;
+  }
+  return object->egress_program_fd;
+}
+
 int qaff_attach_reuseport_bpf(const struct qaff_bpf_object *object,
                               int socket_fd) {
   if (object == NULL || object->program_fd < 0 || socket_fd < 0) {
@@ -120,4 +143,32 @@ int qaff_attach_reuseport_bpf(const struct qaff_bpf_object *object,
                     SO_ATTACH_REUSEPORT_EBPF,
                     &object->program_fd,
                     sizeof(object->program_fd));
+}
+
+int qaff_attach_cgroup_egress_bpf(struct qaff_bpf_object *object,
+                                  int cgroup_fd) {
+  if (object == NULL || object->egress_program_fd < 0 || cgroup_fd < 0) {
+    errno = EINVAL;
+    return -1;
+  }
+  if (object->egress_link != NULL) {
+    errno = EALREADY;
+    return -1;
+  }
+
+  struct bpf_program *program =
+      bpf_object__find_program_by_name(object->obj, "qaff_egress_learn");
+  if (program == NULL) {
+    errno = ENOENT;
+    return -1;
+  }
+
+  struct bpf_link *link = bpf_program__attach_cgroup(program, cgroup_fd);
+  long err = libbpf_get_error(link);
+  if (err != 0) {
+    errno = err < 0 ? (int)-err : EIO;
+    return -1;
+  }
+  object->egress_link = link;
+  return 0;
 }

@@ -151,8 +151,12 @@ enum qaff_stat_index {
   QAFF_STAT_PASSIVE_REJECT_CONFIDENCE = 13,
   /** Passive CID entry generation did not match the live worker generation. */
   QAFF_STAT_PASSIVE_REJECT_GENERATION = 14,
+  /** Egress observer learned a server Source CID. */
+  QAFF_STAT_PASSIVE_EGRESS_LEARN = 15,
+  /** Egress observer could not map the sending socket to a worker. */
+  QAFF_STAT_PASSIVE_EGRESS_NO_WORKER = 16,
   /** Number of stats slots; always keep this last. */
-  QAFF_STAT_MAX = 15,
+  QAFF_STAT_MAX = 17,
 };
 
 #endif

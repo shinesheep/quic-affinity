@@ -828,6 +828,10 @@ const char *qaff_stat_name(uint32_t index) {
     return "passive_reject_confidence";
   case QAFF_STAT_PASSIVE_REJECT_GENERATION:
     return "passive_reject_generation";
+  case QAFF_STAT_PASSIVE_EGRESS_LEARN:
+    return "passive_egress_learn";
+  case QAFF_STAT_PASSIVE_EGRESS_NO_WORKER:
+    return "passive_egress_no_worker";
   default:
     return "unknown";
   }

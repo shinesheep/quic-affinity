@@ -195,6 +195,9 @@ void qaff_bpf_object_close(struct qaff_bpf_object *object);
 /** Return the loaded reuseport program fd, or -1 if unavailable. */
 int qaff_bpf_program_fd(const struct qaff_bpf_object *object);
 
+/** Return the loaded cgroup egress learner program fd, or -1 if unavailable. */
+int qaff_bpf_egress_program_fd(const struct qaff_bpf_object *object);
+
 /**
  * Attach the loaded reuseport program to a SO_REUSEPORT UDP socket group.
  *
@@ -203,6 +206,15 @@ int qaff_bpf_program_fd(const struct qaff_bpf_object *object);
  */
 int qaff_attach_reuseport_bpf(const struct qaff_bpf_object *object,
                               int socket_fd);
+
+/**
+ * Attach the optional egress learner program to a cgroup fd.
+ *
+ * The returned libbpf link is owned by object and is released by
+ * qaff_bpf_object_close().
+ */
+int qaff_attach_cgroup_egress_bpf(struct qaff_bpf_object *object,
+                                  int cgroup_fd);
 
 #ifdef __cplusplus
 }

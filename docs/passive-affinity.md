@@ -105,6 +105,13 @@ the CID is usually the worker that owns the connection state. When the client
 later sends that CID as a DCID, the ingress path can route it back to the same
 worker even if the client address or UDP port changed.
 
+The initial implementation uses an optional cgroup skb egress program. Start
+`qaffd` with `--egress-cgroup PATH` where `PATH` is a cgroup v2 directory. The
+egress learner currently parses QUIC long headers and learns the server Source
+Connection ID from visible Initial/Handshake packets. It does not parse
+encrypted short-header frames such as `NEW_CONNECTION_ID`; those remain outside
+the black-box dataplane's reliable visibility.
+
 ### Socket-to-Worker Mapping
 
 Passive mode still needs a way to map kernel-observed sockets to worker IDs.
@@ -359,4 +366,3 @@ medium       egress + ingress passive learning
 weak         ingress-only passive learning
 none         plain Linux reuseport/RSS
 ```
-

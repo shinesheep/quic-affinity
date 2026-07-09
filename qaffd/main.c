@@ -55,6 +55,7 @@ struct qaffd_cid_entry {
 struct qaffd_options {
   const char *socket_path;
   const char *bpf_object_path;
+  const char *egress_cgroup_path;
   const char *pin_root;
   const char *state_path;
   uint8_t short_cid_len;
@@ -554,6 +555,7 @@ static void usage(FILE *out) {
   fprintf(out,
           "Usage: qaffd --socket PATH --bpf PATH --short-cid-len N "
           "[--fallback-worker ID] [--pin-root PATH] [--state-path PATH] "
+          "[--egress-cgroup PATH] "
           "[--cid-profile-v1-key HEX32 | --cid-profile-v1-key-file PATH] "
           "[--cid-profile-v2-key HEX32 | --cid-profile-v2-key-file PATH] "
           "[--cid-profile-v2-config-id ID] "
@@ -668,6 +670,8 @@ static int parse_args(int argc, char **argv, struct qaffd_options *options) {
       options->socket_path = argv[++i];
     } else if (strcmp(argv[i], "--bpf") == 0 && i + 1 < argc) {
       options->bpf_object_path = argv[++i];
+    } else if (strcmp(argv[i], "--egress-cgroup") == 0 && i + 1 < argc) {
+      options->egress_cgroup_path = argv[++i];
     } else if (strcmp(argv[i], "--pin-root") == 0 && i + 1 < argc) {
       options->pin_root = argv[++i];
     } else if (strcmp(argv[i], "--state-path") == 0 && i + 1 < argc) {
@@ -1793,6 +1797,26 @@ static int make_server_socket(const struct qaffd_state *state,
   return fd;
 }
 
+static int attach_egress_cgroup_if_configured(struct qaff_bpf_object *bpf,
+                                              const char *path) {
+  if (path == NULL) {
+    return 0;
+  }
+
+  int fd = open(path, O_RDONLY | O_DIRECTORY | O_CLOEXEC);
+  if (fd < 0) {
+    return -1;
+  }
+  int rc = qaff_attach_cgroup_egress_bpf(bpf, fd);
+  int saved_errno = errno;
+  close(fd);
+  if (rc != 0) {
+    errno = saved_errno ? saved_errno : EIO;
+    return -1;
+  }
+  return 0;
+}
+
 static int accept_cloexec(int server_fd) {
   int fd;
   do {
@@ -1967,6 +1991,15 @@ int main(int argc, char **argv) {
                            daemon_options.bpf_object_path,
                            &state.bpf) != 0) {
     perror("qaff_bpf_object_open");
+    qaff_close(state.ctx);
+    return 1;
+  }
+
+  if (attach_egress_cgroup_if_configured(
+          state.bpf,
+          daemon_options.egress_cgroup_path) != 0) {
+    perror("attach_egress_cgroup");
+    qaff_bpf_object_close(state.bpf);
     qaff_close(state.ctx);
     return 1;
   }

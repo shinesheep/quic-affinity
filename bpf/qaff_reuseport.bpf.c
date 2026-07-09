@@ -281,6 +281,89 @@ static __always_inline int qaff_passive_worker(
   return 1;
 }
 
+static __always_inline int qaff_egress_udp_payload_offset(
+    struct __sk_buff *skb,
+    __u32 *payload_offset) {
+  void *data = (void *)(long)skb->data;
+  void *data_end = (void *)(long)skb->data_end;
+
+  if (data + 1 > data_end) {
+    return -1;
+  }
+
+  __u8 first = *(__u8 *)data;
+  __u8 version = first >> 4;
+  if (version == 4) {
+    if (data + 20 > data_end) {
+      return -1;
+    }
+    __u8 ihl = first & 0x0f;
+    if (ihl < 5) {
+      return -1;
+    }
+    __u32 ip_header_len = (__u32)ihl * 4u;
+    if (data + ip_header_len + QAFF_UDP_HEADER_LEN > data_end) {
+      return -1;
+    }
+    __u8 protocol = *(__u8 *)(data + 9);
+    if (protocol != QAFF_IPPROTO_UDP) {
+      return -1;
+    }
+    *payload_offset = ip_header_len + QAFF_UDP_HEADER_LEN;
+    return 0;
+  }
+
+  if (version == 6) {
+    if (data + 40 + QAFF_UDP_HEADER_LEN > data_end) {
+      return -1;
+    }
+    __u8 next_header = *(__u8 *)(data + 6);
+    if (next_header != QAFF_IPPROTO_UDP) {
+      return -1;
+    }
+    *payload_offset = 40u + QAFF_UDP_HEADER_LEN;
+    return 0;
+  }
+
+  return -1;
+}
+
+static __always_inline int qaff_extract_long_scid(struct __sk_buff *skb,
+                                                  struct qaff_cid_key *key) {
+  void *data = (void *)(long)skb->data;
+  void *data_end = (void *)(long)skb->data_end;
+  __u32 payload_offset = 0;
+
+  if (qaff_egress_udp_payload_offset(skb, &payload_offset) != 0) {
+    return -1;
+  }
+  if (data + payload_offset + 6 > data_end) {
+    return -1;
+  }
+
+  __u8 first = *(__u8 *)(data + payload_offset);
+  if ((first & 0x80) == 0) {
+    return -1;
+  }
+
+  __u8 dcid_len = *(__u8 *)(data + payload_offset + 5);
+  if (dcid_len > QAFF_MAX_CID_LEN) {
+    return -1;
+  }
+
+  __u32 scid_len_offset = payload_offset + 6u + (__u32)dcid_len;
+  if (data + scid_len_offset + 1 > data_end) {
+    return -1;
+  }
+
+  __u8 scid_len = *(__u8 *)(data + scid_len_offset);
+  if (scid_len == 0 || scid_len > QAFF_MAX_CID_LEN) {
+    return -1;
+  }
+
+  return qaff_copy_dcid(key, data, data_end, scid_len_offset + 1, scid_len);
+}
+
 SEC("sk_reuseport")
 int qaff_select(struct sk_reuseport_md *ctx) {
   struct qaff_cid_key key;
@@ -344,4 +427,46 @@ int qaff_select(struct sk_reuseport_md *ctx) {
   qaff_count(QAFF_STAT_FALLBACK);
   bpf_sk_select_reuseport(ctx, &qaff_workers, &fallback, 0);
   return SK_PASS;
+}
+
+SEC("cgroup_skb/egress")
+int qaff_egress_learn(struct __sk_buff *skb) {
+  __u32 config_key = 0;
+  struct qaff_config_value *config =
+      bpf_map_lookup_elem(&qaff_config, &config_key);
+  if (!config || !config->passive_affinity_enabled) {
+    return 1;
+  }
+
+  struct qaff_cid_key key;
+  if (qaff_extract_long_scid(skb, &key) != 0) {
+    return 1;
+  }
+
+  __u64 cookie = bpf_get_socket_cookie(skb);
+  if (cookie == 0) {
+    qaff_count(QAFF_STAT_PASSIVE_EGRESS_NO_WORKER);
+    return 1;
+  }
+
+  __u32 *worker_id = bpf_map_lookup_elem(&qaff_socket_workers, &cookie);
+  if (!worker_id) {
+    qaff_count(QAFF_STAT_PASSIVE_EGRESS_NO_WORKER);
+    return 1;
+  }
+
+  struct qaff_passive_cid_value value;
+  __builtin_memset(&value, 0, sizeof(value));
+  value.worker_id = *worker_id;
+  __u32 *generation = bpf_map_lookup_elem(&qaff_worker_generations, worker_id);
+  if (generation) {
+    value.worker_generation = *generation;
+  }
+  value.confidence = QAFF_PASSIVE_CONFIDENCE_HIGH;
+  value.source = QAFF_PASSIVE_SOURCE_EGRESS;
+
+  if (bpf_map_update_elem(&qaff_passive_cids, &key, &value, BPF_ANY) == 0) {
+    qaff_count(QAFF_STAT_PASSIVE_EGRESS_LEARN);
+  }
+  return 1;
 }
