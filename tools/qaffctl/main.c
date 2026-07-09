@@ -19,6 +19,8 @@ static void usage(FILE *out) {
           "  qaffctl cids SOCKET --count\n"
           "  qaffctl workers SOCKET\n"
           "  qaffctl unregister-worker SOCKET WORKER_ID\n"
+          "  qaffctl register-passive-cid SOCKET WORKER_ID CID_HEX CONFIDENCE SOURCE\n"
+          "  qaffctl retire-passive-cid SOCKET CID_HEX\n"
           "  qaffctl stats SOCKET\n"
           "  qaffctl stop SOCKET\n");
 }
@@ -323,6 +325,36 @@ static int parse_u32_arg(const char *text, uint32_t *out) {
   return 0;
 }
 
+static int parse_passive_confidence(const char *text, uint8_t *out) {
+  if (strcmp(text, "low") == 0 || strcmp(text, "1") == 0) {
+    *out = QAFF_PASSIVE_CONFIDENCE_LOW;
+    return 0;
+  }
+  if (strcmp(text, "medium") == 0 || strcmp(text, "2") == 0) {
+    *out = QAFF_PASSIVE_CONFIDENCE_MEDIUM;
+    return 0;
+  }
+  if (strcmp(text, "high") == 0 || strcmp(text, "3") == 0) {
+    *out = QAFF_PASSIVE_CONFIDENCE_HIGH;
+    return 0;
+  }
+  errno = EINVAL;
+  return -1;
+}
+
+static int parse_passive_source(const char *text, uint8_t *out) {
+  if (strcmp(text, "ingress") == 0 || strcmp(text, "1") == 0) {
+    *out = QAFF_PASSIVE_SOURCE_INGRESS;
+    return 0;
+  }
+  if (strcmp(text, "egress") == 0 || strcmp(text, "2") == 0) {
+    *out = QAFF_PASSIVE_SOURCE_EGRESS;
+    return 0;
+  }
+  errno = EINVAL;
+  return -1;
+}
+
 static int cmd_unregister_worker(int argc, char **argv) {
   if (argc != 4) {
     usage(stderr);
@@ -347,6 +379,94 @@ static int cmd_unregister_worker(int argc, char **argv) {
   }
 
   close(fd);
+  return 0;
+}
+
+static int cmd_register_passive_cid(int argc, char **argv) {
+  if (argc != 7) {
+    usage(stderr);
+    return 2;
+  }
+
+  uint32_t worker_id = 0;
+  if (parse_u32_arg(argv[3], &worker_id) != 0) {
+    fprintf(stderr, "invalid worker id\n");
+    return 2;
+  }
+
+  uint8_t *cid = NULL;
+  size_t cid_len = 0;
+  if (parse_hex(argv[4], &cid, &cid_len) != 0 ||
+      cid_len == 0 ||
+      cid_len > QAFF_MAX_CID_LEN) {
+    fprintf(stderr, "invalid CID hex\n");
+    free(cid);
+    return 2;
+  }
+
+  struct qaff_passive_cid_value value;
+  memset(&value, 0, sizeof(value));
+  value.worker_id = worker_id;
+  if (parse_passive_confidence(argv[5], &value.confidence) != 0) {
+    fprintf(stderr, "invalid passive confidence\n");
+    free(cid);
+    return 2;
+  }
+  if (parse_passive_source(argv[6], &value.source) != 0) {
+    fprintf(stderr, "invalid passive source\n");
+    free(cid);
+    return 2;
+  }
+
+  int fd = open_control_or_die(argv[2]);
+  if (fd < 0) {
+    free(cid);
+    return 1;
+  }
+
+  if (qaff_control_register_passive_cid(fd, cid, cid_len, &value) != 0) {
+    perror("qaff_control_register_passive_cid");
+    close(fd);
+    free(cid);
+    return 1;
+  }
+
+  close(fd);
+  free(cid);
+  return 0;
+}
+
+static int cmd_retire_passive_cid(int argc, char **argv) {
+  if (argc != 4) {
+    usage(stderr);
+    return 2;
+  }
+
+  uint8_t *cid = NULL;
+  size_t cid_len = 0;
+  if (parse_hex(argv[3], &cid, &cid_len) != 0 ||
+      cid_len == 0 ||
+      cid_len > QAFF_MAX_CID_LEN) {
+    fprintf(stderr, "invalid CID hex\n");
+    free(cid);
+    return 2;
+  }
+
+  int fd = open_control_or_die(argv[2]);
+  if (fd < 0) {
+    free(cid);
+    return 1;
+  }
+
+  if (qaff_control_retire_passive_cid(fd, cid, cid_len) != 0) {
+    perror("qaff_control_retire_passive_cid");
+    close(fd);
+    free(cid);
+    return 1;
+  }
+
+  close(fd);
+  free(cid);
   return 0;
 }
 
@@ -415,6 +535,14 @@ int main(int argc, char **argv) {
 
   if (strcmp(argv[1], "unregister-worker") == 0) {
     return cmd_unregister_worker(argc, argv);
+  }
+
+  if (strcmp(argv[1], "register-passive-cid") == 0) {
+    return cmd_register_passive_cid(argc, argv);
+  }
+
+  if (strcmp(argv[1], "retire-passive-cid") == 0) {
+    return cmd_retire_passive_cid(argc, argv);
   }
 
   if (strcmp(argv[1], "stop") == 0) {

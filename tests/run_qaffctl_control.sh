@@ -80,6 +80,20 @@ grep -q '^cid_index_mismatch=0$' /tmp/qaffctl-control-$$.config
 grep -q '^pin_root=$' /tmp/qaffctl-control-$$.config
 grep -q '^state_path=$' /tmp/qaffctl-control-$$.config
 
+if "$qaffctl_bin" register-passive-cid "$sock" 0 deadbeef high egress \
+  >/tmp/qaffctl-control-$$.passive 2>/tmp/qaffctl-control-$$.passive.err; then
+  echo "register-passive-cid unexpectedly succeeded without a worker" >&2
+  exit 1
+fi
+grep -q '^qaff_control_register_passive_cid:' /tmp/qaffctl-control-$$.passive.err
+
+if "$qaffctl_bin" retire-passive-cid "$sock" deadbeef \
+  >/tmp/qaffctl-control-$$.passive-retire 2>/tmp/qaffctl-control-$$.passive-retire.err; then
+  echo "retire-passive-cid unexpectedly succeeded for missing CID" >&2
+  exit 1
+fi
+grep -q '^qaff_control_retire_passive_cid:' /tmp/qaffctl-control-$$.passive-retire.err
+
 "$qaffctl_bin" cids "$sock" --count >/tmp/qaffctl-control-$$.cids
 grep -q '^cid_map_count=0$' /tmp/qaffctl-control-$$.cids
 grep -q '^cid_owner_count=0$' /tmp/qaffctl-control-$$.cids
@@ -99,4 +113,7 @@ wait "$daemon_pid"
 daemon_pid=
 rm -f /tmp/qaffctl-control-$$.out /tmp/qaffctl-control-$$.err \
   /tmp/qaffctl-control-$$.health /tmp/qaffctl-control-$$.config \
-  /tmp/qaffctl-control-$$.cids /tmp/qaffctl-control-$$.workers
+  /tmp/qaffctl-control-$$.cids /tmp/qaffctl-control-$$.workers \
+  /tmp/qaffctl-control-$$.passive /tmp/qaffctl-control-$$.passive.err \
+  /tmp/qaffctl-control-$$.passive-retire \
+  /tmp/qaffctl-control-$$.passive-retire.err
