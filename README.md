@@ -182,6 +182,7 @@ The `qaffd_control` test starts `qaffd`, registers IPv4 and IPv6 reuseport worke
 - `qaff_minimal_registry`: embedded mode. The process creates maps, loads BPF, attaches the program, registers workers, and registers CIDs directly.
 - `qaff_minimal_control`: daemon-controlled mode. `qaffd` owns BPF setup; the worker-side example creates UDP workers and registers worker sockets/CIDs through the Unix socket control API.
 - `qaff_quiche_control_probe`: optional quiche FFI integration probe. It creates a real quiche server connection, registers quiche source CIDs through `qaffd`, and validates the CID lifecycle hook points.
+- `qaff_quiche_udp_smoke`: optional real UDP quiche smoke. It sends real quiche packets through Linux UDP sockets, registers the server CID through `qaffd`, switches the client source port, and verifies a dataplane CID hit.
 
 ### Optional quiche Probe
 
@@ -195,10 +196,10 @@ cargo build --manifest-path third_party/quiche/quiche/Cargo.toml \
   --features ffi
 cmake -B build -S .
 cmake --build build
-ctest --test-dir build --output-on-failure -R quiche_control_probe
+ctest --test-dir build --output-on-failure -R 'quiche_control_probe|quiche_udp_smoke'
 ```
 
-`third_party/` is ignored by Git. The probe is intentionally not a full HTTP/3 server yet; it verifies that server-issued CIDs from a real QUIC stack can be registered through the `qaffd` control plane.
+`third_party/` is ignored by Git. The control probe verifies that server-issued CIDs from a real QUIC stack can be registered through the `qaffd` control plane. The UDP smoke verifies an actual packet path where the first Initial falls back, the server SCID is registered, and a later packet from a different client source port produces a CID-map hit.
 
 ## Documentation
 

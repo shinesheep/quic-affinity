@@ -191,6 +191,9 @@ static int handle_request(struct qaffd_state *state, int client_fd) {
     if (received_fd >= 0) {
       close(received_fd);
     }
+    if (errno == ECONNRESET) {
+      return 0;
+    }
     return -1;
   }
 

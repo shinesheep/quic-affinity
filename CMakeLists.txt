@@ -80,6 +80,24 @@ if(QAFF_BUILD_QUICHE_EXAMPLES AND
     VERBATIM)
   target_compile_options(qaff_quiche_control_probe PRIVATE
     -Wall -Wextra -Wpedantic)
+
+  add_executable(qaff_quiche_udp_smoke
+    examples/quiche_udp_smoke/main.c)
+
+  target_include_directories(qaff_quiche_udp_smoke PRIVATE
+    ${QAFF_QUICHE_INCLUDE_DIR})
+  target_link_libraries(qaff_quiche_udp_smoke PRIVATE
+    qaffinity
+    ${QAFF_QUICHE_LIBRARY})
+  set_target_properties(qaff_quiche_udp_smoke PROPERTIES
+    BUILD_RPATH "$ORIGIN;${CMAKE_CURRENT_SOURCE_DIR}/third_party/quiche/target/debug")
+  add_custom_command(TARGET qaff_quiche_udp_smoke POST_BUILD
+    COMMAND ${CMAKE_COMMAND} -E create_symlink
+      ${QAFF_QUICHE_LIBRARY}
+      $<TARGET_FILE_DIR:qaff_quiche_udp_smoke>/libquiche.so.0
+    VERBATIM)
+  target_compile_options(qaff_quiche_udp_smoke PRIVATE
+    -Wall -Wextra -Wpedantic)
 else()
   message(STATUS "quiche integration example disabled; build quiche FFI under third_party/quiche to enable it")
 endif()
@@ -147,6 +165,18 @@ if(TARGET qaff_quiche_control_probe)
       $<TARGET_FILE:qaff_quiche_control_probe>
       ${CMAKE_CURRENT_BINARY_DIR}/qaff_reuseport.bpf.o)
   set_tests_properties(quiche_control_probe PROPERTIES SKIP_RETURN_CODE 77)
+endif()
+
+if(TARGET qaff_quiche_udp_smoke)
+  add_test(NAME quiche_udp_smoke
+    COMMAND /bin/sh
+      ${CMAKE_CURRENT_SOURCE_DIR}/tests/run_quiche_udp_smoke.sh
+      $<TARGET_FILE:qaffd>
+      $<TARGET_FILE:qaff_quiche_udp_smoke>
+      ${CMAKE_CURRENT_BINARY_DIR}/qaff_reuseport.bpf.o
+      ${CMAKE_CURRENT_SOURCE_DIR}/third_party/quiche/quiche/examples/cert.crt
+      ${CMAKE_CURRENT_SOURCE_DIR}/third_party/quiche/quiche/examples/cert.key)
+  set_tests_properties(quiche_udp_smoke PROPERTIES SKIP_RETURN_CODE 77)
 endif()
 
 if(QAFF_BUILD_BPF)

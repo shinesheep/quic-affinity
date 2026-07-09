@@ -21,7 +21,7 @@
 
 - Pick one first integration target.
 - Add an example that registers server-issued CIDs. (Initial optional quiche FFI probe exists.)
-- Run a real QUIC connection migration/NAT rebinding test.
+- Run a real QUIC connection migration/NAT rebinding test. (Initial quiche UDP source-port-change smoke exists.)
 - Define the control-plane split between embedded library mode and `qaffd`.
 
 ## Phase 4: Routable CID Profile

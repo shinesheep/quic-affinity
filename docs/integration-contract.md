@@ -103,6 +103,21 @@ The probe:
 
 This is not a complete QUIC server. It is the first integration checkpoint for CID lifecycle hooks.
 
+## quiche UDP Smoke
+
+If quiche FFI is available, `qaff_quiche_udp_smoke` runs a real UDP packet loop:
+
+1. Starts with workers registered through `qaffd`.
+2. Creates a real quiche client connection.
+3. Sends the first client Initial through a UDP socket.
+4. Receives that packet on the fallback worker.
+5. Creates a real quiche server connection and registers its server SCID through `qaffd`.
+6. Sends the server response to the client.
+7. Sends the next client packet from a different UDP source port.
+8. Verifies the dataplane sees at least one CID-map hit and one fallback.
+
+This validates the core migration-affinity path with a real QUIC stack, while remaining smaller than a full HTTP/3 server.
+
 ## CID Registration
 
 When the QUIC stack creates or advertises a server-side CID, it must register that CID before packets using it are expected to arrive:
