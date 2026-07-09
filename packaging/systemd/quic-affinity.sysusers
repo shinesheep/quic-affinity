@@ -1,0 +1,1 @@
+# qaffd currently needs BPF capabilities; root-owned deployment is the default.

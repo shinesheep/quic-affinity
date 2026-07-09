@@ -87,6 +87,18 @@ cmake --build build
 ctest --test-dir build --output-on-failure
 ```
 
+Install into `/usr`:
+
+```sh
+cmake --install build --prefix /usr
+```
+
+For package staging, keep the runtime prefix as `/usr` and set `DESTDIR`:
+
+```sh
+DESTDIR=/tmp/qaff-root cmake --install build --prefix /usr
+```
+
 The build currently produces:
 
 - `build/libqaffinity.a`
@@ -124,14 +136,16 @@ Implemented:
 - libbpf object loader that can reuse `qaffinity` maps and attach the reuseport program to a socket.
 - `sk_reuseport` eBPF source that routes long-header and configured-length short-header packets by registered DCID.
 - Stats read API for dataplane counters.
-- Minimal `qaffd` control plane with Unix socket fd passing for worker registration.
-- Parser unit test, privileged reuseport smoke test, and CLI parser command.
+- `qaffd` control plane with Unix socket fd passing for worker registration, CID lifecycle, worker unregister, map pinning, restart recovery, and observability.
+- Parser unit test, privileged reuseport smoke test, qaffd/qaffctl control tests, restart smoke, quiche probes, and packaging smoke.
+- CMake install rules for `qaffd`, `qaffctl`, public headers, `libqaffinity.a`, and the eBPF object.
+- systemd, tmpfiles, sysusers, and environment-file templates under `packaging/systemd/`.
 
 Not implemented yet:
 
-- Real QUIC stack integration.
-- Graceful reload, worker lifecycle cleanup, and map pinning.
 - Routable CID profile.
+- Distro-native `.deb`/`.rpm` packaging.
+- Direct pinned-map inspection by `qaffctl`.
 
 ## Privileged Smoke Test
 
@@ -198,6 +212,26 @@ build/qaffctl stop /tmp/qaffd.sock
 ```
 
 The `qaffd_control` test starts `qaffd`, registers IPv4 and IPv6 reuseport workers through the control API, registers a CID, verifies hit and fallback routing, unregisters workers, and verifies that CIDs owned by removed workers are retired before later packets fall back. The `qaffd_restart` test verifies pinned map and state recovery when bpffs is writable; it is skipped on systems where `/sys/fs/bpf` is unavailable or read-only.
+
+## Deployment Skeleton
+
+The repository includes deployment templates in `packaging/systemd/`:
+
+- `qaffd@.service`: per-listener systemd unit.
+- `qaffd.env.example`: listener environment file template.
+- `quic-affinity.tmpfiles`: runtime, state, and bpffs directory declarations.
+- `quic-affinity.sysusers`: placeholder for future non-root service users.
+
+After installation, copy and edit the environment example:
+
+```sh
+install -d /etc/quic-affinity
+cp /usr/share/doc/quic_affinity/examples/qaffd.env.example \
+  /etc/quic-affinity/udp-ipv4-127.0.0.1-4433.env
+systemctl enable --now qaffd@udp-ipv4-127.0.0.1-4433.service
+```
+
+The unit expects `qaffd` at `/usr/sbin/qaffd`, `qaffctl` at `/usr/bin/qaffctl`, and the BPF object at `/usr/libexec/quic-affinity/qaff_reuseport.bpf.o`. The bpffs path used by `QAFF_PIN_ROOT` must be writable.
 
 ## Examples
 

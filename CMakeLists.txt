@@ -5,6 +5,8 @@ project(quic_affinity
   DESCRIPTION "Linux QUIC worker affinity layer"
   LANGUAGES C)
 
+include(GNUInstallDirs)
+
 set(CMAKE_C_STANDARD 11)
 set(CMAKE_C_STANDARD_REQUIRED ON)
 set(CMAKE_C_EXTENSIONS OFF)
@@ -44,6 +46,35 @@ add_executable(qaffd
 
 target_link_libraries(qaffd PRIVATE qaffinity)
 target_compile_options(qaffd PRIVATE -Wall -Wextra -Wpedantic)
+
+install(TARGETS qaffinity
+  ARCHIVE DESTINATION ${CMAKE_INSTALL_LIBDIR})
+
+install(TARGETS qaffctl
+  RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
+
+install(TARGETS qaffd
+  RUNTIME DESTINATION ${CMAKE_INSTALL_SBINDIR})
+
+install(DIRECTORY include/quic_affinity
+  DESTINATION ${CMAKE_INSTALL_INCLUDEDIR})
+
+install(FILES packaging/systemd/qaffd@.service
+  DESTINATION lib/systemd/system)
+
+install(FILES packaging/systemd/quic-affinity.tmpfiles
+  RENAME quic-affinity.conf
+  DESTINATION lib/tmpfiles.d)
+
+install(FILES packaging/systemd/quic-affinity.sysusers
+  RENAME quic-affinity.conf
+  DESTINATION lib/sysusers.d)
+
+install(FILES packaging/systemd/qaffd.env.example
+  DESTINATION ${CMAKE_INSTALL_DOCDIR}/examples)
+
+install(FILES README.md
+  DESTINATION ${CMAKE_INSTALL_DOCDIR})
 
 add_executable(qaff_minimal_registry
   examples/minimal_registry/main.c)
@@ -217,6 +248,8 @@ if(QAFF_BUILD_BPF)
 
     add_custom_target(qaff_bpf ALL
       DEPENDS ${CMAKE_CURRENT_BINARY_DIR}/qaff_reuseport.bpf.o)
+    install(FILES ${CMAKE_CURRENT_BINARY_DIR}/qaff_reuseport.bpf.o
+      DESTINATION ${CMAKE_INSTALL_LIBEXECDIR}/quic-affinity)
     add_dependencies(test_reuseport_smoke qaff_bpf)
     add_dependencies(qaffd qaff_bpf)
     add_dependencies(test_qaffd_control qaff_bpf)
@@ -224,4 +257,11 @@ if(QAFF_BUILD_BPF)
   else()
     message(WARNING "clang not found; eBPF object will not be built")
   endif()
+endif()
+
+if(TARGET qaff_bpf)
+  add_test(NAME packaging_smoke
+    COMMAND /bin/sh
+      ${CMAKE_CURRENT_SOURCE_DIR}/tests/run_packaging_smoke.sh
+      ${CMAKE_CURRENT_BINARY_DIR})
 endif()

@@ -1,0 +1,4 @@
+d /run/quic-affinity 0755 root root -
+d /var/lib/quic-affinity 0750 root root -
+d /sys/fs/bpf/quic-affinity 0700 root root -
+d /sys/fs/bpf/quic-affinity/listeners 0700 root root -

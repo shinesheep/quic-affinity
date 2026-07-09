@@ -1,0 +1,21 @@
+[Unit]
+Description=QUIC Affinity daemon for %i
+After=network.target
+
+[Service]
+Type=simple
+EnvironmentFile=/etc/quic-affinity/%i.env
+RuntimeDirectory=quic-affinity
+StateDirectory=quic-affinity
+ExecStart=/usr/sbin/qaffd --socket ${QAFF_SOCKET} --bpf ${QAFF_BPF_OBJECT} --short-cid-len ${QAFF_SHORT_CID_LEN} --fallback-worker ${QAFF_FALLBACK_WORKER} --pin-root ${QAFF_PIN_ROOT} --state-path ${QAFF_STATE_PATH}
+Restart=on-failure
+RestartSec=1s
+NoNewPrivileges=yes
+CapabilityBoundingSet=CAP_BPF CAP_NET_ADMIN CAP_PERFMON CAP_SYS_RESOURCE
+AmbientCapabilities=CAP_BPF CAP_NET_ADMIN CAP_PERFMON CAP_SYS_RESOURCE
+ProtectSystem=strict
+ProtectHome=yes
+ReadWritePaths=/run/quic-affinity /var/lib/quic-affinity /sys/fs/bpf/quic-affinity
+
+[Install]
+WantedBy=multi-user.target

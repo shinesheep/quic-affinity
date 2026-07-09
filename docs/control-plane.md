@@ -183,3 +183,4 @@ qaffctl cids LISTENER_ID --limit 20
 
 - Whether qaffd should create worker sockets itself or accept worker socket fds.
 - How to represent CID keys in CLI output without leaking sensitive routing material by default.
+- Whether to ship distro-native packages or keep only CMake install plus systemd templates.
