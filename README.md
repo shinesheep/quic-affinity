@@ -129,13 +129,14 @@ dcid=deadbeefaabbccdd
 
 Implemented:
 
-- Public C headers for parser, registry, worker socket, and BPF loader APIs.
+- Public C headers for parser, registry, worker socket, routable CID profile, and BPF loader APIs.
 - QUIC DCID parser for long headers and configured-length short headers.
 - CID key format shared between user space and BPF.
 - libbpf-backed map creation and CID registration helpers.
 - libbpf object loader that can reuse `qaffinity` maps and attach the reuseport program to a socket.
 - `sk_reuseport` eBPF source that routes long-header and configured-length short-header packets by registered DCID.
 - Stats read API for dataplane counters.
+- Routable CID profile v1 helper for 8-byte server CIDs with worker ID, nonce, and keyed tag.
 - `qaffd` control plane with Unix socket fd passing for worker registration, CID lifecycle, worker unregister, map pinning, restart recovery, and observability.
 - Parser unit test, privileged reuseport smoke test, qaffd/qaffctl control tests, restart smoke, quiche probes, and packaging smoke.
 - CMake install rules for `qaffd`, `qaffctl`, public headers, `libqaffinity.a`, and the eBPF object.
@@ -143,7 +144,6 @@ Implemented:
 
 Not implemented yet:
 
-- Routable CID profile.
 - Distro-native `.deb`/`.rpm` packaging.
 - Direct pinned-map inspection by `qaffctl`.
 
@@ -218,6 +218,8 @@ build/qaffctl stop /tmp/qaffd.sock
 `qaffctl workers` reports each worker's lease state, pidfd availability, peer pid/uid/gid when available, registration age, and last-seen age.
 
 The `qaffd_control` test starts `qaffd`, registers IPv4 and IPv6 reuseport workers through the control API, verifies leased worker cleanup on control-fd close, registers a CID, verifies hit and fallback routing, unregisters workers, and verifies that CIDs owned by removed workers are retired before later packets fall back. The `qaffd_restart` test verifies pinned map and state recovery when bpffs is writable; it is skipped on systems where `/sys/fs/bpf` is unavailable or read-only.
+
+The routable CID profile is documented in `docs/cid-profile.md`.
 
 ## Deployment Skeleton
 

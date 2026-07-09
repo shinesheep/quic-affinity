@@ -18,6 +18,7 @@ find_package(PkgConfig REQUIRED)
 pkg_check_modules(LIBBPF REQUIRED libbpf)
 
 add_library(qaffinity
+  src/cid_profile.c
   src/control_client.c
   src/bpf_loader.c
   src/qaffinity.c
@@ -142,6 +143,14 @@ target_link_libraries(test_quic_parser PRIVATE qaffinity)
 target_compile_options(test_quic_parser PRIVATE -Wall -Wextra -Wpedantic)
 
 add_test(NAME quic_parser COMMAND test_quic_parser)
+
+add_executable(test_cid_profile
+  tests/test_cid_profile.c)
+
+target_link_libraries(test_cid_profile PRIVATE qaffinity)
+target_compile_options(test_cid_profile PRIVATE -Wall -Wextra -Wpedantic)
+
+add_test(NAME cid_profile COMMAND $<TARGET_FILE:test_cid_profile>)
 
 add_executable(test_reuseport_smoke
   tests/test_reuseport_smoke.c)
