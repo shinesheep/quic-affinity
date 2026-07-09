@@ -167,6 +167,13 @@ sudo -n setcap cap_bpf,cap_net_admin,cap_perfmon,cap_sys_resource+ep build/qaffd
 build/qaffd --socket /tmp/qaffd.sock --bpf build/qaff_reuseport.bpf.o --short-cid-len 8
 ```
 
+Inspect and stop it with `qaffctl`:
+
+```sh
+build/qaffctl stats /tmp/qaffd.sock
+build/qaffctl stop /tmp/qaffd.sock
+```
+
 The `qaffd_control` test starts `qaffd`, registers IPv4 and IPv6 reuseport workers through the control API, registers a CID, and verifies hit and fallback routing.
 
 ## Documentation

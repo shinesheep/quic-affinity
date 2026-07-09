@@ -1,3 +1,4 @@
+#include "quic_affinity/control.h"
 #include "quic_affinity/quic_affinity.h"
 
 #include <ctype.h>
@@ -5,13 +6,16 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <unistd.h>
 
 static void usage(FILE *out) {
   fprintf(out,
           "Usage:\n"
           "  qaffctl version\n"
           "  qaffctl stat-names\n"
-          "  qaffctl parse HEX_PACKET [SHORT_CID_LEN]\n");
+          "  qaffctl parse HEX_PACKET [SHORT_CID_LEN]\n"
+          "  qaffctl stats SOCKET\n"
+          "  qaffctl stop SOCKET\n");
 }
 
 static int hex_value(int c) {
@@ -120,6 +124,60 @@ static int cmd_parse(int argc, char **argv) {
   return 0;
 }
 
+static void print_stats(const struct qaff_stats *stats) {
+  for (uint32_t i = 0; i < QAFF_STAT_MAX; i++) {
+    printf("%s=%llu\n",
+           qaff_stat_name(i),
+           (unsigned long long)stats->values[i]);
+  }
+}
+
+static int cmd_stats(int argc, char **argv) {
+  if (argc != 3) {
+    usage(stderr);
+    return 2;
+  }
+
+  int fd = qaff_control_connect(argv[2]);
+  if (fd < 0) {
+    perror("qaff_control_connect");
+    return 1;
+  }
+
+  struct qaff_stats stats;
+  if (qaff_control_read_stats(fd, &stats) != 0) {
+    perror("qaff_control_read_stats");
+    close(fd);
+    return 1;
+  }
+
+  print_stats(&stats);
+  close(fd);
+  return 0;
+}
+
+static int cmd_stop(int argc, char **argv) {
+  if (argc != 3) {
+    usage(stderr);
+    return 2;
+  }
+
+  int fd = qaff_control_connect(argv[2]);
+  if (fd < 0) {
+    perror("qaff_control_connect");
+    return 1;
+  }
+
+  if (qaff_control_stop(fd) != 0) {
+    perror("qaff_control_stop");
+    close(fd);
+    return 1;
+  }
+
+  close(fd);
+  return 0;
+}
+
 int main(int argc, char **argv) {
   if (argc < 2) {
     usage(stderr);
@@ -140,6 +198,14 @@ int main(int argc, char **argv) {
 
   if (strcmp(argv[1], "parse") == 0) {
     return cmd_parse(argc, argv);
+  }
+
+  if (strcmp(argv[1], "stats") == 0) {
+    return cmd_stats(argc, argv);
+  }
+
+  if (strcmp(argv[1], "stop") == 0) {
+    return cmd_stop(argc, argv);
   }
 
   usage(stderr);

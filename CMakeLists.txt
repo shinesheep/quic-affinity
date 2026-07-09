@@ -87,6 +87,14 @@ add_test(NAME qaffd_control
     ${CMAKE_CURRENT_BINARY_DIR}/qaff_reuseport.bpf.o)
 set_tests_properties(qaffd_control PROPERTIES SKIP_RETURN_CODE 77)
 
+add_test(NAME qaffctl_control
+  COMMAND /bin/sh
+    ${CMAKE_CURRENT_SOURCE_DIR}/tests/run_qaffctl_control.sh
+    $<TARGET_FILE:qaffd>
+    $<TARGET_FILE:qaffctl>
+    ${CMAKE_CURRENT_BINARY_DIR}/qaff_reuseport.bpf.o)
+set_tests_properties(qaffctl_control PROPERTIES SKIP_RETURN_CODE 77)
+
 if(QAFF_BUILD_BPF)
   find_program(CLANG_EXECUTABLE clang)
   if(CLANG_EXECUTABLE)

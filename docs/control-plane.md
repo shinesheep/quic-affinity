@@ -26,6 +26,13 @@ Worker registration uses Unix-domain `SCM_RIGHTS` fd passing. `qaffd` attaches t
 
 The current MVP supports one listener per `qaffd` process. Multi-listener management remains future work.
 
+`qaffctl` can currently read stats and stop a running daemon:
+
+```sh
+qaffctl stats /tmp/qaffd.sock
+qaffctl stop /tmp/qaffd.sock
+```
+
 ## Process Model
 
 ```text
@@ -122,13 +129,19 @@ The control plane must avoid reusing a worker ID while CIDs still point to the o
 Initial commands:
 
 ```sh
-qaffctl listeners
 qaffctl stats LISTENER_ID
+qaffctl stop LISTENER_ID
+```
+
+Future commands:
+
+```sh
+qaffctl listeners
 qaffctl workers LISTENER_ID
 qaffctl cids LISTENER_ID --limit 20
 ```
 
-Before qaffd exists, `qaffctl` can inspect pinned maps directly.
+Before map pinning exists, `qaffctl` talks to `qaffd` over the daemon Unix socket.
 
 ## Open Decisions
 

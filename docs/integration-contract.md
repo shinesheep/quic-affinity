@@ -79,6 +79,13 @@ When using `qaffd`, the privileged daemon owns BPF setup:
 
 The current MVP supports one listener per `qaffd` process.
 
+Stats and shutdown are available through `qaffctl`:
+
+```sh
+qaffctl stats /tmp/qaffd.sock
+qaffctl stop /tmp/qaffd.sock
+```
+
 ## CID Registration
 
 When the QUIC stack creates or advertises a server-side CID, it must register that CID before packets using it are expected to arrive:
