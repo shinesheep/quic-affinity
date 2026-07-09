@@ -76,6 +76,7 @@ When using `qaffd`, the privileged daemon owns BPF setup:
 3. Each worker passes its socket fd to `qaffd` with `REGISTER_WORKER`.
 4. `qaffd` registers the socket in the sockarray and attaches BPF on first worker registration.
 5. Workers register and retire server-issued CIDs through the control API.
+6. Drained workers unregister their socket after their CIDs have been retired.
 
 The current MVP supports one listener per `qaffd` process.
 
@@ -85,6 +86,7 @@ Stats and shutdown are available through `qaffctl`:
 qaffctl health /tmp/qaffd.sock
 qaffctl config /tmp/qaffd.sock
 qaffctl workers /tmp/qaffd.sock
+qaffctl unregister-worker /tmp/qaffd.sock 2
 qaffctl stats /tmp/qaffd.sock
 qaffctl stop /tmp/qaffd.sock
 ```
@@ -147,6 +149,17 @@ qaff_retire_cid(ctx, cid, cid_len);
 
 Retirement should be conservative. A CID should remain registered while delayed packets using that CID might still arrive.
 
+## Worker Lifecycle
+
+Workers must use stable worker IDs while any registered CID can still route to them. In daemon-controlled mode:
+
+1. Register the worker socket before registering CIDs for that worker.
+2. Stop assigning new connections to a draining worker.
+3. Retire or let expire CIDs owned by that worker.
+4. Call `UNREGISTER_WORKER` after the worker is drained.
+
+`qaffd` rejects new CID registrations for unregistered worker IDs. It does not yet keep a daemon-side reverse index from worker ID to CID, so it does not bulk-retire CIDs during worker unregistration.
+
 ## Packet Routing Semantics
 
 The dataplane behavior is:
@@ -156,7 +169,8 @@ The dataplane behavior is:
 3. Parse the QUIC DCID.
 4. Lookup the DCID in the CID map.
 5. If found, select the registered worker socket.
-6. If not found or parsing fails, select the fallback worker.
+6. If the worker socket is missing, record `worker_missing` and select the fallback worker.
+7. If not found or parsing fails, select the fallback worker.
 
 Fallback worker:
 
@@ -188,6 +202,8 @@ The dataplane does not send stateless resets.
 
 If routing fails, the MVP behavior is fallback selection. Future policies may allow drop-on-error or configurable fallback behavior.
 
+If a CID still points at an unregistered worker, routing is treated as a worker-missing condition rather than a stateless reset trigger.
+
 The application should read dataplane counters through `qaff_read_stats()` and alert on unexpected increases in:
 
 - `parse_error`
@@ -205,6 +221,9 @@ void qaff_close(struct qaff_context *ctx);
 int qaff_register_worker_socket(struct qaff_context *ctx,
                                 uint32_t worker_id,
                                 int socket_fd);
+
+int qaff_unregister_worker_socket(struct qaff_context *ctx,
+                                  uint32_t worker_id);
 
 int qaff_register_cid(struct qaff_context *ctx,
                       const uint8_t *cid,

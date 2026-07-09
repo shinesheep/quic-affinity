@@ -133,6 +133,14 @@ int qaff_control_register_worker(int control_fd,
   return qaff_round_trip(control_fd, &msg, socket_fd, &reply);
 }
 
+int qaff_control_unregister_worker(int control_fd, uint32_t worker_id) {
+  struct qaff_control_msg msg;
+  struct qaff_control_msg reply;
+  qaff_control_msg_init(&msg, QAFF_CONTROL_UNREGISTER_WORKER);
+  msg.worker_id = worker_id;
+  return qaff_round_trip(control_fd, &msg, -1, &reply);
+}
+
 int qaff_control_register_cid(int control_fd,
                               uint32_t worker_id,
                               const uint8_t *cid,

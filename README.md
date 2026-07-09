@@ -156,6 +156,7 @@ ctest --test-dir build --output-on-failure -R reuseport_smoke
 Current control operations:
 
 - register worker socket using `SCM_RIGHTS`
+- unregister worker socket
 - register CID
 - retire CID
 - read stats
@@ -180,10 +181,11 @@ build/qaffctl stats /tmp/qaffd.sock
 build/qaffctl health /tmp/qaffd.sock
 build/qaffctl config /tmp/qaffd.sock   # includes short_cid_len, attached, worker_count, fallback_worker_id
 build/qaffctl workers /tmp/qaffd.sock
+build/qaffctl unregister-worker /tmp/qaffd.sock 2
 build/qaffctl stop /tmp/qaffd.sock
 ```
 
-The `qaffd_control` test starts `qaffd`, registers IPv4 and IPv6 reuseport workers through the control API, registers a CID, and verifies hit and fallback routing.
+The `qaffd_control` test starts `qaffd`, registers IPv4 and IPv6 reuseport workers through the control API, registers a CID, verifies hit and fallback routing, unregisters workers, and verifies stale-CID fallback with `worker_missing` accounting.
 
 ## Examples
 

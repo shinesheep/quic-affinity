@@ -45,6 +45,9 @@ int qaff_register_worker_socket(struct qaff_context *ctx,
                                 uint32_t worker_id,
                                 int socket_fd);
 
+int qaff_unregister_worker_socket(struct qaff_context *ctx,
+                                  uint32_t worker_id);
+
 int qaff_get_cid_map_fd(const struct qaff_context *ctx);
 int qaff_get_worker_sock_map_fd(const struct qaff_context *ctx);
 int qaff_get_stats_map_fd(const struct qaff_context *ctx);

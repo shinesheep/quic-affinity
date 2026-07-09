@@ -223,6 +223,16 @@ int qaff_register_worker_socket(struct qaff_context *ctx,
                              BPF_ANY);
 }
 
+int qaff_unregister_worker_socket(struct qaff_context *ctx,
+                                  uint32_t worker_id) {
+  if (ctx == NULL || ctx->worker_sock_map_fd < 0) {
+    errno = EINVAL;
+    return -1;
+  }
+
+  return bpf_map_delete_elem(ctx->worker_sock_map_fd, &worker_id);
+}
+
 int qaff_get_cid_map_fd(const struct qaff_context *ctx) {
   return ctx ? ctx->cid_map_fd : -1;
 }

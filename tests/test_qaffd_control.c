@@ -287,6 +287,17 @@ static int control_call_register_worker(const char *socket_path,
   return rc;
 }
 
+static int control_call_unregister_worker(const char *socket_path,
+                                          uint32_t worker_id) {
+  int fd = qaff_control_connect(socket_path);
+  if (fd < 0) {
+    return -1;
+  }
+  int rc = qaff_control_unregister_worker(fd, worker_id);
+  close(fd);
+  return rc;
+}
+
 static int control_call_register_cid(const char *socket_path,
                                      uint32_t worker_id,
                                      const uint8_t *cid) {
@@ -321,6 +332,41 @@ static int control_call_workers(const char *socket_path,
   int rc = qaff_control_workers(fd, workers, workers_cap, workers_len);
   close(fd);
   return rc;
+}
+
+static int expect_registered_workers(const char *socket_path,
+                                     const char *case_name,
+                                     const uint32_t *expected,
+                                     size_t expected_len) {
+  uint32_t registered_workers[QAFF_CONTROL_MAX_WORKERS];
+  size_t registered_workers_len = 0;
+  if (control_call_workers(socket_path,
+                           registered_workers,
+                           QAFF_CONTROL_MAX_WORKERS,
+                           &registered_workers_len) != 0) {
+    perror("qaff_control_workers");
+    return -1;
+  }
+  if (registered_workers_len != expected_len) {
+    fprintf(stderr,
+            "%s: expected %zu registered workers, got %zu\n",
+            case_name,
+            expected_len,
+            registered_workers_len);
+    return -1;
+  }
+  for (size_t i = 0; i < registered_workers_len; i++) {
+    if (registered_workers[i] != expected[i]) {
+      fprintf(stderr,
+              "%s: expected worker id %u at index %zu, got %u\n",
+              case_name,
+              expected[i],
+              i,
+              registered_workers[i]);
+      return -1;
+    }
+  }
+  return 0;
 }
 
 static int run_case(const char *qaffd_path,
@@ -367,39 +413,32 @@ static int run_case(const char *qaffd_path,
     }
   }
 
+  const uint32_t all_workers[] = {0, 1, 2};
+  if (expect_registered_workers(socket_path,
+                                test->name,
+                                all_workers,
+                                sizeof(all_workers) / sizeof(all_workers[0])) != 0) {
+    return 1;
+  }
+
+  if (control_call_unregister_worker(socket_path, 1) != 0) {
+    perror("qaff_control_unregister_worker");
+    return 1;
+  }
+
+  const uint32_t after_worker_1_removed[] = {0, 2};
+  if (expect_registered_workers(
+          socket_path,
+          test->name,
+          after_worker_1_removed,
+          sizeof(after_worker_1_removed) / sizeof(after_worker_1_removed[0])) != 0) {
+    return 1;
+  }
+
   if (control_call_register_cid(socket_path, TARGET_WORKER, k_dcid) != 0) {
     perror("qaff_control_register_cid");
     return 1;
   }
-
-  uint32_t registered_workers[QAFF_CONTROL_MAX_WORKERS];
-  size_t registered_workers_len = 0;
-  if (control_call_workers(socket_path,
-                           registered_workers,
-                           QAFF_CONTROL_MAX_WORKERS,
-                           &registered_workers_len) != 0) {
-    perror("qaff_control_workers");
-    return 1;
-  }
-  if (registered_workers_len != WORKER_COUNT) {
-    fprintf(stderr,
-            "%s: expected %d registered workers, got %zu\n",
-            test->name,
-            WORKER_COUNT,
-            registered_workers_len);
-    return 1;
-  }
-  for (size_t i = 0; i < registered_workers_len; i++) {
-    if (registered_workers[i] != i) {
-      fprintf(stderr,
-              "%s: expected worker id %zu, got %u\n",
-              test->name,
-              i,
-              registered_workers[i]);
-      return 1;
-    }
-  }
-
 
   struct sender_socket senders[2] = {{.fd = -1}, {.fd = -1}};
   if (bind_sender_socket(test->family, &senders[0]) != 0 ||
@@ -444,6 +483,42 @@ static int run_case(const char *qaffd_path,
     return 1;
   }
 
+  if (control_call_unregister_worker(socket_path, TARGET_WORKER) != 0) {
+    perror("qaff_control_unregister_worker target");
+    return 1;
+  }
+
+  const uint32_t after_target_removed[] = {0};
+  if (expect_registered_workers(
+          socket_path,
+          test->name,
+          after_target_removed,
+          sizeof(after_target_removed) / sizeof(after_target_removed[0])) != 0) {
+    return 1;
+  }
+
+  if (control_call_register_cid(socket_path, TARGET_WORKER, k_dcid) == 0) {
+    fprintf(stderr,
+            "%s: unexpectedly registered CID to unregistered worker\n",
+            test->name);
+    return 1;
+  }
+
+  if (send_quic_like_packet(senders[1].fd,
+                            test->family,
+                            port,
+                            1,
+                            k_dcid) != 0) {
+    perror("send stale worker packet");
+    return 1;
+  }
+  int stale_worker = receive_worker(workers, WORKER_COUNT);
+  if (stale_worker != FALLBACK_WORKER) {
+    fprintf(stderr, "%s: expected stale CID fallback worker %d, got %d\n",
+            test->name, FALLBACK_WORKER, stale_worker);
+    return 1;
+  }
+
   struct qaff_stats stats;
   if (control_call_read_stats(socket_path, &stats) != 0) {
     perror("qaff_control_read_stats");
@@ -452,11 +527,12 @@ static int run_case(const char *qaffd_path,
 
   enum qaff_stat_index family_stat =
       test->family == AF_INET ? QAFF_STAT_IPV4 : QAFF_STAT_IPV6;
-  if (stats.values[QAFF_STAT_PACKETS] != 3 ||
-      stats.values[QAFF_STAT_CID_MAP_HIT] != 2 ||
-      stats.values[QAFF_STAT_FALLBACK] != 1 ||
+  if (stats.values[QAFF_STAT_PACKETS] != 4 ||
+      stats.values[QAFF_STAT_CID_MAP_HIT] != 3 ||
+      stats.values[QAFF_STAT_FALLBACK] != 2 ||
       stats.values[QAFF_STAT_PARSE_ERROR] != 0 ||
-      stats.values[family_stat] != 3) {
+      stats.values[QAFF_STAT_WORKER_MISSING] != 1 ||
+      stats.values[family_stat] != 4) {
     fprintf(stderr, "%s: unexpected qaffd stats\n", test->name);
     return 1;
   }

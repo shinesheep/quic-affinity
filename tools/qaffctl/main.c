@@ -17,6 +17,7 @@ static void usage(FILE *out) {
           "  qaffctl health SOCKET\n"
           "  qaffctl config SOCKET\n"
           "  qaffctl workers SOCKET\n"
+          "  qaffctl unregister-worker SOCKET WORKER_ID\n"
           "  qaffctl stats SOCKET\n"
           "  qaffctl stop SOCKET\n");
 }
@@ -250,6 +251,44 @@ static int cmd_workers(int argc, char **argv) {
   return 0;
 }
 
+static int parse_u32_arg(const char *text, uint32_t *out) {
+  char *end = NULL;
+  unsigned long value = strtoul(text, &end, 10);
+  if (end == text || *end != '\0' || value > UINT32_MAX) {
+    errno = EINVAL;
+    return -1;
+  }
+  *out = (uint32_t)value;
+  return 0;
+}
+
+static int cmd_unregister_worker(int argc, char **argv) {
+  if (argc != 4) {
+    usage(stderr);
+    return 2;
+  }
+
+  uint32_t worker_id = 0;
+  if (parse_u32_arg(argv[3], &worker_id) != 0) {
+    fprintf(stderr, "invalid worker id\n");
+    return 2;
+  }
+
+  int fd = open_control_or_die(argv[2]);
+  if (fd < 0) {
+    return 1;
+  }
+
+  if (qaff_control_unregister_worker(fd, worker_id) != 0) {
+    perror("qaff_control_unregister_worker");
+    close(fd);
+    return 1;
+  }
+
+  close(fd);
+  return 0;
+}
+
 static int cmd_stop(int argc, char **argv) {
   if (argc != 3) {
     usage(stderr);
@@ -307,6 +346,10 @@ int main(int argc, char **argv) {
 
   if (strcmp(argv[1], "workers") == 0) {
     return cmd_workers(argc, argv);
+  }
+
+  if (strcmp(argv[1], "unregister-worker") == 0) {
+    return cmd_unregister_worker(argc, argv);
   }
 
   if (strcmp(argv[1], "stop") == 0) {

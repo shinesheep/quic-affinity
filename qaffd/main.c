@@ -256,6 +256,37 @@ static int handle_register_worker(struct qaffd_state *state,
   return 0;
 }
 
+static int handle_unregister_worker(struct qaffd_state *state,
+                                    const struct qaff_control_msg *request) {
+  if (request->worker_id >= QAFFD_MAX_WORKERS ||
+      state->worker_fds[request->worker_id] < 0) {
+    errno = ENOENT;
+    return -1;
+  }
+
+  if (qaff_unregister_worker_socket(state->ctx, request->worker_id) != 0) {
+    return -1;
+  }
+
+  close(state->worker_fds[request->worker_id]);
+  state->worker_fds[request->worker_id] = -1;
+  return 0;
+}
+
+static int handle_register_cid(struct qaffd_state *state,
+                               const struct qaff_control_msg *request) {
+  if (request->worker_id >= QAFFD_MAX_WORKERS ||
+      state->worker_fds[request->worker_id] < 0) {
+    errno = ENOENT;
+    return -1;
+  }
+
+  return qaff_register_cid(state->ctx,
+                           request->cid,
+                           request->cid_len,
+                           request->worker_id);
+}
+
 static int handle_request(struct qaffd_state *state, int client_fd) {
   struct qaff_control_msg request;
   int received_fd = -1;
@@ -288,11 +319,13 @@ static int handle_request(struct qaffd_state *state, int client_fd) {
         received_fd = -1;
       }
       break;
+    case QAFF_CONTROL_UNREGISTER_WORKER:
+      if (handle_unregister_worker(state, &request) != 0) {
+        reply.status = errno ? errno : EIO;
+      }
+      break;
     case QAFF_CONTROL_REGISTER_CID:
-      if (qaff_register_cid(state->ctx,
-                            request.cid,
-                            request.cid_len,
-                            request.worker_id) != 0) {
+      if (handle_register_cid(state, &request) != 0) {
         reply.status = errno ? errno : EIO;
       }
       break;

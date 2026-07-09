@@ -24,6 +24,7 @@ enum qaff_control_op {
   QAFF_CONTROL_HEALTH = 6,
   QAFF_CONTROL_CONFIG = 7,
   QAFF_CONTROL_WORKERS = 8,
+  QAFF_CONTROL_UNREGISTER_WORKER = 9,
 };
 
 struct qaff_control_config {
@@ -53,6 +54,8 @@ int qaff_control_connect(const char *socket_path);
 int qaff_control_register_worker(int control_fd,
                                  uint32_t worker_id,
                                  int socket_fd);
+
+int qaff_control_unregister_worker(int control_fd, uint32_t worker_id);
 
 int qaff_control_register_cid(int control_fd,
                               uint32_t worker_id,
