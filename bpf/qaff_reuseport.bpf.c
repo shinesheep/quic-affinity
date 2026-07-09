@@ -3,6 +3,9 @@
 
 #include "qaff_bpf.h"
 
+#define QAFF_IPPROTO_UDP 17
+#define QAFF_UDP_HEADER_LEN 8
+
 char LICENSE[] SEC("license") = "Dual BSD/GPL";
 
 struct {
@@ -72,23 +75,28 @@ static __always_inline int qaff_extract_dcid(struct sk_reuseport_md *ctx,
                                              struct qaff_cid_key *key) {
   void *data = (void *)(long)ctx->data;
   void *data_end = (void *)(long)ctx->data_end;
+  __u32 payload_offset = QAFF_UDP_HEADER_LEN;
 
-  if (data + 1 > data_end) {
+  if (ctx->ip_protocol != QAFF_IPPROTO_UDP) {
     return -1;
   }
 
-  __u8 first = *(__u8 *)data;
+  if (data + payload_offset + 1 > data_end) {
+    return -1;
+  }
+
+  __u8 first = *(__u8 *)(data + payload_offset);
   if (first & 0x80) {
-    if (data + 6 > data_end) {
+    if (data + payload_offset + 6 > data_end) {
       return -1;
     }
 
-    __u8 dcid_len = *(__u8 *)(data + 5);
+    __u8 dcid_len = *(__u8 *)(data + payload_offset + 5);
     if (dcid_len == 0) {
       return -2;
     }
 
-    return qaff_copy_dcid(key, data, data_end, 6, dcid_len);
+    return qaff_copy_dcid(key, data, data_end, payload_offset + 6, dcid_len);
   }
 
   __u32 config_key = 0;
@@ -98,10 +106,14 @@ static __always_inline int qaff_extract_dcid(struct sk_reuseport_md *ctx,
     return -3;
   }
 
-  return qaff_copy_dcid(key, data, data_end, 1, config->short_cid_len);
+  return qaff_copy_dcid(key,
+                        data,
+                        data_end,
+                        payload_offset + 1,
+                        config->short_cid_len);
 }
 
-SEC("sk_reuseport/qaff_select")
+SEC("sk_reuseport")
 int qaff_select(struct sk_reuseport_md *ctx) {
   struct qaff_cid_key key;
   __u32 fallback = QAFF_DEFAULT_WORKER_ID;

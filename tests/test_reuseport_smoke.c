@@ -151,6 +151,20 @@ static int receive_worker(const int *workers, size_t count, int timeout_ms) {
   return -1;
 }
 
+static void print_stats(struct qaff_context *ctx) {
+  struct qaff_stats stats;
+  if (qaff_read_stats(ctx, &stats) != 0) {
+    perror("qaff_read_stats");
+    return;
+  }
+
+  for (uint32_t i = 0; i < QAFF_STAT_MAX; i++) {
+    fprintf(stderr, "stat.%s=%llu\n",
+            qaff_stat_name(i),
+            (unsigned long long)stats.values[i]);
+  }
+}
+
 int main(int argc, char **argv) {
   if (argc != 2) {
     fprintf(stderr, "usage: %s PATH_TO_QAFF_BPF_OBJECT\n", argv[0]);
@@ -240,6 +254,7 @@ int main(int argc, char **argv) {
               TARGET_WORKER,
               worker,
               attempt + 1);
+      print_stats(ctx);
       return 1;
     }
   }
