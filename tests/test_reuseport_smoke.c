@@ -18,10 +18,15 @@
 
 #define TEST_SKIP 77
 #define WORKER_COUNT 3
+#define FALLBACK_WORKER 0
 #define TARGET_WORKER 2
 
 static const uint8_t k_dcid[] = {
   0xde, 0xad, 0xbe, 0xef, 0xaa, 0xbb, 0xcc, 0xdd,
+};
+
+static const uint8_t k_unknown_dcid[] = {
+  0xba, 0xad, 0xf0, 0x0d, 0x12, 0x34, 0x56, 0x78,
 };
 
 static int set_nonblocking(int fd) {
@@ -181,20 +186,24 @@ static int bind_sender_socket(int family, struct sender_socket *sender) {
 static int send_quic_like_packet(int fd,
                                  int family,
                                  uint16_t port,
-                                 int short_header) {
-  const uint8_t long_packet[] = {
+                                 int short_header,
+                                 const uint8_t *dcid) {
+  uint8_t long_packet[] = {
     0xc3,
     0x00, 0x00, 0x00, 0x01,
     0x08,
-    0xde, 0xad, 0xbe, 0xef, 0xaa, 0xbb, 0xcc, 0xdd,
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
     0x00,
     0x01, 0x02, 0x03, 0x04,
   };
-  const uint8_t short_packet[] = {
+  uint8_t short_packet[] = {
     0x43,
-    0xde, 0xad, 0xbe, 0xef, 0xaa, 0xbb, 0xcc, 0xdd,
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
     0x01, 0x02, 0x03, 0x04,
   };
+  memcpy(long_packet + 6, dcid, sizeof(k_dcid));
+  memcpy(short_packet + 1, dcid, sizeof(k_dcid));
+
   const uint8_t *packet = short_header ? short_packet : long_packet;
   size_t packet_len = short_header ? sizeof(short_packet) : sizeof(long_packet);
 
@@ -309,13 +318,13 @@ static int expect_case_stats(struct qaff_context *ctx,
   enum qaff_stat_index family_stat =
       test->family == AF_INET ? QAFF_STAT_IPV4 : QAFF_STAT_IPV6;
 
-  if (expect_stat(ctx, QAFF_STAT_PACKETS, 2) != 0 ||
+  if (expect_stat(ctx, QAFF_STAT_PACKETS, 3) != 0 ||
       expect_stat(ctx, QAFF_STAT_CID_MAP_HIT, 2) != 0 ||
-      expect_stat(ctx, QAFF_STAT_FALLBACK, 0) != 0 ||
+      expect_stat(ctx, QAFF_STAT_FALLBACK, 1) != 0 ||
       expect_stat(ctx, QAFF_STAT_PARSE_ERROR, 0) != 0 ||
       expect_stat(ctx, QAFF_STAT_ZERO_LENGTH_CID, 0) != 0 ||
       expect_stat(ctx, QAFF_STAT_WORKER_MISSING, 0) != 0 ||
-      expect_stat(ctx, family_stat, 2) != 0 ||
+      expect_stat(ctx, family_stat, 3) != 0 ||
       expect_stat(ctx, QAFF_STAT_NOT_UDP, 0) != 0) {
     fprintf(stderr, "%s: unexpected dataplane stats\n", test->name);
     return -1;
@@ -415,7 +424,8 @@ static int run_case(const char *object_path, const struct test_case *test) {
     if (send_quic_like_packet(senders[attempt].fd,
                               test->family,
                               port,
-                              attempt == 1) != 0) {
+                              attempt == 1,
+                              k_dcid) != 0) {
       perror("send_quic_like_packet");
       return 1;
     }
@@ -431,6 +441,26 @@ static int run_case(const char *object_path, const struct test_case *test) {
       print_stats(ctx);
       return 1;
     }
+  }
+
+  if (send_quic_like_packet(senders[0].fd,
+                            test->family,
+                            port,
+                            0,
+                            k_unknown_dcid) != 0) {
+    perror("send_quic_like_packet");
+    return 1;
+  }
+
+  int fallback_worker = receive_worker(workers, WORKER_COUNT, 1000);
+  if (fallback_worker != FALLBACK_WORKER) {
+    fprintf(stderr,
+            "%s: expected fallback worker %d, got %d\n",
+            test->name,
+            FALLBACK_WORKER,
+            fallback_worker);
+    print_stats(ctx);
+    return 1;
   }
 
   if (expect_case_stats(ctx, test) != 0) {
