@@ -19,6 +19,7 @@
 #define TEST_SKIP 77
 #define WORKER_COUNT 3
 #define FALLBACK_WORKER 0
+#define CONFIGURED_FALLBACK_WORKER 1
 #define TARGET_WORKER 2
 
 static const uint8_t k_dcid[] = {
@@ -40,6 +41,7 @@ static int set_nonblocking(int fd) {
 struct test_case {
   int family;
   const char *name;
+  uint32_t fallback_worker;
 };
 
 struct sender_socket {
@@ -366,6 +368,7 @@ static int run_case(const char *object_path, const struct test_case *test) {
   struct qaff_options options;
   qaff_options_init(&options);
   options.short_cid_len = sizeof(k_dcid);
+  options.fallback_worker_id = test->fallback_worker;
 
   if (qaff_open(&options, &ctx) != 0) {
     if (errno == EPERM || errno == EACCES) {
@@ -453,11 +456,11 @@ static int run_case(const char *object_path, const struct test_case *test) {
   }
 
   int fallback_worker = receive_worker(workers, WORKER_COUNT, 1000);
-  if (fallback_worker != FALLBACK_WORKER) {
+  if (fallback_worker != (int)test->fallback_worker) {
     fprintf(stderr,
             "%s: expected fallback worker %d, got %d\n",
             test->name,
-            FALLBACK_WORKER,
+            (int)test->fallback_worker,
             fallback_worker);
     print_stats(ctx);
     return 1;
@@ -486,8 +489,13 @@ int main(int argc, char **argv) {
   }
 
   const struct test_case tests[] = {
-    {.family = AF_INET, .name = "ipv4"},
-    {.family = AF_INET6, .name = "ipv6"},
+    {.family = AF_INET, .name = "ipv4", .fallback_worker = FALLBACK_WORKER},
+    {.family = AF_INET6, .name = "ipv6", .fallback_worker = FALLBACK_WORKER},
+    {
+      .family = AF_INET,
+      .name = "ipv4-configured-fallback",
+      .fallback_worker = CONFIGURED_FALLBACK_WORKER,
+    },
   };
 
   for (size_t i = 0; i < sizeof(tests) / sizeof(tests[0]); i++) {

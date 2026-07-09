@@ -168,15 +168,17 @@ Example:
 
 ```sh
 sudo -n setcap cap_bpf,cap_net_admin,cap_perfmon,cap_sys_resource+ep build/qaffd
-build/qaffd --socket /tmp/qaffd.sock --bpf build/qaff_reuseport.bpf.o --short-cid-len 8
+build/qaffd --socket /tmp/qaffd.sock --bpf build/qaff_reuseport.bpf.o --short-cid-len 8 --fallback-worker 0
 ```
+
+`--fallback-worker` selects the worker socket used when the incoming packet cannot be parsed or its DCID is not registered yet. This is the expected path for the first client Initial, because that DCID is client-generated.
 
 Inspect and stop it with `qaffctl`:
 
 ```sh
 build/qaffctl stats /tmp/qaffd.sock
 build/qaffctl health /tmp/qaffd.sock
-build/qaffctl config /tmp/qaffd.sock
+build/qaffctl config /tmp/qaffd.sock   # includes short_cid_len, attached, worker_count, fallback_worker_id
 build/qaffctl workers /tmp/qaffd.sock
 build/qaffctl stop /tmp/qaffd.sock
 ```

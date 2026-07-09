@@ -71,7 +71,7 @@ The BPF program applies to the reuseport group after attachment.
 
 When using `qaffd`, the privileged daemon owns BPF setup:
 
-1. Start `qaffd` with a Unix socket path, BPF object path, and `short_cid_len`.
+1. Start `qaffd` with a Unix socket path, BPF object path, `short_cid_len`, and optional `fallback_worker_id`.
 2. Each worker creates and binds its UDP `SO_REUSEPORT` socket.
 3. Each worker passes its socket fd to `qaffd` with `REGISTER_WORKER`.
 4. `qaffd` registers the socket in the sockarray and attaches BPF on first worker registration.
@@ -158,13 +158,13 @@ The dataplane behavior is:
 5. If found, select the registered worker socket.
 6. If not found or parsing fails, select the fallback worker.
 
-Current fallback worker:
+Fallback worker:
 
 ```text
-worker_id = 0
+worker_id = qaff_options.fallback_worker_id
 ```
 
-This is an MVP behavior and will become configurable.
+The default is `0`. In daemon-controlled mode this is set with `qaffd --fallback-worker ID` and can be inspected with `qaffctl config`.
 
 ## IPv4 and IPv6
 

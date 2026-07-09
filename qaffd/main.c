@@ -1,3 +1,5 @@
+#define _POSIX_C_SOURCE 200809L
+
 #include "quic_affinity/control.h"
 
 #include <errno.h>
@@ -17,6 +19,7 @@ struct qaffd_options {
   const char *socket_path;
   const char *bpf_object_path;
   uint8_t short_cid_len;
+  uint32_t fallback_worker_id;
 };
 
 struct qaffd_state {
@@ -24,9 +27,33 @@ struct qaffd_state {
   struct qaff_bpf_object *bpf;
   int worker_fds[QAFFD_MAX_WORKERS];
   uint8_t short_cid_len;
+  uint32_t fallback_worker_id;
   int attached;
   int stop;
 };
+
+static volatile sig_atomic_t g_stop_requested = 0;
+
+static void handle_signal(int signo) {
+  (void)signo;
+  g_stop_requested = 1;
+}
+
+static int install_signal_handlers(void) {
+  struct sigaction action;
+  memset(&action, 0, sizeof(action));
+  action.sa_handler = handle_signal;
+  if (sigemptyset(&action.sa_mask) != 0) {
+    return -1;
+  }
+  if (sigaction(SIGTERM, &action, NULL) != 0) {
+    return -1;
+  }
+  if (sigaction(SIGINT, &action, NULL) != 0) {
+    return -1;
+  }
+  return 0;
+}
 
 static uint32_t worker_count(const struct qaffd_state *state) {
   uint32_t count = 0;
@@ -43,6 +70,7 @@ static void fill_config_reply(const struct qaffd_state *state,
   reply->config.short_cid_len = state->short_cid_len;
   reply->config.attached = state->attached ? 1 : 0;
   reply->config.worker_count = worker_count(state);
+  reply->config.fallback_worker_id = state->fallback_worker_id;
 }
 
 static void fill_workers_reply(const struct qaffd_state *state,
@@ -66,7 +94,8 @@ static void fill_workers_reply(const struct qaffd_state *state,
 
 static void usage(FILE *out) {
   fprintf(out,
-          "Usage: qaffd --socket PATH --bpf PATH --short-cid-len N\n");
+          "Usage: qaffd --socket PATH --bpf PATH --short-cid-len N "
+          "[--fallback-worker ID]\n");
 }
 
 static int parse_args(int argc, char **argv, struct qaffd_options *options) {
@@ -84,6 +113,13 @@ static int parse_args(int argc, char **argv, struct qaffd_options *options) {
         return -1;
       }
       options->short_cid_len = (uint8_t)value;
+    } else if (strcmp(argv[i], "--fallback-worker") == 0 && i + 1 < argc) {
+      char *end = NULL;
+      unsigned long value = strtoul(argv[++i], &end, 10);
+      if (end == argv[i] || *end != '\0' || value > UINT32_MAX) {
+        return -1;
+      }
+      options->fallback_worker_id = (uint32_t)value;
     } else {
       return -1;
     }
@@ -331,7 +367,7 @@ static int accept_cloexec(int server_fd) {
   int fd;
   do {
     fd = accept(server_fd, NULL, NULL);
-  } while (fd < 0 && errno == EINTR);
+  } while (fd < 0 && errno == EINTR && !g_stop_requested);
 
   if (fd < 0) {
     return -1;
@@ -352,10 +388,15 @@ int main(int argc, char **argv) {
   }
 
   signal(SIGPIPE, SIG_IGN);
+  if (install_signal_handlers() != 0) {
+    perror("sigaction");
+    return 1;
+  }
 
   struct qaffd_state state;
   memset(&state, 0, sizeof(state));
   state.short_cid_len = daemon_options.short_cid_len;
+  state.fallback_worker_id = daemon_options.fallback_worker_id;
   for (size_t i = 0; i < QAFFD_MAX_WORKERS; i++) {
     state.worker_fds[i] = -1;
   }
@@ -363,6 +404,7 @@ int main(int argc, char **argv) {
   struct qaff_options options;
   qaff_options_init(&options);
   options.short_cid_len = daemon_options.short_cid_len;
+  options.fallback_worker_id = daemon_options.fallback_worker_id;
 
   if (qaff_open(&options, &state.ctx) != 0) {
     perror("qaff_open");
@@ -385,9 +427,12 @@ int main(int argc, char **argv) {
     return 1;
   }
 
-  while (!state.stop) {
+  while (!state.stop && !g_stop_requested) {
     int client_fd = accept_cloexec(server_fd);
     if (client_fd < 0) {
+      if (g_stop_requested) {
+        break;
+      }
       perror("accept4");
       break;
     }

@@ -31,6 +31,7 @@ struct qaff_control_config {
   uint8_t attached;
   uint16_t reserved;
   uint32_t worker_count;
+  uint32_t fallback_worker_id;
 };
 
 struct qaff_control_msg {

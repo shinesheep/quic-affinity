@@ -193,6 +193,7 @@ static void print_config(const struct qaff_control_config *config) {
   printf("short_cid_len=%u\n", config->short_cid_len);
   printf("attached=%u\n", config->attached);
   printf("worker_count=%u\n", config->worker_count);
+  printf("fallback_worker_id=%u\n", config->fallback_worker_id);
 }
 
 static int cmd_config(int argc, char **argv) {

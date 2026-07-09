@@ -25,7 +25,7 @@ if command -v sudo >/dev/null 2>&1 && command -v setcap >/dev/null 2>&1; then
   sudo -n setcap "$caps" "$qaffd_bin" 2>/dev/null || true
 fi
 
-"$qaffd_bin" --socket "$sock" --bpf "$bpf_obj" --short-cid-len 8 &
+"$qaffd_bin" --socket "$sock" --bpf "$bpf_obj" --short-cid-len 8 --fallback-worker 1 &
 daemon_pid=$!
 
 ready=0
@@ -55,6 +55,7 @@ grep -q '^ok=1$' /tmp/qaffctl-control-$$.health
 grep -q '^short_cid_len=8$' /tmp/qaffctl-control-$$.config
 grep -q '^attached=0$' /tmp/qaffctl-control-$$.config
 grep -q '^worker_count=0$' /tmp/qaffctl-control-$$.config
+grep -q '^fallback_worker_id=1$' /tmp/qaffctl-control-$$.config
 
 "$qaffctl_bin" workers "$sock" >/tmp/qaffctl-control-$$.workers
 grep -q '^workers_len=0$' /tmp/qaffctl-control-$$.workers

@@ -22,10 +22,12 @@ struct qaff_cid_key {
 struct qaff_config_value {
 #if defined(__KERNEL__) || defined(QAFF_BPF)
   __u8 short_cid_len;
-  __u8 reserved[7];
+  __u8 reserved[3];
+  __u32 fallback_worker_id;
 #else
   uint8_t short_cid_len;
-  uint8_t reserved[7];
+  uint8_t reserved[3];
+  uint32_t fallback_worker_id;
 #endif
 };
 

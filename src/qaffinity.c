@@ -18,6 +18,7 @@ struct qaff_context {
   int owns_stats_map;
   int owns_config_map;
   uint8_t short_cid_len;
+  uint32_t fallback_worker_id;
 };
 
 void qaff_options_init(struct qaff_options *options) {
@@ -29,6 +30,7 @@ void qaff_options_init(struct qaff_options *options) {
   options->worker_sock_map_fd = -1;
   options->stats_map_fd = -1;
   options->config_map_fd = -1;
+  options->fallback_worker_id = 0;
 }
 
 static int qaff_create_hash_map(const char *name,
@@ -74,6 +76,7 @@ static int qaff_write_config(struct qaff_context *ctx) {
   struct qaff_config_value value;
   memset(&value, 0, sizeof(value));
   value.short_cid_len = ctx->short_cid_len;
+  value.fallback_worker_id = ctx->fallback_worker_id;
 
   uint32_t key = 0;
   return bpf_map_update_elem(ctx->config_map_fd, &key, &value, BPF_ANY);
@@ -101,6 +104,7 @@ int qaff_open(const struct qaff_options *options, struct qaff_context **out) {
   ctx->stats_map_fd = options->stats_map_fd;
   ctx->config_map_fd = options->config_map_fd;
   ctx->short_cid_len = options->short_cid_len;
+  ctx->fallback_worker_id = options->fallback_worker_id;
 
   if (ctx->cid_map_fd < 0) {
     ctx->cid_map_fd = qaff_create_hash_map("qaff_cids",

@@ -126,6 +126,12 @@ SEC("sk_reuseport")
 int qaff_select(struct sk_reuseport_md *ctx) {
   struct qaff_cid_key key;
   __u32 fallback = QAFF_DEFAULT_WORKER_ID;
+  __u32 config_key = 0;
+  struct qaff_config_value *config =
+      bpf_map_lookup_elem(&qaff_config, &config_key);
+  if (config) {
+    fallback = config->fallback_worker_id;
+  }
 
   qaff_count(QAFF_STAT_PACKETS);
 

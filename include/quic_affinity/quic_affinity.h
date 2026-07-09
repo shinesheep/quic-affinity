@@ -20,6 +20,7 @@ struct qaff_options {
   int stats_map_fd;
   int config_map_fd;
   uint8_t short_cid_len;
+  uint32_t fallback_worker_id;
 };
 
 struct qaff_stats {

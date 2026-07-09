@@ -27,6 +27,8 @@ The repository currently includes a minimal `qaffd` with these operations:
 
 Worker registration uses Unix-domain `SCM_RIGHTS` fd passing. `qaffd` attaches the BPF program to the reuseport group when the first worker socket is registered.
 
+The listener config includes `short_cid_len` and `fallback_worker_id`. Fallback is used for unregistered CIDs, parse failures, and the first client Initial before the server has issued a routable CID.
+
 The current MVP supports one listener per `qaffd` process. Multi-listener management remains future work.
 
 `qaffctl` can currently inspect and stop a running daemon:
@@ -156,6 +158,5 @@ Before map pinning exists, `qaffctl` talks to `qaffd` over the daemon Unix socke
 ## Open Decisions
 
 - Whether qaffd should create worker sockets itself or accept worker socket fds.
-- Whether fallback worker should be configurable through `qaff_config`.
 - Whether map pinning should be optional in embedded mode.
 - How to represent CID keys in CLI output without leaking sensitive routing material by default.
