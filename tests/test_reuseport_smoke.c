@@ -282,6 +282,48 @@ static void print_stats(struct qaff_context *ctx) {
   }
 }
 
+static int expect_stat(struct qaff_context *ctx,
+                       enum qaff_stat_index index,
+                       uint64_t expected) {
+  struct qaff_stats stats;
+  if (qaff_read_stats(ctx, &stats) != 0) {
+    perror("qaff_read_stats");
+    return -1;
+  }
+
+  if (stats.values[index] != expected) {
+    fprintf(stderr,
+            "expected stat.%s=%llu, got %llu\n",
+            qaff_stat_name(index),
+            (unsigned long long)expected,
+            (unsigned long long)stats.values[index]);
+    print_stats(ctx);
+    return -1;
+  }
+
+  return 0;
+}
+
+static int expect_case_stats(struct qaff_context *ctx,
+                             const struct test_case *test) {
+  enum qaff_stat_index family_stat =
+      test->family == AF_INET ? QAFF_STAT_IPV4 : QAFF_STAT_IPV6;
+
+  if (expect_stat(ctx, QAFF_STAT_PACKETS, 2) != 0 ||
+      expect_stat(ctx, QAFF_STAT_CID_MAP_HIT, 2) != 0 ||
+      expect_stat(ctx, QAFF_STAT_FALLBACK, 0) != 0 ||
+      expect_stat(ctx, QAFF_STAT_PARSE_ERROR, 0) != 0 ||
+      expect_stat(ctx, QAFF_STAT_ZERO_LENGTH_CID, 0) != 0 ||
+      expect_stat(ctx, QAFF_STAT_WORKER_MISSING, 0) != 0 ||
+      expect_stat(ctx, family_stat, 2) != 0 ||
+      expect_stat(ctx, QAFF_STAT_NOT_UDP, 0) != 0) {
+    fprintf(stderr, "%s: unexpected dataplane stats\n", test->name);
+    return -1;
+  }
+
+  return 0;
+}
+
 static int run_case(const char *object_path, const struct test_case *test) {
   uint16_t port = 0;
   int workers[WORKER_COUNT] = {-1, -1, -1};
@@ -389,6 +431,10 @@ static int run_case(const char *object_path, const struct test_case *test) {
       print_stats(ctx);
       return 1;
     }
+  }
+
+  if (expect_case_stats(ctx, test) != 0) {
+    return 1;
   }
 
   qaff_bpf_object_close(object);
