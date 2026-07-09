@@ -60,7 +60,11 @@ struct qaff_control_config {
   uint8_t cid_profile_v2_enabled;
   /** Config ID expected for profile v2 CIDs. */
   uint8_t cid_profile_v2_config_id;
-  uint8_t reserved[3];
+  /** Non-zero when passive CID routing is enabled. */
+  uint8_t passive_affinity_enabled;
+  /** Minimum passive confidence accepted by the dataplane. */
+  uint8_t passive_min_confidence;
+  uint8_t reserved[1];
   /** Number of registered workers. */
   uint32_t worker_count;
   /** Worker used for parse misses, unknown CIDs, and client-generated Initials. */

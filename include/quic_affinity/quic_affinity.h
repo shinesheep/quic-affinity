@@ -28,6 +28,8 @@ struct qaff_bpf_object;
 struct qaff_options {
   /** qaff_cids map fd, or -1 to open/create it. */
   int cid_map_fd;
+  /** qaff_passive_cids map fd, or -1 to open/create it. */
+  int passive_cid_map_fd;
   /** qaff_workers REUSEPORT_SOCKARRAY map fd, or -1 to open/create it. */
   int worker_sock_map_fd;
   /** qaff_worker_generations map fd, or -1 to open/create it. */
@@ -46,6 +48,10 @@ struct qaff_options {
   uint8_t cid_profile_v2_enabled;
   /** Expected v2 config ID. */
   uint8_t cid_profile_v2_config_id;
+  /** Enable best-effort passive CID routing in the dataplane. */
+  uint8_t passive_affinity_enabled;
+  /** Minimum passive confidence accepted by the dataplane. */
+  uint8_t passive_min_confidence;
   /** Listener-local key used by enabled routable CID profiles. */
   uint8_t cid_profile_v1_key[QAFF_CID_PROFILE_KEY_LEN];
   /** Worker ID used when parsing or CID lookup cannot select an owner. */
@@ -94,6 +100,22 @@ int qaff_retire_cid(struct qaff_context *ctx,
                     size_t cid_len);
 
 /**
+ * Register a passive CID routing entry.
+ *
+ * Passive entries are best-effort black-box hints. Exact CID registrations and
+ * routable profile validation take priority over this table in the dataplane.
+ */
+int qaff_register_passive_cid(struct qaff_context *ctx,
+                              const uint8_t *cid,
+                              size_t cid_len,
+                              const struct qaff_passive_cid_value *value);
+
+/** Remove a passive CID mapping. Returns 0 on success or -1 with errno set. */
+int qaff_retire_passive_cid(struct qaff_context *ctx,
+                            const uint8_t *cid,
+                            size_t cid_len);
+
+/**
  * Register a UDP worker socket with the default worker generation.
  *
  * The socket must be a member of the listener's SO_REUSEPORT group. The kernel
@@ -128,6 +150,9 @@ int qaff_unregister_worker_socket(struct qaff_context *ctx,
 
 /** Return the qaff_cids map fd, or -1 for a NULL context. */
 int qaff_get_cid_map_fd(const struct qaff_context *ctx);
+
+/** Return the qaff_passive_cids map fd, or -1 for a NULL context. */
+int qaff_get_passive_cid_map_fd(const struct qaff_context *ctx);
 
 /** Return the qaff_workers map fd, or -1 for a NULL context. */
 int qaff_get_worker_sock_map_fd(const struct qaff_context *ctx);

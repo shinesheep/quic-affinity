@@ -36,6 +36,16 @@
 /** Highest worker generation encodable in routable CID profile v2. */
 #define QAFF_WORKER_GENERATION_MAX 255u
 
+/** Passive CID confidence levels used by black-box learning. */
+#define QAFF_PASSIVE_CONFIDENCE_LOW 1u
+#define QAFF_PASSIVE_CONFIDENCE_MEDIUM 2u
+#define QAFF_PASSIVE_CONFIDENCE_HIGH 3u
+
+/** Passive entry learned from inbound traffic only. */
+#define QAFF_PASSIVE_SOURCE_INGRESS 1u
+/** Passive entry learned from outbound server traffic. */
+#define QAFF_PASSIVE_SOURCE_EGRESS 2u
+
 /**
  * Fixed-size BPF map key for a QUIC connection ID.
  *
@@ -54,6 +64,32 @@ struct qaff_cid_key {
 };
 
 /**
+ * Passive CID routing entry.
+ *
+ * This is used for best-effort black-box affinity. The dataplane routes by this
+ * table only when passive routing is enabled and no stronger exact/profile
+ * route was selected. expires_at_ns is reserved for user-space cleanup policy;
+ * the reuseport dataplane does not currently evaluate wall-clock expiry.
+ */
+struct qaff_passive_cid_value {
+#if defined(__KERNEL__) || defined(QAFF_BPF)
+  __u32 worker_id;
+  __u32 worker_generation;
+  __u8 confidence;
+  __u8 source;
+  __u16 flags;
+  __u64 expires_at_ns;
+#else
+  uint32_t worker_id;
+  uint32_t worker_generation;
+  uint8_t confidence;
+  uint8_t source;
+  uint16_t flags;
+  uint64_t expires_at_ns;
+#endif
+};
+
+/**
  * Runtime dataplane configuration stored in the qaff_config BPF map.
  *
  * The map has a single entry at key 0. qaff_open() writes this value before the
@@ -65,6 +101,9 @@ struct qaff_config_value {
   __u8 cid_profile_v1_enabled;
   __u8 cid_profile_v2_enabled;
   __u8 cid_profile_v2_config_id;
+  __u8 passive_affinity_enabled;
+  __u8 passive_min_confidence;
+  __u16 reserved;
   __u32 fallback_worker_id;
   __u8 cid_profile_v1_key[QAFF_CID_PROFILE_KEY_LEN];
 #else
@@ -72,6 +111,9 @@ struct qaff_config_value {
   uint8_t cid_profile_v1_enabled;
   uint8_t cid_profile_v2_enabled;
   uint8_t cid_profile_v2_config_id;
+  uint8_t passive_affinity_enabled;
+  uint8_t passive_min_confidence;
+  uint16_t reserved;
   uint32_t fallback_worker_id;
   uint8_t cid_profile_v1_key[QAFF_CID_PROFILE_KEY_LEN];
 #endif
@@ -101,8 +143,16 @@ enum qaff_stat_index {
   QAFF_STAT_CID_PROFILE_HIT = 9,
   /** Packets that looked like a profile CID but failed validation. */
   QAFF_STAT_CID_PROFILE_REJECT = 10,
+  /** Packets routed through a passive CID entry. */
+  QAFF_STAT_PASSIVE_HIT = 11,
+  /** Passive routing was enabled but no passive CID entry existed. */
+  QAFF_STAT_PASSIVE_MISS = 12,
+  /** Passive CID entry existed but its confidence was below policy. */
+  QAFF_STAT_PASSIVE_REJECT_CONFIDENCE = 13,
+  /** Passive CID entry generation did not match the live worker generation. */
+  QAFF_STAT_PASSIVE_REJECT_GENERATION = 14,
   /** Number of stats slots; always keep this last. */
-  QAFF_STAT_MAX = 11,
+  QAFF_STAT_MAX = 15,
 };
 
 #endif

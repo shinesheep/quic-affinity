@@ -31,6 +31,10 @@ static const uint8_t k_unknown_dcid[] = {
   0xba, 0xad, 0xf0, 0x0d, 0x12, 0x34, 0x56, 0x78,
 };
 
+static const uint8_t k_passive_dcid[] = {
+  0x70, 0x61, 0x73, 0x73, 0x01, 0x02, 0x03, 0x04,
+};
+
 static struct qaff_cid_profile_key profile_key(void) {
   struct qaff_cid_profile_key key;
   for (uint8_t i = 0; i < QAFF_CID_PROFILE_KEY_LEN; i++) {
@@ -345,16 +349,20 @@ static int expect_case_stats(struct qaff_context *ctx,
   enum qaff_stat_index family_stat =
       test->family == AF_INET ? QAFF_STAT_IPV4 : QAFF_STAT_IPV6;
 
-  if (expect_stat(ctx, QAFF_STAT_PACKETS, 5) != 0 ||
+  if (expect_stat(ctx, QAFF_STAT_PACKETS, 6) != 0 ||
       expect_stat(ctx, QAFF_STAT_CID_MAP_HIT, 2) != 0 ||
       expect_stat(ctx, QAFF_STAT_FALLBACK, 2) != 0 ||
       expect_stat(ctx, QAFF_STAT_PARSE_ERROR, 0) != 0 ||
       expect_stat(ctx, QAFF_STAT_ZERO_LENGTH_CID, 0) != 0 ||
       expect_stat(ctx, QAFF_STAT_WORKER_MISSING, 0) != 0 ||
-      expect_stat(ctx, family_stat, 5) != 0 ||
+      expect_stat(ctx, family_stat, 6) != 0 ||
       expect_stat(ctx, QAFF_STAT_NOT_UDP, 0) != 0 ||
       expect_stat(ctx, QAFF_STAT_CID_PROFILE_HIT, 1) != 0 ||
-      expect_stat(ctx, QAFF_STAT_CID_PROFILE_REJECT, 1) != 0) {
+      expect_stat(ctx, QAFF_STAT_CID_PROFILE_REJECT, 1) != 0 ||
+      expect_stat(ctx, QAFF_STAT_PASSIVE_HIT, 1) != 0 ||
+      expect_stat(ctx, QAFF_STAT_PASSIVE_MISS, 1) != 0 ||
+      expect_stat(ctx, QAFF_STAT_PASSIVE_REJECT_CONFIDENCE, 0) != 0 ||
+      expect_stat(ctx, QAFF_STAT_PASSIVE_REJECT_GENERATION, 0) != 0) {
     fprintf(stderr, "%s: unexpected dataplane stats\n", test->name);
     return -1;
   }
@@ -401,6 +409,8 @@ static int run_case(const char *object_path, const struct test_case *test) {
   options.fallback_worker_id = test->fallback_worker;
   options.cid_profile_v2_enabled = 1;
   options.cid_profile_v2_config_id = 7;
+  options.passive_affinity_enabled = 1;
+  options.passive_min_confidence = QAFF_PASSIVE_CONFIDENCE_HIGH;
   memcpy(options.cid_profile_v1_key,
          key.bytes,
          sizeof(options.cid_profile_v1_key));
@@ -439,6 +449,19 @@ static int run_case(const char *object_path, const struct test_case *test) {
 
   if (qaff_register_cid(ctx, k_dcid, sizeof(k_dcid), TARGET_WORKER) != 0) {
     perror("qaff_register_cid");
+    return 1;
+  }
+  struct qaff_passive_cid_value passive_value;
+  memset(&passive_value, 0, sizeof(passive_value));
+  passive_value.worker_id = TARGET_WORKER;
+  passive_value.worker_generation = QAFF_WORKER_GENERATION_DEFAULT;
+  passive_value.confidence = QAFF_PASSIVE_CONFIDENCE_HIGH;
+  passive_value.source = QAFF_PASSIVE_SOURCE_EGRESS;
+  if (qaff_register_passive_cid(ctx,
+                                k_passive_dcid,
+                                sizeof(k_passive_dcid),
+                                &passive_value) != 0) {
+    perror("qaff_register_passive_cid");
     return 1;
   }
 
@@ -533,6 +556,27 @@ static int run_case(const char *object_path, const struct test_case *test) {
             test->name,
             (int)test->fallback_worker,
             tampered_fallback_worker);
+    print_stats(ctx);
+    return 1;
+  }
+
+  if (send_quic_like_packet(senders[0].fd,
+                            test->family,
+                            port,
+                            0,
+                            k_passive_dcid,
+                            sizeof(k_passive_dcid)) != 0) {
+    perror("send passive packet");
+    return 1;
+  }
+
+  int passive_worker = receive_worker(workers, WORKER_COUNT, 1000);
+  if (passive_worker != TARGET_WORKER) {
+    fprintf(stderr,
+            "%s: expected passive worker %d, got %d\n",
+            test->name,
+            TARGET_WORKER,
+            passive_worker);
     print_stats(ctx);
     return 1;
   }

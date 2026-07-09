@@ -18,11 +18,13 @@
 
 struct qaff_context {
   int cid_map_fd;
+  int passive_cid_map_fd;
   int worker_sock_map_fd;
   int worker_generation_map_fd;
   int stats_map_fd;
   int config_map_fd;
   int owns_cid_map;
+  int owns_passive_cid_map;
   int owns_worker_sock_map;
   int owns_worker_generation_map;
   int owns_stats_map;
@@ -32,6 +34,8 @@ struct qaff_context {
   uint8_t cid_profile_v1_enabled;
   uint8_t cid_profile_v2_enabled;
   uint8_t cid_profile_v2_config_id;
+  uint8_t passive_affinity_enabled;
+  uint8_t passive_min_confidence;
   uint8_t cid_profile_v1_key[QAFF_CID_PROFILE_KEY_LEN];
   uint32_t fallback_worker_id;
 };
@@ -42,6 +46,7 @@ void qaff_options_init(struct qaff_options *options) {
   }
   memset(options, 0, sizeof(*options));
   options->cid_map_fd = -1;
+  options->passive_cid_map_fd = -1;
   options->worker_sock_map_fd = -1;
   options->worker_generation_map_fd = -1;
   options->stats_map_fd = -1;
@@ -50,6 +55,8 @@ void qaff_options_init(struct qaff_options *options) {
   options->cid_profile_v1_enabled = 0;
   options->cid_profile_v2_enabled = 0;
   options->cid_profile_v2_config_id = 0;
+  options->passive_affinity_enabled = 0;
+  options->passive_min_confidence = QAFF_PASSIVE_CONFIDENCE_HIGH;
   memset(options->cid_profile_v1_key, 0, sizeof(options->cid_profile_v1_key));
   options->fallback_worker_id = 0;
 }
@@ -179,6 +186,18 @@ static int qaff_create_hash_map(const char *name,
                         NULL);
 }
 
+static int qaff_create_lru_hash_map(const char *name,
+                                    uint32_t key_size,
+                                    uint32_t value_size,
+                                    uint32_t max_entries) {
+  return bpf_map_create(BPF_MAP_TYPE_LRU_HASH,
+                        name,
+                        key_size,
+                        value_size,
+                        max_entries,
+                        NULL);
+}
+
 static int qaff_validate_map_fd(int fd,
                                 enum bpf_map_type type,
                                 uint32_t key_size,
@@ -243,6 +262,8 @@ static int qaff_write_config(struct qaff_context *ctx) {
   value.cid_profile_v1_enabled = ctx->cid_profile_v1_enabled;
   value.cid_profile_v2_enabled = ctx->cid_profile_v2_enabled;
   value.cid_profile_v2_config_id = ctx->cid_profile_v2_config_id;
+  value.passive_affinity_enabled = ctx->passive_affinity_enabled;
+  value.passive_min_confidence = ctx->passive_min_confidence;
   memcpy(value.cid_profile_v1_key,
          ctx->cid_profile_v1_key,
          sizeof(value.cid_profile_v1_key));
@@ -257,6 +278,11 @@ static int qaff_validate_context_maps(const struct qaff_context *ctx) {
                            BPF_MAP_TYPE_HASH,
                            sizeof(struct qaff_cid_key),
                            sizeof(uint32_t),
+                           1024 * 1024) != 0 ||
+      qaff_validate_map_fd(ctx->passive_cid_map_fd,
+                           BPF_MAP_TYPE_LRU_HASH,
+                           sizeof(struct qaff_cid_key),
+                           sizeof(struct qaff_passive_cid_value),
                            1024 * 1024) != 0 ||
       qaff_validate_map_fd(ctx->worker_sock_map_fd,
                            BPF_MAP_TYPE_REUSEPORT_SOCKARRAY,
@@ -301,6 +327,7 @@ int qaff_open(const struct qaff_options *options, struct qaff_context **out) {
   }
 
   ctx->cid_map_fd = options->cid_map_fd;
+  ctx->passive_cid_map_fd = options->passive_cid_map_fd;
   ctx->worker_sock_map_fd = options->worker_sock_map_fd;
   ctx->worker_generation_map_fd = options->worker_generation_map_fd;
   ctx->stats_map_fd = options->stats_map_fd;
@@ -310,6 +337,17 @@ int qaff_open(const struct qaff_options *options, struct qaff_context **out) {
   ctx->cid_profile_v1_enabled = options->cid_profile_v1_enabled;
   ctx->cid_profile_v2_enabled = options->cid_profile_v2_enabled;
   ctx->cid_profile_v2_config_id = options->cid_profile_v2_config_id;
+  ctx->passive_affinity_enabled = options->passive_affinity_enabled;
+  ctx->passive_min_confidence = options->passive_min_confidence;
+  if (ctx->passive_min_confidence == 0) {
+    ctx->passive_min_confidence = QAFF_PASSIVE_CONFIDENCE_HIGH;
+  }
+  if (ctx->passive_affinity_enabled &&
+      (ctx->passive_min_confidence < QAFF_PASSIVE_CONFIDENCE_LOW ||
+       ctx->passive_min_confidence > QAFF_PASSIVE_CONFIDENCE_HIGH)) {
+    errno = EINVAL;
+    goto fail;
+  }
   memcpy(ctx->cid_profile_v1_key,
          options->cid_profile_v1_key,
          sizeof(ctx->cid_profile_v1_key));
@@ -343,6 +381,39 @@ int qaff_open(const struct qaff_options *options, struct qaff_context **out) {
       goto fail;
     }
     ctx->owns_cid_map = 1;
+  }
+
+  if (ctx->passive_cid_map_fd < 0) {
+    ctx->passive_cid_map_fd = qaff_get_pinned_map(ctx->pin_root,
+                                                  "qaff_passive_cids");
+    if (ctx->passive_cid_map_fd < 0 && errno != ENOENT) {
+      goto fail;
+    }
+    if (ctx->passive_cid_map_fd < 0) {
+      ctx->passive_cid_map_fd =
+          qaff_create_lru_hash_map("qaff_passive_cids",
+                                   sizeof(struct qaff_cid_key),
+                                   sizeof(struct qaff_passive_cid_value),
+                                   1024 * 1024);
+    }
+    if (ctx->passive_cid_map_fd < 0) {
+      goto fail;
+    }
+    ctx->passive_cid_map_fd =
+        qaff_open_or_pin_map(ctx->pin_root,
+                             "qaff_passive_cids",
+                             ctx->passive_cid_map_fd);
+    if (ctx->passive_cid_map_fd < 0) {
+      goto fail;
+    }
+    if (qaff_validate_map_fd(ctx->passive_cid_map_fd,
+                             BPF_MAP_TYPE_LRU_HASH,
+                             sizeof(struct qaff_cid_key),
+                             sizeof(struct qaff_passive_cid_value),
+                             1024 * 1024) != 0) {
+      goto fail;
+    }
+    ctx->owns_passive_cid_map = 1;
   }
 
   if (ctx->worker_sock_map_fd < 0) {
@@ -477,6 +548,9 @@ void qaff_close(struct qaff_context *ctx) {
   if (ctx->owns_cid_map && ctx->cid_map_fd >= 0) {
     close(ctx->cid_map_fd);
   }
+  if (ctx->owns_passive_cid_map && ctx->passive_cid_map_fd >= 0) {
+    close(ctx->passive_cid_map_fd);
+  }
   if (ctx->owns_worker_sock_map && ctx->worker_sock_map_fd >= 0) {
     close(ctx->worker_sock_map_fd);
   }
@@ -527,6 +601,48 @@ int qaff_retire_cid(struct qaff_context *ctx,
   }
 
   return bpf_map_delete_elem(ctx->cid_map_fd, &key);
+}
+
+int qaff_register_passive_cid(struct qaff_context *ctx,
+                              const uint8_t *cid,
+                              size_t cid_len,
+                              const struct qaff_passive_cid_value *value) {
+  if (ctx == NULL || ctx->passive_cid_map_fd < 0 || value == NULL) {
+    errno = EINVAL;
+    return -1;
+  }
+  if (value->confidence < QAFF_PASSIVE_CONFIDENCE_LOW ||
+      value->confidence > QAFF_PASSIVE_CONFIDENCE_HIGH) {
+    errno = EINVAL;
+    return -1;
+  }
+
+  struct qaff_cid_key key;
+  int rc = qaff_cid_key_from_bytes(cid, cid_len, &key);
+  if (rc != QAFF_PARSE_OK) {
+    errno = EINVAL;
+    return -1;
+  }
+
+  return bpf_map_update_elem(ctx->passive_cid_map_fd, &key, value, BPF_ANY);
+}
+
+int qaff_retire_passive_cid(struct qaff_context *ctx,
+                            const uint8_t *cid,
+                            size_t cid_len) {
+  if (ctx == NULL || ctx->passive_cid_map_fd < 0) {
+    errno = EINVAL;
+    return -1;
+  }
+
+  struct qaff_cid_key key;
+  int rc = qaff_cid_key_from_bytes(cid, cid_len, &key);
+  if (rc != QAFF_PARSE_OK) {
+    errno = EINVAL;
+    return -1;
+  }
+
+  return bpf_map_delete_elem(ctx->passive_cid_map_fd, &key);
 }
 
 int qaff_register_worker_socket(struct qaff_context *ctx,
@@ -594,6 +710,10 @@ int qaff_get_cid_map_fd(const struct qaff_context *ctx) {
   return ctx ? ctx->cid_map_fd : -1;
 }
 
+int qaff_get_passive_cid_map_fd(const struct qaff_context *ctx) {
+  return ctx ? ctx->passive_cid_map_fd : -1;
+}
+
 int qaff_get_worker_sock_map_fd(const struct qaff_context *ctx) {
   return ctx ? ctx->worker_sock_map_fd : -1;
 }
@@ -652,6 +772,14 @@ const char *qaff_stat_name(uint32_t index) {
     return "cid_profile_hit";
   case QAFF_STAT_CID_PROFILE_REJECT:
     return "cid_profile_reject";
+  case QAFF_STAT_PASSIVE_HIT:
+    return "passive_hit";
+  case QAFF_STAT_PASSIVE_MISS:
+    return "passive_miss";
+  case QAFF_STAT_PASSIVE_REJECT_CONFIDENCE:
+    return "passive_reject_confidence";
+  case QAFF_STAT_PASSIVE_REJECT_GENERATION:
+    return "passive_reject_generation";
   default:
     return "unknown";
   }

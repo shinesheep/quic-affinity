@@ -57,6 +57,8 @@ struct qaffd_options {
   uint8_t cid_profile_v1_enabled;
   uint8_t cid_profile_v2_enabled;
   uint8_t cid_profile_v2_config_id;
+  uint8_t passive_affinity_enabled;
+  uint8_t passive_min_confidence;
   uint8_t cid_profile_v1_key[QAFF_CID_PROFILE_KEY_LEN];
   uint32_t fallback_worker_id;
   uint64_t worker_heartbeat_timeout_ms;
@@ -96,6 +98,8 @@ struct qaffd_state {
   uint8_t cid_profile_v1_enabled;
   uint8_t cid_profile_v2_enabled;
   uint8_t cid_profile_v2_config_id;
+  uint8_t passive_affinity_enabled;
+  uint8_t passive_min_confidence;
   uint8_t cid_profile_v1_key[QAFF_CID_PROFILE_KEY_LEN];
   uint32_t fallback_worker_id;
   uint64_t worker_heartbeat_timeout_ms;
@@ -444,6 +448,8 @@ static void fill_config_reply(const struct qaffd_state *state,
   reply->config.cid_profile_v1_enabled = state->cid_profile_v1_enabled;
   reply->config.cid_profile_v2_enabled = state->cid_profile_v2_enabled;
   reply->config.cid_profile_v2_config_id = state->cid_profile_v2_config_id;
+  reply->config.passive_affinity_enabled = state->passive_affinity_enabled;
+  reply->config.passive_min_confidence = state->passive_min_confidence;
   reply->config.attached = state->attached ? 1 : 0;
   reply->config.worker_count = worker_count(state);
   reply->config.fallback_worker_id = state->fallback_worker_id;
@@ -506,6 +512,7 @@ static void usage(FILE *out) {
           "[--cid-profile-v1-key HEX32 | --cid-profile-v1-key-file PATH] "
           "[--cid-profile-v2-key HEX32 | --cid-profile-v2-key-file PATH] "
           "[--cid-profile-v2-config-id ID] "
+          "[--passive-affinity] [--passive-min-confidence N] "
           "[--worker-heartbeat-timeout-ms N] [--allow-worker-uid UID] "
           "[--allow-worker-gid GID] [--socket-mode OCTAL] "
           "[--socket-gid GID]\n");
@@ -609,6 +616,7 @@ static int read_profile_key_file(const char *path,
 static int parse_args(int argc, char **argv, struct qaffd_options *options) {
   memset(options, 0, sizeof(*options));
   options->socket_mode = 0600;
+  options->passive_min_confidence = QAFF_PASSIVE_CONFIDENCE_HIGH;
 
   for (int i = 1; i < argc; i++) {
     if (strcmp(argv[i], "--socket") == 0 && i + 1 < argc) {
@@ -671,6 +679,19 @@ static int parse_args(int argc, char **argv, struct qaffd_options *options) {
         return -1;
       }
       options->cid_profile_v2_config_id = (uint8_t)value;
+    } else if (strcmp(argv[i], "--passive-affinity") == 0) {
+      options->passive_affinity_enabled = 1;
+    } else if (strcmp(argv[i], "--passive-min-confidence") == 0 &&
+               i + 1 < argc) {
+      char *end = NULL;
+      unsigned long value = strtoul(argv[++i], &end, 10);
+      if (end == argv[i] ||
+          *end != '\0' ||
+          value < QAFF_PASSIVE_CONFIDENCE_LOW ||
+          value > QAFF_PASSIVE_CONFIDENCE_HIGH) {
+        return -1;
+      }
+      options->passive_min_confidence = (uint8_t)value;
     } else if (strcmp(argv[i], "--worker-heartbeat-timeout-ms") == 0 &&
                i + 1 < argc) {
       char *end = NULL;
@@ -1743,6 +1764,8 @@ int main(int argc, char **argv) {
   state.cid_profile_v1_enabled = daemon_options.cid_profile_v1_enabled;
   state.cid_profile_v2_enabled = daemon_options.cid_profile_v2_enabled;
   state.cid_profile_v2_config_id = daemon_options.cid_profile_v2_config_id;
+  state.passive_affinity_enabled = daemon_options.passive_affinity_enabled;
+  state.passive_min_confidence = daemon_options.passive_min_confidence;
   memcpy(state.cid_profile_v1_key,
          daemon_options.cid_profile_v1_key,
          sizeof(state.cid_profile_v1_key));
@@ -1769,6 +1792,8 @@ int main(int argc, char **argv) {
   options.cid_profile_v1_enabled = daemon_options.cid_profile_v1_enabled;
   options.cid_profile_v2_enabled = daemon_options.cid_profile_v2_enabled;
   options.cid_profile_v2_config_id = daemon_options.cid_profile_v2_config_id;
+  options.passive_affinity_enabled = daemon_options.passive_affinity_enabled;
+  options.passive_min_confidence = daemon_options.passive_min_confidence;
   memcpy(options.cid_profile_v1_key,
          daemon_options.cid_profile_v1_key,
          sizeof(options.cid_profile_v1_key));

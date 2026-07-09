@@ -31,7 +31,9 @@ chmod 600 "$key_file"
 "$qaffd_bin" --socket "$sock" --bpf "$bpf_obj" --short-cid-len 12 \
   --fallback-worker 1 \
   --cid-profile-v2-key-file "$key_file" \
-  --cid-profile-v2-config-id 7 &
+  --cid-profile-v2-config-id 7 \
+  --passive-affinity \
+  --passive-min-confidence 2 &
 daemon_pid=$!
 
 ready=0
@@ -67,6 +69,8 @@ grep -q '^short_cid_len=12$' /tmp/qaffctl-control-$$.config
 grep -q '^cid_profile_v1_enabled=0$' /tmp/qaffctl-control-$$.config
 grep -q '^cid_profile_v2_enabled=1$' /tmp/qaffctl-control-$$.config
 grep -q '^cid_profile_v2_config_id=7$' /tmp/qaffctl-control-$$.config
+grep -q '^passive_affinity_enabled=1$' /tmp/qaffctl-control-$$.config
+grep -q '^passive_min_confidence=2$' /tmp/qaffctl-control-$$.config
 grep -q '^attached=0$' /tmp/qaffctl-control-$$.config
 grep -q '^worker_count=0$' /tmp/qaffctl-control-$$.config
 grep -q '^fallback_worker_id=1$' /tmp/qaffctl-control-$$.config

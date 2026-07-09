@@ -18,6 +18,13 @@ struct {
 } qaff_cids SEC(".maps");
 
 struct {
+  __uint(type, BPF_MAP_TYPE_LRU_HASH);
+  __uint(max_entries, 1048576);
+  __type(key, struct qaff_cid_key);
+  __type(value, struct qaff_passive_cid_value);
+} qaff_passive_cids SEC(".maps");
+
+struct {
   __uint(type, BPF_MAP_TYPE_REUSEPORT_SOCKARRAY);
   __uint(max_entries, 4096);
   __type(key, __u32);
@@ -232,6 +239,41 @@ static __always_inline int qaff_profile_v2_worker(
   return 1;
 }
 
+static __always_inline int qaff_passive_worker(
+    const struct qaff_config_value *config,
+    const struct qaff_cid_key *key,
+    __u32 *worker_id) {
+  if (!config || !config->passive_affinity_enabled) {
+    return 0;
+  }
+
+  struct qaff_passive_cid_value *value =
+      bpf_map_lookup_elem(&qaff_passive_cids, key);
+  if (!value) {
+    qaff_count(QAFF_STAT_PASSIVE_MISS);
+    return 0;
+  }
+
+  if (value->confidence < config->passive_min_confidence) {
+    qaff_count(QAFF_STAT_PASSIVE_REJECT_CONFIDENCE);
+    return -1;
+  }
+
+  if (value->worker_generation != 0) {
+    __u32 *current_generation =
+        bpf_map_lookup_elem(&qaff_worker_generations, &value->worker_id);
+    if (!current_generation ||
+        *current_generation == 0 ||
+        *current_generation != value->worker_generation) {
+      qaff_count(QAFF_STAT_PASSIVE_REJECT_GENERATION);
+      return -1;
+    }
+  }
+
+  *worker_id = value->worker_id;
+  return 1;
+}
+
 SEC("sk_reuseport")
 int qaff_select(struct sk_reuseport_md *ctx) {
   struct qaff_cid_key key;
@@ -275,6 +317,19 @@ int qaff_select(struct sk_reuseport_md *ctx) {
         qaff_count(QAFF_STAT_WORKER_MISSING);
       } else if (profile_rc < 0) {
         qaff_count(QAFF_STAT_CID_PROFILE_REJECT);
+      } else {
+        __u32 passive_worker = 0;
+        int passive_rc = qaff_passive_worker(config, &key, &passive_worker);
+        if (passive_rc > 0) {
+          qaff_count(QAFF_STAT_PASSIVE_HIT);
+          if (bpf_sk_select_reuseport(ctx,
+                                      &qaff_workers,
+                                      &passive_worker,
+                                      0) == 0) {
+            return SK_PASS;
+          }
+          qaff_count(QAFF_STAT_WORKER_MISSING);
+        }
       }
     }
   }
