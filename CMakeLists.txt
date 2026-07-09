@@ -50,6 +50,12 @@ add_executable(qaff_minimal_registry
 target_link_libraries(qaff_minimal_registry PRIVATE qaffinity)
 target_compile_options(qaff_minimal_registry PRIVATE -Wall -Wextra -Wpedantic)
 
+add_executable(qaff_minimal_control
+  examples/minimal_control/main.c)
+
+target_link_libraries(qaff_minimal_control PRIVATE qaffinity)
+target_compile_options(qaff_minimal_control PRIVATE -Wall -Wextra -Wpedantic)
+
 enable_testing()
 
 add_executable(test_quic_parser
@@ -94,6 +100,15 @@ add_test(NAME qaffctl_control
     $<TARGET_FILE:qaffctl>
     ${CMAKE_CURRENT_BINARY_DIR}/qaff_reuseport.bpf.o)
 set_tests_properties(qaffctl_control PROPERTIES SKIP_RETURN_CODE 77)
+
+add_test(NAME minimal_control_example
+  COMMAND /bin/sh
+    ${CMAKE_CURRENT_SOURCE_DIR}/tests/run_minimal_control_example.sh
+    $<TARGET_FILE:qaffd>
+    $<TARGET_FILE:qaffctl>
+    $<TARGET_FILE:qaff_minimal_control>
+    ${CMAKE_CURRENT_BINARY_DIR}/qaff_reuseport.bpf.o)
+set_tests_properties(minimal_control_example PROPERTIES SKIP_RETURN_CODE 77)
 
 if(QAFF_BUILD_BPF)
   find_program(CLANG_EXECUTABLE clang)

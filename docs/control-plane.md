@@ -33,6 +33,8 @@ qaffctl stats /tmp/qaffd.sock
 qaffctl stop /tmp/qaffd.sock
 ```
 
+`examples/minimal_control` demonstrates the worker-side flow against `qaffd`.
+
 ## Process Model
 
 ```text

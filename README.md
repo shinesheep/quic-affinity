@@ -92,6 +92,7 @@ The build currently produces:
 - `build/libqaffinity.a`
 - `build/qaffd`
 - `build/qaffctl`
+- `build/qaff_minimal_control`
 - `build/qaff_minimal_registry`
 - `build/qaff_reuseport.bpf.o`
 - `build/test_quic_parser`
@@ -175,6 +176,11 @@ build/qaffctl stop /tmp/qaffd.sock
 ```
 
 The `qaffd_control` test starts `qaffd`, registers IPv4 and IPv6 reuseport workers through the control API, registers a CID, and verifies hit and fallback routing.
+
+## Examples
+
+- `qaff_minimal_registry`: embedded mode. The process creates maps, loads BPF, attaches the program, registers workers, and registers CIDs directly.
+- `qaff_minimal_control`: daemon-controlled mode. `qaffd` owns BPF setup; the worker-side example creates UDP workers and registers worker sockets/CIDs through the Unix socket control API.
 
 ## Documentation
 

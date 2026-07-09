@@ -86,6 +86,8 @@ qaffctl stats /tmp/qaffd.sock
 qaffctl stop /tmp/qaffd.sock
 ```
 
+The repository includes `qaff_minimal_control` as a small worker-side example for this mode. It creates UDP reuseport sockets, passes them to `qaffd`, and registers a sample server CID.
+
 ## CID Registration
 
 When the QUIC stack creates or advertises a server-side CID, it must register that CID before packets using it are expected to arrive:
