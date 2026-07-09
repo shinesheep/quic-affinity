@@ -185,7 +185,7 @@ build/qaffctl unregister-worker /tmp/qaffd.sock 2
 build/qaffctl stop /tmp/qaffd.sock
 ```
 
-The `qaffd_control` test starts `qaffd`, registers IPv4 and IPv6 reuseport workers through the control API, registers a CID, verifies hit and fallback routing, unregisters workers, and verifies stale-CID fallback with `worker_missing` accounting.
+The `qaffd_control` test starts `qaffd`, registers IPv4 and IPv6 reuseport workers through the control API, registers a CID, verifies hit and fallback routing, unregisters workers, and verifies that CIDs owned by removed workers are retired before later packets fall back.
 
 ## Examples
 

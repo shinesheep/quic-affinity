@@ -26,11 +26,11 @@ The repository currently includes a minimal `qaffd` with these operations:
 - `WORKERS`
 - `STOP`
 
-Worker registration uses Unix-domain `SCM_RIGHTS` fd passing. `qaffd` attaches the BPF program to the reuseport group when the first worker socket is registered. Worker unregistration removes the worker ID from the reuseport sockarray and closes qaffd's duplicated socket fd.
+Worker registration uses Unix-domain `SCM_RIGHTS` fd passing. `qaffd` attaches the BPF program to the reuseport group when the first worker socket is registered. Worker unregistration retires CIDs owned by that worker, removes the worker ID from the reuseport sockarray, and closes qaffd's duplicated socket fd.
 
 The listener config includes `short_cid_len` and `fallback_worker_id`. Fallback is used for unregistered CIDs, parse failures, and the first client Initial before the server has issued a routable CID.
 
-In daemon-controlled mode, `REGISTER_CID` is accepted only for currently registered worker IDs. Existing CIDs are not automatically retired when a worker is unregistered; if packets still use those CIDs, the dataplane records `worker_missing` and falls back. The QUIC stack should retire its CIDs before removing a drained worker.
+In daemon-controlled mode, `REGISTER_CID` is accepted only for currently registered worker IDs. `qaffd` keeps a CID owner index so `UNREGISTER_WORKER` can bulk-retire CIDs owned by the removed worker. The QUIC stack should still drain and retire CIDs first when possible, so delayed packets are less likely to fall back.
 
 The current MVP supports one listener per `qaffd` process. Multi-listener management remains future work.
 
@@ -139,7 +139,7 @@ During reload:
 
 The control plane must avoid reusing a worker ID while CIDs still point to the old socket.
 
-The current daemon has explicit worker unregistration but does not yet maintain a daemon-side CID owner index. It cannot bulk-retire all CIDs for a worker, so integrations should retire CIDs as part of the worker drain path before calling `UNREGISTER_WORKER`.
+The current daemon maintains a daemon-side CID owner index for CIDs registered through the control API. This enables bulk CID cleanup during `UNREGISTER_WORKER`; map pinning and recovery of that index across daemon restarts remain future work.
 
 ## qaffctl MVP
 

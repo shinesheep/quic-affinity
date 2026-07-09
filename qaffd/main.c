@@ -15,6 +15,11 @@
 
 #define QAFFD_MAX_WORKERS 4096
 
+struct qaffd_cid_entry {
+  struct qaff_cid_key key;
+  uint32_t worker_id;
+};
+
 struct qaffd_options {
   const char *socket_path;
   const char *bpf_object_path;
@@ -26,6 +31,9 @@ struct qaffd_state {
   struct qaff_context *ctx;
   struct qaff_bpf_object *bpf;
   int worker_fds[QAFFD_MAX_WORKERS];
+  struct qaffd_cid_entry *cid_entries;
+  size_t cid_entries_len;
+  size_t cid_entries_cap;
   uint8_t short_cid_len;
   uint32_t fallback_worker_id;
   int attached;
@@ -227,6 +235,91 @@ static void reply_init(struct qaff_control_msg *reply,
   reply->op = request->op;
 }
 
+static int cid_key_equal(const struct qaff_cid_key *a,
+                         const struct qaff_cid_key *b) {
+  return a->len == b->len &&
+         memcmp(a->bytes, b->bytes, sizeof(a->bytes)) == 0;
+}
+
+static ssize_t find_cid_entry(const struct qaffd_state *state,
+                              const struct qaff_cid_key *key) {
+  for (size_t i = 0; i < state->cid_entries_len; i++) {
+    if (cid_key_equal(&state->cid_entries[i].key, key)) {
+      return (ssize_t)i;
+    }
+  }
+  return -1;
+}
+
+static int remember_cid(struct qaffd_state *state,
+                        const struct qaff_cid_key *key,
+                        uint32_t worker_id) {
+  ssize_t index = find_cid_entry(state, key);
+  if (index >= 0) {
+    state->cid_entries[index].worker_id = worker_id;
+    return 0;
+  }
+
+  if (state->cid_entries_len == state->cid_entries_cap) {
+    const size_t max_cap = SIZE_MAX / sizeof(*state->cid_entries);
+    if (state->cid_entries_cap > max_cap / 2) {
+      errno = ENOMEM;
+      return -1;
+    }
+    size_t next_cap = state->cid_entries_cap == 0
+                        ? 1024
+                        : state->cid_entries_cap * 2;
+    struct qaffd_cid_entry *next =
+        realloc(state->cid_entries, next_cap * sizeof(*next));
+    if (next == NULL) {
+      return -1;
+    }
+    state->cid_entries = next;
+    state->cid_entries_cap = next_cap;
+  }
+
+  state->cid_entries[state->cid_entries_len].key = *key;
+  state->cid_entries[state->cid_entries_len].worker_id = worker_id;
+  state->cid_entries_len++;
+  return 0;
+}
+
+static void forget_cid_at(struct qaffd_state *state, size_t index) {
+  if (index + 1 < state->cid_entries_len) {
+    state->cid_entries[index] = state->cid_entries[state->cid_entries_len - 1];
+  }
+  state->cid_entries_len--;
+}
+
+static void forget_cid(struct qaffd_state *state,
+                       const struct qaff_cid_key *key) {
+  ssize_t index = find_cid_entry(state, key);
+  if (index >= 0) {
+    forget_cid_at(state, (size_t)index);
+  }
+}
+
+static int retire_worker_cids(struct qaffd_state *state, uint32_t worker_id) {
+  size_t i = 0;
+  while (i < state->cid_entries_len) {
+    struct qaffd_cid_entry *entry = &state->cid_entries[i];
+    if (entry->worker_id != worker_id) {
+      i++;
+      continue;
+    }
+
+    if (qaff_retire_cid(state->ctx,
+                        entry->key.bytes,
+                        entry->key.len) != 0 &&
+        errno != ENOENT) {
+      return -1;
+    }
+    forget_cid_at(state, i);
+  }
+
+  return 0;
+}
+
 static int handle_register_worker(struct qaffd_state *state,
                                   const struct qaff_control_msg *request,
                                   int socket_fd) {
@@ -264,6 +357,10 @@ static int handle_unregister_worker(struct qaffd_state *state,
     return -1;
   }
 
+  if (retire_worker_cids(state, request->worker_id) != 0) {
+    return -1;
+  }
+
   if (qaff_unregister_worker_socket(state->ctx, request->worker_id) != 0) {
     return -1;
   }
@@ -281,10 +378,45 @@ static int handle_register_cid(struct qaffd_state *state,
     return -1;
   }
 
-  return qaff_register_cid(state->ctx,
-                           request->cid,
-                           request->cid_len,
-                           request->worker_id);
+  struct qaff_cid_key key;
+  if (qaff_cid_key_from_bytes(request->cid, request->cid_len, &key) !=
+      QAFF_PARSE_OK) {
+    errno = EINVAL;
+    return -1;
+  }
+
+  if (qaff_register_cid(state->ctx,
+                        request->cid,
+                        request->cid_len,
+                        request->worker_id) != 0) {
+    return -1;
+  }
+
+  if (remember_cid(state, &key, request->worker_id) != 0) {
+    int saved_errno = errno ? errno : ENOMEM;
+    qaff_retire_cid(state->ctx, request->cid, request->cid_len);
+    errno = saved_errno;
+    return -1;
+  }
+
+  return 0;
+}
+
+static int handle_retire_cid(struct qaffd_state *state,
+                             const struct qaff_control_msg *request) {
+  struct qaff_cid_key key;
+  if (qaff_cid_key_from_bytes(request->cid, request->cid_len, &key) !=
+      QAFF_PARSE_OK) {
+    errno = EINVAL;
+    return -1;
+  }
+
+  if (qaff_retire_cid(state->ctx, request->cid, request->cid_len) != 0) {
+    return -1;
+  }
+
+  forget_cid(state, &key);
+  return 0;
 }
 
 static int handle_request(struct qaffd_state *state, int client_fd) {
@@ -330,7 +462,7 @@ static int handle_request(struct qaffd_state *state, int client_fd) {
       }
       break;
     case QAFF_CONTROL_RETIRE_CID:
-      if (qaff_retire_cid(state->ctx, request.cid, request.cid_len) != 0) {
+      if (handle_retire_cid(state, &request) != 0) {
         reply.status = errno ? errno : EIO;
       }
       break;
@@ -482,6 +614,7 @@ int main(int argc, char **argv) {
       close(state.worker_fds[i]);
     }
   }
+  free(state.cid_entries);
   qaff_bpf_object_close(state.bpf);
   qaff_close(state.ctx);
   return 0;

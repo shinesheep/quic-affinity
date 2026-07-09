@@ -155,10 +155,10 @@ Workers must use stable worker IDs while any registered CID can still route to t
 
 1. Register the worker socket before registering CIDs for that worker.
 2. Stop assigning new connections to a draining worker.
-3. Retire or let expire CIDs owned by that worker.
+3. Retire or let expire CIDs owned by that worker where the QUIC stack can do so cleanly.
 4. Call `UNREGISTER_WORKER` after the worker is drained.
 
-`qaffd` rejects new CID registrations for unregistered worker IDs. It does not yet keep a daemon-side reverse index from worker ID to CID, so it does not bulk-retire CIDs during worker unregistration.
+`qaffd` rejects new CID registrations for unregistered worker IDs. It keeps a daemon-side reverse index from worker ID to CID for CIDs registered through the control API, and bulk-retires those CIDs during worker unregistration.
 
 ## Packet Routing Semantics
 
@@ -202,7 +202,7 @@ The dataplane does not send stateless resets.
 
 If routing fails, the MVP behavior is fallback selection. Future policies may allow drop-on-error or configurable fallback behavior.
 
-If a CID still points at an unregistered worker, routing is treated as a worker-missing condition rather than a stateless reset trigger.
+If a CID still points at an unavailable worker, routing is treated as a worker-missing condition rather than a stateless reset trigger. In daemon-controlled mode, normal `UNREGISTER_WORKER` cleanup should remove the worker's CIDs before this path is needed.
 
 The application should read dataplane counters through `qaff_read_stats()` and alert on unexpected increases in:
 

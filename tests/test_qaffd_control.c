@@ -45,6 +45,10 @@ static const uint8_t k_unknown_dcid[] = {
   0xba, 0xad, 0xf0, 0x0d, 0x12, 0x34, 0x56, 0x78,
 };
 
+static const uint8_t k_second_dcid[] = {
+  0xca, 0xfe, 0xba, 0xbe, 0x01, 0x02, 0x03, 0x04,
+};
+
 static int set_nonblocking(int fd) {
   int flags = fcntl(fd, F_GETFL, 0);
   if (flags < 0) {
@@ -439,6 +443,10 @@ static int run_case(const char *qaffd_path,
     perror("qaff_control_register_cid");
     return 1;
   }
+  if (control_call_register_cid(socket_path, TARGET_WORKER, k_second_dcid) != 0) {
+    perror("qaff_control_register_cid second");
+    return 1;
+  }
 
   struct sender_socket senders[2] = {{.fd = -1}, {.fd = -1}};
   if (bind_sender_socket(test->family, &senders[0]) != 0 ||
@@ -519,6 +527,21 @@ static int run_case(const char *qaffd_path,
     return 1;
   }
 
+  if (send_quic_like_packet(senders[0].fd,
+                            test->family,
+                            port,
+                            1,
+                            k_second_dcid) != 0) {
+    perror("send second stale worker packet");
+    return 1;
+  }
+  int second_stale_worker = receive_worker(workers, WORKER_COUNT);
+  if (second_stale_worker != FALLBACK_WORKER) {
+    fprintf(stderr, "%s: expected second stale CID fallback worker %d, got %d\n",
+            test->name, FALLBACK_WORKER, second_stale_worker);
+    return 1;
+  }
+
   struct qaff_stats stats;
   if (control_call_read_stats(socket_path, &stats) != 0) {
     perror("qaff_control_read_stats");
@@ -527,12 +550,12 @@ static int run_case(const char *qaffd_path,
 
   enum qaff_stat_index family_stat =
       test->family == AF_INET ? QAFF_STAT_IPV4 : QAFF_STAT_IPV6;
-  if (stats.values[QAFF_STAT_PACKETS] != 4 ||
-      stats.values[QAFF_STAT_CID_MAP_HIT] != 3 ||
-      stats.values[QAFF_STAT_FALLBACK] != 2 ||
+  if (stats.values[QAFF_STAT_PACKETS] != 5 ||
+      stats.values[QAFF_STAT_CID_MAP_HIT] != 2 ||
+      stats.values[QAFF_STAT_FALLBACK] != 3 ||
       stats.values[QAFF_STAT_PARSE_ERROR] != 0 ||
-      stats.values[QAFF_STAT_WORKER_MISSING] != 1 ||
-      stats.values[family_stat] != 4) {
+      stats.values[QAFF_STAT_WORKER_MISSING] != 0 ||
+      stats.values[family_stat] != 5) {
     fprintf(stderr, "%s: unexpected qaffd stats\n", test->name);
     return 1;
   }
