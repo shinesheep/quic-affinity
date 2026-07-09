@@ -37,6 +37,11 @@ struct test_case {
   const char *name;
 };
 
+struct sender_socket {
+  int fd;
+  uint16_t port;
+};
+
 static int make_worker_socket(int family, uint16_t *port) {
   int fd = socket(family, SOCK_DGRAM | SOCK_CLOEXEC, 0);
   if (fd < 0) {
@@ -109,12 +114,74 @@ static int make_worker_socket(int family, uint16_t *port) {
   return fd;
 }
 
-static int send_quic_like_packet(int family, uint16_t port, int short_header) {
-  int fd = socket(family, SOCK_DGRAM | SOCK_CLOEXEC, 0);
-  if (fd < 0) {
+static int bind_sender_socket(int family, struct sender_socket *sender) {
+  memset(sender, 0, sizeof(*sender));
+  sender->fd = socket(family, SOCK_DGRAM | SOCK_CLOEXEC, 0);
+  if (sender->fd < 0) {
     return -1;
   }
 
+  if (family == AF_INET) {
+    struct sockaddr_in addr;
+    memset(&addr, 0, sizeof(addr));
+    addr.sin_family = AF_INET;
+    addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+    addr.sin_port = 0;
+
+    if (bind(sender->fd, (struct sockaddr *)&addr, sizeof(addr)) != 0) {
+      close(sender->fd);
+      sender->fd = -1;
+      return -1;
+    }
+
+    socklen_t len = sizeof(addr);
+    if (getsockname(sender->fd, (struct sockaddr *)&addr, &len) != 0) {
+      close(sender->fd);
+      sender->fd = -1;
+      return -1;
+    }
+    sender->port = ntohs(addr.sin_port);
+  } else if (family == AF_INET6) {
+    int v6only = 1;
+    if (setsockopt(sender->fd, IPPROTO_IPV6, IPV6_V6ONLY, &v6only, sizeof(v6only)) != 0) {
+      close(sender->fd);
+      sender->fd = -1;
+      return -1;
+    }
+
+    struct sockaddr_in6 addr6;
+    memset(&addr6, 0, sizeof(addr6));
+    addr6.sin6_family = AF_INET6;
+    addr6.sin6_addr = in6addr_loopback;
+    addr6.sin6_port = 0;
+
+    if (bind(sender->fd, (struct sockaddr *)&addr6, sizeof(addr6)) != 0) {
+      close(sender->fd);
+      sender->fd = -1;
+      return -1;
+    }
+
+    socklen_t len = sizeof(addr6);
+    if (getsockname(sender->fd, (struct sockaddr *)&addr6, &len) != 0) {
+      close(sender->fd);
+      sender->fd = -1;
+      return -1;
+    }
+    sender->port = ntohs(addr6.sin6_port);
+  } else {
+    close(sender->fd);
+    sender->fd = -1;
+    errno = EAFNOSUPPORT;
+    return -1;
+  }
+
+  return 0;
+}
+
+static int send_quic_like_packet(int fd,
+                                 int family,
+                                 uint16_t port,
+                                 int short_header) {
   const uint8_t long_packet[] = {
     0xc3,
     0x00, 0x00, 0x00, 0x01,
@@ -158,7 +225,6 @@ static int send_quic_like_packet(int family, uint16_t port, int short_header) {
                   sizeof(dst6));
   }
   int saved_errno = errno;
-  close(fd);
   errno = saved_errno;
   return sent == (ssize_t)packet_len ? 0 : -1;
 }
@@ -219,6 +285,10 @@ static void print_stats(struct qaff_context *ctx) {
 static int run_case(const char *object_path, const struct test_case *test) {
   uint16_t port = 0;
   int workers[WORKER_COUNT] = {-1, -1, -1};
+  struct sender_socket senders[2] = {
+    {.fd = -1, .port = 0},
+    {.fd = -1, .port = 0},
+  };
   struct qaff_context *ctx = NULL;
   struct qaff_bpf_object *object = NULL;
 
@@ -228,6 +298,18 @@ static int run_case(const char *object_path, const struct test_case *test) {
       perror("make_worker_socket");
       return 1;
     }
+  }
+
+  if (bind_sender_socket(test->family, &senders[0]) != 0 ||
+      bind_sender_socket(test->family, &senders[1]) != 0) {
+    perror("bind_sender_socket");
+    return 1;
+  }
+  if (senders[0].port == senders[1].port) {
+    fprintf(stderr, "%s: expected distinct source ports, both are %u\n",
+            test->name,
+            senders[0].port);
+    return 1;
   }
 
   struct qaff_options options;
@@ -288,7 +370,10 @@ static int run_case(const char *object_path, const struct test_case *test) {
   drain_workers(workers, WORKER_COUNT);
 
   for (int attempt = 0; attempt < 2; attempt++) {
-    if (send_quic_like_packet(test->family, port, attempt == 1) != 0) {
+    if (send_quic_like_packet(senders[attempt].fd,
+                              test->family,
+                              port,
+                              attempt == 1) != 0) {
       perror("send_quic_like_packet");
       return 1;
     }
@@ -308,6 +393,9 @@ static int run_case(const char *object_path, const struct test_case *test) {
 
   qaff_bpf_object_close(object);
   qaff_close(ctx);
+  for (size_t i = 0; i < sizeof(senders) / sizeof(senders[0]); i++) {
+    close(senders[i].fd);
+  }
   for (size_t i = 0; i < WORKER_COUNT; i++) {
     close(workers[i]);
   }

@@ -54,7 +54,10 @@ target_link_libraries(test_reuseport_smoke PRIVATE qaffinity)
 target_compile_options(test_reuseport_smoke PRIVATE -Wall -Wextra -Wpedantic)
 
 add_test(NAME reuseport_smoke
-  COMMAND test_reuseport_smoke ${CMAKE_CURRENT_BINARY_DIR}/qaff_reuseport.bpf.o)
+  COMMAND /bin/sh
+    ${CMAKE_CURRENT_SOURCE_DIR}/tests/run_reuseport_smoke.sh
+    $<TARGET_FILE:test_reuseport_smoke>
+    ${CMAKE_CURRENT_BINARY_DIR}/qaff_reuseport.bpf.o)
 set_tests_properties(reuseport_smoke PROPERTIES SKIP_RETURN_CODE 77)
 
 if(QAFF_BUILD_BPF)

@@ -131,9 +131,15 @@ Not implemented yet:
 
 ## Privileged Smoke Test
 
-`reuseport_smoke` creates a multi-worker UDP `SO_REUSEPORT` group, loads the eBPF object, attaches it to the group, registers a CID to one worker, and sends both long-header and short-header QUIC-like packets from different source ports. The expected result is that both packets arrive at the registered worker.
+`reuseport_smoke` creates a multi-worker UDP `SO_REUSEPORT` group, loads the eBPF object, attaches it to the group, registers a CID to one worker, and sends both long-header and short-header QUIC-like packets from explicitly different source ports. It runs the scenario for both IPv4 and IPv6. The expected result is that all packets arrive at the registered worker.
 
 This test needs the kernel capabilities required to create BPF maps and load/attach BPF programs. On systems with `kernel.unprivileged_bpf_disabled=2`, it will be skipped unless run with suitable privileges.
+
+CTest runs the smoke test through `tests/run_reuseport_smoke.sh`. If passwordless `sudo -n setcap` is available, the wrapper restores the test binary capabilities after rebuilds:
+
+```sh
+cap_bpf,cap_net_admin,cap_perfmon,cap_sys_resource+ep
+```
 
 ```sh
 ctest --test-dir build --output-on-failure -R reuseport_smoke
