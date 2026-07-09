@@ -10,6 +10,7 @@ static void usage(FILE *out) {
   fprintf(out,
           "Usage:\n"
           "  qaffctl version\n"
+          "  qaffctl stat-names\n"
           "  qaffctl parse HEX_PACKET [SHORT_CID_LEN]\n");
 }
 
@@ -130,6 +131,13 @@ int main(int argc, char **argv) {
     return 0;
   }
 
+  if (strcmp(argv[1], "stat-names") == 0) {
+    for (uint32_t i = 0; i < QAFF_STAT_MAX; i++) {
+      printf("%u %s\n", i, qaff_stat_name(i));
+    }
+    return 0;
+  }
+
   if (strcmp(argv[1], "parse") == 0) {
     return cmd_parse(argc, argv);
   }
@@ -137,4 +145,3 @@ int main(int argc, char **argv) {
   usage(stderr);
   return 2;
 }
-

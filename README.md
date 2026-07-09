@@ -120,6 +120,7 @@ Implemented:
 - libbpf-backed map creation and CID registration helpers.
 - libbpf object loader that can reuse `qaffinity` maps and attach the reuseport program to a socket.
 - `sk_reuseport` eBPF source that routes long-header and configured-length short-header packets by registered DCID.
+- Stats read API for dataplane counters.
 - Parser unit test, privileged reuseport smoke test, and CLI parser command.
 
 Not implemented yet:

@@ -234,3 +234,40 @@ int qaff_get_stats_map_fd(const struct qaff_context *ctx) {
 int qaff_get_config_map_fd(const struct qaff_context *ctx) {
   return ctx ? ctx->config_map_fd : -1;
 }
+
+int qaff_read_stats(struct qaff_context *ctx, struct qaff_stats *out) {
+  if (ctx == NULL || out == NULL || ctx->stats_map_fd < 0) {
+    errno = EINVAL;
+    return -1;
+  }
+
+  memset(out, 0, sizeof(*out));
+  for (uint32_t i = 0; i < QAFF_STAT_MAX; i++) {
+    uint64_t value = 0;
+    if (bpf_map_lookup_elem(ctx->stats_map_fd, &i, &value) != 0) {
+      return -1;
+    }
+    out->values[i] = value;
+  }
+
+  return 0;
+}
+
+const char *qaff_stat_name(uint32_t index) {
+  switch (index) {
+  case QAFF_STAT_PACKETS:
+    return "packets";
+  case QAFF_STAT_CID_MAP_HIT:
+    return "cid_map_hit";
+  case QAFF_STAT_FALLBACK:
+    return "fallback";
+  case QAFF_STAT_PARSE_ERROR:
+    return "parse_error";
+  case QAFF_STAT_ZERO_LENGTH_CID:
+    return "zero_length_cid";
+  case QAFF_STAT_WORKER_MISSING:
+    return "worker_missing";
+  default:
+    return "unknown";
+  }
+}

@@ -22,6 +22,10 @@ struct qaff_options {
   uint8_t short_cid_len;
 };
 
+struct qaff_stats {
+  uint64_t values[QAFF_STAT_MAX];
+};
+
 void qaff_options_init(struct qaff_options *options);
 
 int qaff_open(const struct qaff_options *options, struct qaff_context **out);
@@ -44,6 +48,9 @@ int qaff_get_cid_map_fd(const struct qaff_context *ctx);
 int qaff_get_worker_sock_map_fd(const struct qaff_context *ctx);
 int qaff_get_stats_map_fd(const struct qaff_context *ctx);
 int qaff_get_config_map_fd(const struct qaff_context *ctx);
+
+int qaff_read_stats(struct qaff_context *ctx, struct qaff_stats *out);
+const char *qaff_stat_name(uint32_t index);
 
 int qaff_bpf_object_open(struct qaff_context *ctx,
                          const char *object_path,
