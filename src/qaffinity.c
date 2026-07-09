@@ -12,11 +12,24 @@ struct qaff_context {
   int cid_map_fd;
   int worker_sock_map_fd;
   int stats_map_fd;
+  int config_map_fd;
   int owns_cid_map;
   int owns_worker_sock_map;
   int owns_stats_map;
+  int owns_config_map;
   uint8_t short_cid_len;
 };
+
+void qaff_options_init(struct qaff_options *options) {
+  if (options == NULL) {
+    return;
+  }
+  memset(options, 0, sizeof(*options));
+  options->cid_map_fd = -1;
+  options->worker_sock_map_fd = -1;
+  options->stats_map_fd = -1;
+  options->config_map_fd = -1;
+}
 
 static int qaff_create_hash_map(const char *name,
                                 uint32_t key_size,
@@ -48,6 +61,24 @@ static int qaff_create_stats_map(const char *name) {
                         NULL);
 }
 
+static int qaff_create_config_map(const char *name) {
+  return bpf_map_create(BPF_MAP_TYPE_ARRAY,
+                        name,
+                        sizeof(uint32_t),
+                        sizeof(struct qaff_config_value),
+                        1,
+                        NULL);
+}
+
+static int qaff_write_config(struct qaff_context *ctx) {
+  struct qaff_config_value value;
+  memset(&value, 0, sizeof(value));
+  value.short_cid_len = ctx->short_cid_len;
+
+  uint32_t key = 0;
+  return bpf_map_update_elem(ctx->config_map_fd, &key, &value, BPF_ANY);
+}
+
 int qaff_open(const struct qaff_options *options, struct qaff_context **out) {
   if (out == NULL) {
     errno = EINVAL;
@@ -59,10 +90,17 @@ int qaff_open(const struct qaff_options *options, struct qaff_context **out) {
     return -1;
   }
 
-  ctx->cid_map_fd = options ? options->cid_map_fd : -1;
-  ctx->worker_sock_map_fd = options ? options->worker_sock_map_fd : -1;
-  ctx->stats_map_fd = options ? options->stats_map_fd : -1;
-  ctx->short_cid_len = options ? options->short_cid_len : 0;
+  struct qaff_options defaults;
+  if (options == NULL) {
+    qaff_options_init(&defaults);
+    options = &defaults;
+  }
+
+  ctx->cid_map_fd = options->cid_map_fd;
+  ctx->worker_sock_map_fd = options->worker_sock_map_fd;
+  ctx->stats_map_fd = options->stats_map_fd;
+  ctx->config_map_fd = options->config_map_fd;
+  ctx->short_cid_len = options->short_cid_len;
 
   if (ctx->cid_map_fd < 0) {
     ctx->cid_map_fd = qaff_create_hash_map("qaff_cids",
@@ -91,6 +129,18 @@ int qaff_open(const struct qaff_options *options, struct qaff_context **out) {
     ctx->owns_stats_map = 1;
   }
 
+  if (ctx->config_map_fd < 0) {
+    ctx->config_map_fd = qaff_create_config_map("qaff_config");
+    if (ctx->config_map_fd < 0) {
+      goto fail;
+    }
+    ctx->owns_config_map = 1;
+  }
+
+  if (qaff_write_config(ctx) != 0) {
+    goto fail;
+  }
+
   *out = ctx;
   return 0;
 
@@ -111,6 +161,9 @@ void qaff_close(struct qaff_context *ctx) {
   }
   if (ctx->owns_stats_map && ctx->stats_map_fd >= 0) {
     close(ctx->stats_map_fd);
+  }
+  if (ctx->owns_config_map && ctx->config_map_fd >= 0) {
+    close(ctx->config_map_fd);
   }
   free(ctx);
 }
@@ -178,3 +231,6 @@ int qaff_get_stats_map_fd(const struct qaff_context *ctx) {
   return ctx ? ctx->stats_map_fd : -1;
 }
 
+int qaff_get_config_map_fd(const struct qaff_context *ctx) {
+  return ctx ? ctx->config_map_fd : -1;
+}

@@ -119,16 +119,24 @@ Implemented:
 - CID key format shared between user space and BPF.
 - libbpf-backed map creation and CID registration helpers.
 - libbpf object loader that can reuse `qaffinity` maps and attach the reuseport program to a socket.
-- `sk_reuseport` eBPF source that routes long-header packets by registered DCID and falls back otherwise.
-- Parser unit test and CLI parser command.
+- `sk_reuseport` eBPF source that routes long-header and configured-length short-header packets by registered DCID.
+- Parser unit test, privileged reuseport smoke test, and CLI parser command.
 
 Not implemented yet:
 
-- Multi-worker socket smoke test.
 - Real QUIC stack integration.
-- Short-header routing in BPF; the listener short CID length still needs to be wired into BPF config.
 - Graceful reload, worker lifecycle cleanup, and map pinning.
 - Routable CID profile.
+
+## Privileged Smoke Test
+
+`reuseport_smoke` creates a multi-worker UDP `SO_REUSEPORT` group, loads the eBPF object, attaches it to the group, registers a CID to one worker, and sends both long-header and short-header QUIC-like packets from different source ports. The expected result is that both packets arrive at the registered worker.
+
+This test needs the kernel capabilities required to create BPF maps and load/attach BPF programs. On systems with `kernel.unprivileged_bpf_disabled=2`, it will be skipped unless run with suitable privileges.
+
+```sh
+ctest --test-dir build --output-on-failure -R reuseport_smoke
+```
 
 ## Documentation
 

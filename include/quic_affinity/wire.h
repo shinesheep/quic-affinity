@@ -19,6 +19,16 @@ struct qaff_cid_key {
 #endif
 };
 
+struct qaff_config_value {
+#if defined(__KERNEL__) || defined(QAFF_BPF)
+  __u8 short_cid_len;
+  __u8 reserved[7];
+#else
+  uint8_t short_cid_len;
+  uint8_t reserved[7];
+#endif
+};
+
 enum qaff_stat_index {
   QAFF_STAT_PACKETS = 0,
   QAFF_STAT_CID_MAP_HIT = 1,

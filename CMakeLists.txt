@@ -47,6 +47,16 @@ target_compile_options(test_quic_parser PRIVATE -Wall -Wextra -Wpedantic)
 
 add_test(NAME quic_parser COMMAND test_quic_parser)
 
+add_executable(test_reuseport_smoke
+  tests/test_reuseport_smoke.c)
+
+target_link_libraries(test_reuseport_smoke PRIVATE qaffinity)
+target_compile_options(test_reuseport_smoke PRIVATE -Wall -Wextra -Wpedantic)
+
+add_test(NAME reuseport_smoke
+  COMMAND test_reuseport_smoke ${CMAKE_CURRENT_BINARY_DIR}/qaff_reuseport.bpf.o)
+set_tests_properties(reuseport_smoke PROPERTIES SKIP_RETURN_CODE 77)
+
 if(QAFF_BUILD_BPF)
   find_program(CLANG_EXECUTABLE clang)
   if(CLANG_EXECUTABLE)
@@ -71,6 +81,7 @@ if(QAFF_BUILD_BPF)
 
     add_custom_target(qaff_bpf ALL
       DEPENDS ${CMAKE_CURRENT_BINARY_DIR}/qaff_reuseport.bpf.o)
+    add_dependencies(test_reuseport_smoke qaff_bpf)
   else()
     message(WARNING "clang not found; eBPF object will not be built")
   endif()

@@ -11,11 +11,11 @@
 ## Phase 2: Attach and Smoke Test
 
 - Add a libbpf loader. (Initial API exists; needs socket smoke coverage.)
-- Create a multi-worker UDP test server.
-- Attach the reuseport BPF program to the socket group.
-- Register worker sockets in `BPF_MAP_TYPE_REUSEPORT_SOCKARRAY`.
-- Register server CIDs from the test server.
-- Verify source-port rebinding still reaches the original worker.
+- Create a multi-worker UDP test server. (Implemented as `reuseport_smoke`.)
+- Attach the reuseport BPF program to the socket group. (Implemented; requires privileges to run.)
+- Register worker sockets in `BPF_MAP_TYPE_REUSEPORT_SOCKARRAY`. (Implemented.)
+- Register server CIDs from the test server. (Implemented.)
+- Verify source-port rebinding still reaches the original worker. (Implemented for long and configured-length short headers; skipped on unprivileged machines.)
 
 ## Phase 3: Real QUIC Stack Integration
 

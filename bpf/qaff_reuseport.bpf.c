@@ -26,6 +26,13 @@ struct {
   __type(value, __u64);
 } qaff_stats SEC(".maps");
 
+struct {
+  __uint(type, BPF_MAP_TYPE_ARRAY);
+  __uint(max_entries, 1);
+  __type(key, __u32);
+  __type(value, struct qaff_config_value);
+} qaff_config SEC(".maps");
+
 static __always_inline void qaff_count(__u32 index) {
   __u64 *value = bpf_map_lookup_elem(&qaff_stats, &index);
   if (value) {
@@ -84,12 +91,14 @@ static __always_inline int qaff_extract_dcid(struct sk_reuseport_md *ctx,
     return qaff_copy_dcid(key, data, data_end, 6, dcid_len);
   }
 
-  /*
-   * MVP limitation: QUIC short headers do not encode DCID length.
-   * The first dataplane version routes long-header packets by map and
-   * lets short-header packets fall back until listener config is wired in.
-   */
-  return -3;
+  __u32 config_key = 0;
+  struct qaff_config_value *config =
+      bpf_map_lookup_elem(&qaff_config, &config_key);
+  if (!config || config->short_cid_len == 0) {
+    return -3;
+  }
+
+  return qaff_copy_dcid(key, data, data_end, 1, config->short_cid_len);
 }
 
 SEC("sk_reuseport/qaff_select")
@@ -119,4 +128,3 @@ int qaff_select(struct sk_reuseport_md *ctx) {
   bpf_sk_select_reuseport(ctx, &qaff_workers, &fallback, 0);
   return SK_PASS;
 }
-
