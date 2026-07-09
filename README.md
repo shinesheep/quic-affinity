@@ -2,89 +2,130 @@
 
 `quic-affinity` is a Linux worker-affinity layer for QUIC servers.
 
-It routes incoming QUIC packets to the worker process that owns the connection, even when the client address or port changes because of NAT rebinding or connection migration. The project is intended to be QUIC-stack neutral: NGINX, quiche, quic-go, MsQuic, ngtcp2, and custom servers should be able to integrate without each project writing its own eBPF routing layer.
+It makes `SO_REUSEPORT` understand QUIC connection IDs. When a client's IP
+address or UDP source port changes because of NAT rebinding or connection
+migration, packets can still reach the worker process that owns the QUIC
+connection state.
 
-## Problem
+The project is QUIC-stack neutral. It is designed so NGINX, quiche, quic-go,
+MsQuic, ngtcp2, and custom servers can share one Linux dataplane and control
+plane instead of each stack carrying its own reuseport eBPF router.
 
-QUIC connections are identified by connection IDs, not by the UDP 4-tuple. On Linux, a multi-process UDP server often uses `SO_REUSEPORT` to distribute packets across workers. The default kernel distribution does not understand QUIC connection IDs, so a client address or port change can cause packets for an existing QUIC connection to arrive at a different worker.
+## Why
 
-That worker usually does not own the connection state. Common outcomes are packet loss, user-space forwarding between workers, or incorrect stateless reset behavior.
+Linux `SO_REUSEPORT` normally distributes UDP packets without understanding
+QUIC connection IDs. That is fine for the first packet of a new connection, but
+it is not enough for established QUIC connections:
 
-## Goals
+- QUIC connection identity lives in the Destination Connection ID (DCID), not
+  the UDP 4-tuple.
+- NAT rebinding can change the client source port while the QUIC connection is
+  still the same connection.
+- QUIC connection migration can change the client address.
+- A packet delivered to the wrong worker usually means packet loss,
+  cross-process forwarding, or incorrect stateless reset behavior.
 
-- Route QUIC packets by Destination Connection ID (DCID) before they reach user space.
-- Support multiple independent QUIC server implementations.
-- Provide stronger general-purpose capabilities than implementation-specific features such as NGINX `quic_bpf`.
-- Support connection migration and NAT rebinding without steady-state cross-process forwarding.
-- Provide observable routing behavior through counters and diagnostics.
-- Offer both stateful CID registration and low-state routable CID profiles.
+`quic-affinity` routes packets by DCID before they reach user space.
 
-## Non-Goals
-
-- This is not a QUIC implementation.
-- This is not an HTTP/3 reverse proxy.
-- This does not replace external load balancers for cross-machine routing.
-- This does not make the first client Initial packet server-routable; that packet uses a client-generated DCID and still needs fallback routing.
-
-## Architecture
+## Design
 
 ```text
 UDP packet
   -> Linux SO_REUSEPORT eBPF program
   -> parse QUIC header
-  -> extract DCID
+  -> extract Destination Connection ID
   -> route by CID map or routable CID profile
   -> select owning worker socket
 ```
 
-The planned project components are:
+Main components:
 
-- `bpf/`: `BPF_PROG_TYPE_SK_REUSEPORT` dataplane for packet parsing and socket selection.
-- `qaffd/`: user-space control-plane daemon for worker registration, CID map management, lifecycle cleanup, and metrics.
-- `libqaffinity/`: stable C ABI for QUIC servers.
-- `bindings/`: language bindings for Rust, Go, and C++.
-- `examples/`: integration examples for common QUIC stacks.
-- `tests/`: migration and NAT rebinding test scenarios.
+- `bpf/qaff_reuseport.bpf.c`: `BPF_PROG_TYPE_SK_REUSEPORT` dataplane.
+- `qaffd`: privileged control-plane daemon for BPF setup, worker registration,
+  CID lifecycle, cleanup, restart recovery, authorization, and audit logs.
+- `qaffctl`: diagnostic and management CLI.
+- `include/quic_affinity/`: public C API.
+- `examples/`: minimal embedded/control-plane examples and optional quiche
+  probes.
+- `packaging/systemd/`: systemd, tmpfiles, sysusers, and environment templates.
 
 ## Routing Modes
 
 ### Stateful CID Registry
 
-The QUIC server registers every server-generated CID with `quic-affinity`.
+The QUIC server registers each server-issued CID with `qaffd` or directly with
+`libqaffinity`.
 
-This mode works with opaque CIDs and is the most compatible option. It has the best privacy properties but requires lifecycle management for active CIDs.
+This mode works with opaque CIDs and is the most compatible choice. It has good
+privacy properties because the CID does not need to reveal routing information.
+The cost is maintaining per-CID state and retiring CIDs at the right time.
 
-### Routable CID
+### Routable CID Profile
 
-The QUIC server uses a CID profile that encodes enough routing information for the eBPF program to select a worker without per-CID state.
+The QUIC server uses a CID format that embeds a worker ID plus validation data.
+The eBPF program can route these CIDs without a per-CID map entry.
 
-This mode is better for very high connection counts, but requires the server to adopt a compatible CID format and key/config rotation policy.
+This mode is useful for very high connection counts and restart recovery. It
+requires the QUIC server to adopt the profile format and manage key/config
+rotation. Profile v2 is the recommended profile: it adds a config ID, worker
+generation, nonce, and a 32-bit BPF-friendly keyed tag. The tag is a routing
+integrity check, not a cryptographic MAC.
 
-## Initial MVP
+The exact profile formats are documented in [docs/cid-profile.md](docs/cid-profile.md).
 
-1. Fixed-length DCID parser for QUIC v1 long and short headers.
-2. `SO_REUSEPORT_EBPF` program that routes by a BPF CID-to-worker map.
-3. C ABI for worker registration, CID registration, and CID retirement.
-4. One integration example using a real QUIC stack.
-5. NAT rebinding test: same QUIC connection, changed source port, same worker.
-6. Basic counters for CID hits, fallback, parse errors, and selected workers.
+## First Packet Behavior
+
+The first client Initial normally uses a client-generated DCID. The server has
+not issued a routable or registered CID yet, so that packet must use fallback
+routing. After the server creates its own Source Connection ID and registers it
+or uses a routable profile, later packets can be steered to the owning worker
+even if the client's address or port changes.
+
+## Compared With NGINX `quic_bpf`
+
+`quic-affinity` is intended to be a more general Linux facility:
+
+- It is QUIC-stack neutral rather than tied to one server.
+- It supports both exact CID registration and low-state routable CIDs.
+- It has a standalone control plane with Unix-socket fd passing.
+- It handles worker lifecycle cleanup through leased registrations, pidfd when
+  available, and optional heartbeats.
+- It validates pinned BPF map schemas before reuse.
+- It exposes counters, worker state, CID-index health, and audit logs.
 
 ## Build
 
 Requirements:
 
-- Linux
-- C compiler
-- CMake
+- Linux with `SO_REUSEPORT` eBPF support
+- CMake 3.20+
+- C11 compiler
 - clang with BPF target support
 - libbpf development headers
 
-Build and test:
+Build:
 
 ```sh
 cmake -B build -S .
 cmake --build build
+```
+
+Run tests:
+
+```sh
 ctest --test-dir build --output-on-failure
+```
+
+Some tests load and attach eBPF programs. They need the kernel capabilities
+required for BPF and may be skipped on hosts without writable bpffs or suitable
+privileges.
+
+If passwordless `sudo -n setcap` is available, the test wrappers can restore
+capabilities after rebuilds:
+
+```sh
+sudo -n setcap cap_bpf,cap_net_admin,cap_perfmon,cap_sys_resource+ep build/qaffd
+sudo -n setcap cap_bpf,cap_net_admin,cap_perfmon,cap_sys_resource+ep build/test_reuseport_smoke
 ```
 
 Install into `/usr`:
@@ -93,192 +134,123 @@ Install into `/usr`:
 cmake --install build --prefix /usr
 ```
 
-For package staging, keep the runtime prefix as `/usr` and set `DESTDIR`:
+Stage a package root:
 
 ```sh
 DESTDIR=/tmp/qaff-root cmake --install build --prefix /usr
 ```
 
-The build currently produces:
+## Quick Start With `qaffd`
 
-- `build/libqaffinity.a`
-- `build/qaffd`
-- `build/qaffctl`
-- `build/qaff_minimal_control`
-- `build/qaff_minimal_registry`
-- `build/qaff_reuseport.bpf.o`
-- `build/test_quic_parser`
-
-Example parser check:
+Start a daemon for one listener:
 
 ```sh
-build/qaffctl parse c30000000108deadbeefaabbccdd0411223344
+build/qaffd \
+  --socket /tmp/qaffd.sock \
+  --bpf build/qaff_reuseport.bpf.o \
+  --short-cid-len 8 \
+  --fallback-worker 0
 ```
 
-Expected output:
+Register workers and CIDs from a QUIC server through the control API:
 
-```text
-parse=ok
-header=long
-version=0x00000001
-dcid_len=8
-dcid=deadbeefaabbccdd
+```c
+int cfd = qaff_control_connect("/tmp/qaffd.sock");
+qaff_control_register_worker_lease(cfd, worker_id, udp_socket_fd);
+qaff_control_register_cid(cfd, worker_id, server_cid, server_cid_len);
 ```
 
-## Current Implementation Status
-
-Implemented:
-
-- Public C headers for parser, registry, worker socket, routable CID profile, and BPF loader APIs.
-- QUIC DCID parser for long headers and configured-length short headers.
-- CID key format shared between user space and BPF.
-- libbpf-backed map creation and CID registration helpers.
-- libbpf object loader that can reuse `qaffinity` maps and attach the reuseport program to a socket.
-- `sk_reuseport` eBPF source that routes long-header and configured-length short-header packets by registered DCID or routable CID profile.
-- Stats read API for dataplane counters.
-- Routable CID profile v1/v2 helpers and BPF dataplane routing; v2 adds config ID, worker generation, and a 32-bit keyed tag.
-- `qaffd` control plane with Unix socket fd passing for worker registration, CID lifecycle, worker unregister, map pinning, map schema validation, restart recovery, authorization, audit logs, and observability.
-- Parser unit test, privileged reuseport smoke test, qaffd/qaffctl control tests, restart smoke, quiche probes, and packaging smoke.
-- CMake install rules for `qaffd`, `qaffctl`, public headers, `libqaffinity.a`, and the eBPF object.
-- systemd, tmpfiles, sysusers, and environment-file templates under `packaging/systemd/`.
-
-Not implemented yet:
-
-- Distro-native `.deb`/`.rpm` packaging.
-- Direct pinned-map inspection by `qaffctl`.
-
-## Privileged Smoke Test
-
-`reuseport_smoke` creates a multi-worker UDP `SO_REUSEPORT` group, loads the eBPF object, attaches it to the group, registers a CID to one worker, and sends both long-header and short-header QUIC-like packets from explicitly different source ports. It also verifies routable profile CIDs that are not present in the CID map. It runs the scenario for both IPv4 and IPv6. The expected result is that registered and valid profile packets arrive at the owning worker, while unknown or tampered CIDs use fallback routing.
-
-This test needs the kernel capabilities required to create BPF maps and load/attach BPF programs. On systems with `kernel.unprivileged_bpf_disabled=2`, it will be skipped unless run with suitable privileges.
-
-CTest runs the smoke test through `tests/run_reuseport_smoke.sh`. If passwordless `sudo -n setcap` is available, the wrapper restores the test binary capabilities after rebuilds:
+Inspect the listener:
 
 ```sh
-cap_bpf,cap_net_admin,cap_perfmon,cap_sys_resource+ep
+build/qaffctl health /tmp/qaffd.sock
+build/qaffctl config /tmp/qaffd.sock
+build/qaffctl workers /tmp/qaffd.sock
+build/qaffctl stats /tmp/qaffd.sock
+build/qaffctl cids /tmp/qaffd.sock --count
 ```
 
-```sh
-ctest --test-dir build --output-on-failure -R reuseport_smoke
-```
+New integrations should prefer leased worker registration. If the control
+connection closes unexpectedly, `qaffd` unregisters the worker, closes its
+duplicated socket fd, and retires CIDs owned by that worker.
 
-## Control Plane
+## Routable CID Profile v2
 
-`qaffd` is the initial privileged control-plane daemon. It loads the BPF object, creates maps, attaches the reuseport program after the first worker socket is registered, and accepts control requests over a Unix domain socket.
-
-Current control operations:
-
-- register worker socket using `SCM_RIGHTS`
-- register leased worker socket using `SCM_RIGHTS`
-- worker heartbeat on leased control connections
-- unregister worker socket
-- register CID
-- retire CID
-- read stats
-- health check
-- read config
-- read CID counts and consistency status
-- list registered workers
-- stop daemon
-
-Example:
-
-```sh
-sudo -n setcap cap_bpf,cap_net_admin,cap_perfmon,cap_sys_resource+ep build/qaffd
-build/qaffd --socket /tmp/qaffd.sock --bpf build/qaff_reuseport.bpf.o --short-cid-len 8 --fallback-worker 0
-```
-
-`--fallback-worker` selects the worker socket used when the incoming packet cannot be parsed or its DCID is not registered yet. This is the expected path for the first client Initial, because that DCID is client-generated.
-
-To enable routable CID profile v2 in the BPF dataplane, store a 16-byte listener key as 32 hex digits in a file readable by `qaffd`:
+Create a listener-local 16-byte key as 32 hex digits:
 
 ```sh
 install -m 0600 -D /dev/stdin /etc/quic-affinity/profile-v2.key <<EOF
 707172737475767778797a7b7c7d7e7f
 EOF
-build/qaffd --socket /tmp/qaffd.sock \
+```
+
+Start `qaffd` with profile v2 enabled:
+
+```sh
+build/qaffd \
+  --socket /tmp/qaffd.sock \
   --bpf build/qaff_reuseport.bpf.o \
   --short-cid-len 12 \
   --cid-profile-v2-key-file /etc/quic-affinity/profile-v2.key \
   --cid-profile-v2-config-id 7
 ```
 
-The CID map still has priority. On a map miss, BPF validates a v2 profile CID with the configured key, config ID, and worker generation, then selects the embedded worker ID if all checks pass. Profile v1 remains available for compatibility, but v2 is the recommended low-state profile.
+The exact CID map has priority. On a map miss, the BPF program validates the v2
+profile key tag, config ID, and worker generation. If all checks pass, it
+selects the embedded worker ID.
 
-New worker integrations should use the leased worker registration API and keep the control fd open for the worker lifetime. If that fd closes unexpectedly, `qaffd` automatically unregisters the worker, closes its duplicated UDP socket fd, and retires the worker's CIDs. For leased workers, `qaffd` also opens a pidfd when the kernel supports it and unregisters the worker if the registering process exits. `--worker-heartbeat-timeout-ms` enables stuck-worker cleanup for leased workers; the default `0` disables heartbeat timeouts. `qaffd` records Unix peer credentials for worker registration. Existing worker IDs, worker CID registration, CID retirement, and worker unregistration can be mutated only by the original worker process or by the configured management identity. `--allow-worker-uid` and `--allow-worker-gid` define that management identity and restrict worker registration by Unix peer credentials. The control socket defaults to mode `0600`; deployments that need group access can use `--socket-mode 0660 --socket-gid GID`.
+## Security Model
 
-`qaffd` writes audit records to stderr for worker registration, worker removal, CID registration/retirement, and denied mutations. Audit records include event names and peer credentials, but do not print CID bytes or profile keys.
+`qaffd` is the preferred deployment model because it centralizes privileged BPF
+operations and exposes a narrow Unix-socket control API.
 
-For restart recovery, run `qaffd` with a writable bpffs pin root and a state snapshot path:
+Current hardening:
+
+- Control socket defaults to mode `0600`.
+- Group access is opt-in with `--socket-mode 0660 --socket-gid GID`.
+- World-accessible control sockets are rejected.
+- Worker mutation is authorized by recorded Unix peer credentials or an
+  explicit management UID/GID.
+- Leased workers are cleaned up on control-fd close; pidfd monitoring is used
+  when the kernel supports it.
+- Optional worker heartbeat timeout can clean up stuck leased workers.
+- Pinned map schemas are validated before reuse.
+- Pin roots must be directories and must not be group/other writable.
+- Audit logs record worker/CID lifecycle events and denied mutations without
+  printing CID bytes or profile keys.
+
+## Restart Recovery
+
+For production-style deployments, run with a bpffs pin root and state snapshot:
 
 ```sh
-build/qaffd --socket /tmp/qaffd.sock \
-  --bpf build/qaff_reuseport.bpf.o \
+build/qaffd \
+  --socket /run/quic-affinity/example.sock \
+  --bpf /usr/libexec/quic-affinity/qaff_reuseport.bpf.o \
   --short-cid-len 8 \
-  --pin-root /sys/fs/bpf/quic-affinity/listeners/udp-ipv4-127.0.0.1-4433 \
-  --state-path /var/lib/quic-affinity/udp-ipv4-127.0.0.1-4433.state
+  --pin-root /sys/fs/bpf/quic-affinity/listeners/example \
+  --state-path /var/lib/quic-affinity/example.state
 ```
 
-Pinned maps are schema-checked on open. `qaffd` rejects pinned maps with unexpected type, key size, value size, or max entries, and rejects pin roots that are not directories or are writable by group/other.
-
-Inspect and stop it with `qaffctl`:
-
-```sh
-build/qaffctl stats /tmp/qaffd.sock
-build/qaffctl health /tmp/qaffd.sock
-build/qaffctl config /tmp/qaffd.sock   # includes config, paths, CID counts, and consistency status
-build/qaffctl cids /tmp/qaffd.sock --count
-build/qaffctl workers /tmp/qaffd.sock
-build/qaffctl unregister-worker /tmp/qaffd.sock 2
-build/qaffctl stop /tmp/qaffd.sock
-```
-
-`qaffctl workers` reports each worker's lease state, pidfd availability, peer pid/uid/gid when available, registration age, and last-seen age.
-
-The `qaffd_control` test starts `qaffd`, registers IPv4 and IPv6 reuseport workers through the control API, verifies leased worker cleanup on control-fd close, registers a CID, verifies hit and fallback routing, unregisters workers, and verifies that CIDs owned by removed workers are retired before later packets fall back. The `qaffd_restart` test verifies pinned map and state recovery when bpffs is writable; it is skipped on systems where `/sys/fs/bpf` is unavailable or read-only.
-
-The routable CID profile is documented in `docs/cid-profile.md`.
-
-## Deployment Skeleton
-
-The repository includes deployment templates in `packaging/systemd/`:
-
-- `qaffd@.service`: per-listener systemd unit.
-- `qaffd.env.example`: listener environment file template.
-- `quic-affinity.tmpfiles`: runtime, state, and bpffs directory declarations.
-- `quic-affinity.sysusers`: placeholder for future non-root service users.
-
-After installation, copy and edit the environment example:
-
-```sh
-install -d /etc/quic-affinity
-cp /usr/share/doc/quic_affinity/examples/qaffd.env.example \
-  /etc/quic-affinity/udp-ipv4-127.0.0.1-4433.env
-systemctl enable --now qaffd@udp-ipv4-127.0.0.1-4433.service
-```
-
-The unit expects `qaffd` at `/usr/sbin/qaffd`, `qaffctl` at `/usr/bin/qaffctl`, and the BPF object at `/usr/libexec/quic-affinity/qaff_reuseport.bpf.o`. The bpffs path used by `QAFF_PIN_ROOT` must be writable.
-Optional listener flags, such as `--cid-profile-v1-key-file ...`, can be supplied through `QAFF_EXTRA_ARGS` in the environment file.
-
-To verify a real systemd deployment on a host with writable bpffs:
-
-```sh
-sudo -n scripts/systemd_smoke.sh build
-```
-
-The smoke installs the current build into `/usr`, starts a temporary `qaffd@...` listener instance, checks it through `/usr/bin/qaffctl`, then removes only the temporary listener env/state/socket/pin files.
+Pinned maps allow the dataplane state to survive a `qaffd` restart. The state
+snapshot lets `qaffd` rebuild its user-space ownership index and worker
+generation metadata.
 
 ## Examples
 
-- `qaff_minimal_registry`: embedded mode. The process creates maps, loads BPF, attaches the program, registers workers, and registers CIDs directly.
-- `qaff_minimal_control`: daemon-controlled mode. `qaffd` owns BPF setup; the worker-side example creates UDP workers and registers leased worker sockets/CIDs through the Unix socket control API.
-- `qaff_quiche_control_probe`: optional quiche FFI integration probe. It creates a real quiche server connection, registers a leased worker, quiche source CIDs, and a routable profile CID through `qaffd`, and validates the CID lifecycle hook points.
-- `qaff_quiche_udp_smoke`: optional real UDP quiche smoke. It sends real quiche packets through Linux UDP sockets, registers leased workers and the server CID through `qaffd`, switches the client source port, and verifies a dataplane CID hit.
+- `qaff_minimal_registry`: embedded mode. One process creates maps, loads BPF,
+  attaches the program, registers workers, and registers CIDs directly.
+- `qaff_minimal_control`: daemon-controlled mode. `qaffd` owns BPF setup while a
+  worker process registers leased worker sockets and CIDs through the Unix
+  socket API.
+- `qaff_quiche_control_probe`: optional quiche FFI probe that validates the CID
+  lifecycle hook points against a real quiche server connection.
+- `qaff_quiche_udp_smoke`: optional real UDP quiche smoke that changes the
+  client source port and verifies a dataplane CID-map hit.
 
-### Optional quiche Probe
-
-The quiche probe is built only when quiche FFI artifacts exist under `third_party/quiche`.
+The quiche examples are built only when quiche FFI artifacts exist under
+`third_party/quiche`. `third_party/` is ignored by Git and is not part of the
+main project distribution.
 
 ```sh
 mkdir -p third_party
@@ -291,15 +263,43 @@ cmake --build build
 ctest --test-dir build --output-on-failure -R 'quiche_control_probe|quiche_udp_smoke'
 ```
 
-`third_party/` is ignored by Git. The control probe verifies that server-issued CIDs from a real QUIC stack can be registered through the `qaffd` control plane. The UDP smoke verifies an actual packet path where the first Initial falls back, the server SCID is registered, and a later packet from a different client source port produces a CID-map hit.
-
 ## Documentation
 
-- Design bootstrap: [docs/bootstrap.md](docs/bootstrap.md)
+- Bootstrap/design notes: [docs/bootstrap.md](docs/bootstrap.md)
 - Integration contract: [docs/integration-contract.md](docs/integration-contract.md)
-- Control plane plan: [docs/control-plane.md](docs/control-plane.md)
+- Control plane: [docs/control-plane.md](docs/control-plane.md)
+- CID profile: [docs/cid-profile.md](docs/cid-profile.md)
 - Implementation plan: [docs/implementation-plan.md](docs/implementation-plan.md)
 
-## Status
+## Current Status
 
-MVP implementation in progress. APIs, CID profiles, and repository layout are expected to evolve.
+Implemented:
+
+- Public C API for parser, worker socket registration, CID registration,
+  routable CID profiles, control client, and BPF loader.
+- QUIC DCID parsing for long headers and configured-length short headers.
+- IPv4 and IPv6 reuseport dataplane tests.
+- Stateful CID routing and profile v1/v2 routing.
+- `qaffd` control plane with fd passing, map pinning, restart recovery,
+  worker cleanup, authorization, audit logs, and observability.
+- `qaffctl` diagnostics for health, config, stats, workers, and CID counts.
+- systemd deployment templates.
+
+Not implemented yet:
+
+- Distro-native `.deb`/`.rpm` packages.
+- Direct pinned-map inspection by `qaffctl`.
+- Language bindings beyond C.
+
+APIs may still change before a 1.0 release.
+
+## License
+
+The main `quic-affinity` project is licensed under the MIT License. See
+[LICENSE](LICENSE).
+
+Optional third-party code downloaded into `third_party/` is not tracked in this
+repository and remains under its own upstream license. The BPF object declares
+`Dual BSD/GPL` so the kernel treats the loaded program as GPL-compatible for BPF
+helper availability; that loader string does not change the MIT license of the
+user-space project.

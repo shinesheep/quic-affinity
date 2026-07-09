@@ -77,6 +77,9 @@ install(FILES packaging/systemd/qaffd.env.example
 install(FILES README.md
   DESTINATION ${CMAKE_INSTALL_DOCDIR})
 
+install(FILES LICENSE
+  DESTINATION ${CMAKE_INSTALL_DOCDIR})
+
 add_executable(qaff_minimal_registry
   examples/minimal_registry/main.c)
 
