@@ -15,6 +15,7 @@ find_package(PkgConfig REQUIRED)
 pkg_check_modules(LIBBPF REQUIRED libbpf)
 
 add_library(qaffinity
+  src/control_client.c
   src/bpf_loader.c
   src/qaffinity.c
   src/quic_parser.c)
@@ -36,6 +37,12 @@ add_executable(qaffctl
 
 target_link_libraries(qaffctl PRIVATE qaffinity)
 target_compile_options(qaffctl PRIVATE -Wall -Wextra -Wpedantic)
+
+add_executable(qaffd
+  qaffd/main.c)
+
+target_link_libraries(qaffd PRIVATE qaffinity)
+target_compile_options(qaffd PRIVATE -Wall -Wextra -Wpedantic)
 
 add_executable(qaff_minimal_registry
   examples/minimal_registry/main.c)
@@ -66,6 +73,20 @@ add_test(NAME reuseport_smoke
     ${CMAKE_CURRENT_BINARY_DIR}/qaff_reuseport.bpf.o)
 set_tests_properties(reuseport_smoke PROPERTIES SKIP_RETURN_CODE 77)
 
+add_executable(test_qaffd_control
+  tests/test_qaffd_control.c)
+
+target_link_libraries(test_qaffd_control PRIVATE qaffinity)
+target_compile_options(test_qaffd_control PRIVATE -Wall -Wextra -Wpedantic)
+
+add_test(NAME qaffd_control
+  COMMAND /bin/sh
+    ${CMAKE_CURRENT_SOURCE_DIR}/tests/run_qaffd_control.sh
+    $<TARGET_FILE:qaffd>
+    $<TARGET_FILE:test_qaffd_control>
+    ${CMAKE_CURRENT_BINARY_DIR}/qaff_reuseport.bpf.o)
+set_tests_properties(qaffd_control PROPERTIES SKIP_RETURN_CODE 77)
+
 if(QAFF_BUILD_BPF)
   find_program(CLANG_EXECUTABLE clang)
   if(CLANG_EXECUTABLE)
@@ -91,6 +112,8 @@ if(QAFF_BUILD_BPF)
     add_custom_target(qaff_bpf ALL
       DEPENDS ${CMAKE_CURRENT_BINARY_DIR}/qaff_reuseport.bpf.o)
     add_dependencies(test_reuseport_smoke qaff_bpf)
+    add_dependencies(qaffd qaff_bpf)
+    add_dependencies(test_qaffd_control qaff_bpf)
   else()
     message(WARNING "clang not found; eBPF object will not be built")
   endif()

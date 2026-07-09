@@ -90,6 +90,7 @@ ctest --test-dir build --output-on-failure
 The build currently produces:
 
 - `build/libqaffinity.a`
+- `build/qaffd`
 - `build/qaffctl`
 - `build/qaff_minimal_registry`
 - `build/qaff_reuseport.bpf.o`
@@ -122,6 +123,7 @@ Implemented:
 - libbpf object loader that can reuse `qaffinity` maps and attach the reuseport program to a socket.
 - `sk_reuseport` eBPF source that routes long-header and configured-length short-header packets by registered DCID.
 - Stats read API for dataplane counters.
+- Minimal `qaffd` control plane with Unix socket fd passing for worker registration.
 - Parser unit test, privileged reuseport smoke test, and CLI parser command.
 
 Not implemented yet:
@@ -145,6 +147,27 @@ cap_bpf,cap_net_admin,cap_perfmon,cap_sys_resource+ep
 ```sh
 ctest --test-dir build --output-on-failure -R reuseport_smoke
 ```
+
+## Control Plane
+
+`qaffd` is the initial privileged control-plane daemon. It loads the BPF object, creates maps, attaches the reuseport program after the first worker socket is registered, and accepts control requests over a Unix domain socket.
+
+Current control operations:
+
+- register worker socket using `SCM_RIGHTS`
+- register CID
+- retire CID
+- read stats
+- stop daemon
+
+Example:
+
+```sh
+sudo -n setcap cap_bpf,cap_net_admin,cap_perfmon,cap_sys_resource+ep build/qaffd
+build/qaffd --socket /tmp/qaffd.sock --bpf build/qaff_reuseport.bpf.o --short-cid-len 8
+```
+
+The `qaffd_control` test starts `qaffd`, registers IPv4 and IPv6 reuseport workers through the control API, registers a CID, and verifies hit and fallback routing.
 
 ## Documentation
 

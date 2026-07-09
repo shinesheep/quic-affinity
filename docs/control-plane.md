@@ -12,6 +12,20 @@ The next step is a small control plane that can own privileged BPF operations wh
 - Support multiple listeners.
 - Preserve current library-first integration path.
 
+## Current MVP
+
+The repository currently includes a minimal `qaffd` with these operations:
+
+- `REGISTER_WORKER`
+- `REGISTER_CID`
+- `RETIRE_CID`
+- `READ_STATS`
+- `STOP`
+
+Worker registration uses Unix-domain `SCM_RIGHTS` fd passing. `qaffd` attaches the BPF program to the reuseport group when the first worker socket is registered.
+
+The current MVP supports one listener per `qaffd` process. Multi-listener management remains future work.
+
 ## Process Model
 
 ```text
@@ -122,4 +136,3 @@ Before qaffd exists, `qaffctl` can inspect pinned maps directly.
 - Whether fallback worker should be configurable through `qaff_config`.
 - Whether map pinning should be optional in embedded mode.
 - How to represent CID keys in CLI output without leaking sensitive routing material by default.
-

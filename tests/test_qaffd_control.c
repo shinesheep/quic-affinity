@@ -1,0 +1,454 @@
+#define _POSIX_C_SOURCE 200809L
+
+#include "quic_affinity/control.h"
+
+#include <arpa/inet.h>
+#include <errno.h>
+#include <fcntl.h>
+#include <netinet/in.h>
+#include <poll.h>
+#include <signal.h>
+#include <stdint.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <time.h>
+#include <sys/socket.h>
+#include <sys/types.h>
+#include <sys/wait.h>
+#include <unistd.h>
+
+#ifndef SO_REUSEPORT
+#define SO_REUSEPORT 15
+#endif
+
+#define TEST_SKIP 77
+#define WORKER_COUNT 3
+#define FALLBACK_WORKER 0
+#define TARGET_WORKER 2
+
+struct test_case {
+  int family;
+  const char *name;
+};
+
+struct sender_socket {
+  int fd;
+  uint16_t port;
+};
+
+static const uint8_t k_dcid[] = {
+  0xde, 0xad, 0xbe, 0xef, 0xaa, 0xbb, 0xcc, 0xdd,
+};
+
+static const uint8_t k_unknown_dcid[] = {
+  0xba, 0xad, 0xf0, 0x0d, 0x12, 0x34, 0x56, 0x78,
+};
+
+static int set_nonblocking(int fd) {
+  int flags = fcntl(fd, F_GETFL, 0);
+  if (flags < 0) {
+    return -1;
+  }
+  return fcntl(fd, F_SETFL, flags | O_NONBLOCK);
+}
+
+static int make_worker_socket(int family, uint16_t *port) {
+  int fd = socket(family, SOCK_DGRAM | SOCK_CLOEXEC, 0);
+  if (fd < 0) {
+    return -1;
+  }
+
+  int one = 1;
+  if (setsockopt(fd, SOL_SOCKET, SO_REUSEPORT, &one, sizeof(one)) != 0) {
+    close(fd);
+    return -1;
+  }
+
+  if (family == AF_INET) {
+    struct sockaddr_in addr;
+    memset(&addr, 0, sizeof(addr));
+    addr.sin_family = AF_INET;
+    addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+    addr.sin_port = htons(*port);
+    if (bind(fd, (struct sockaddr *)&addr, sizeof(addr)) != 0) {
+      close(fd);
+      return -1;
+    }
+    if (*port == 0) {
+      socklen_t len = sizeof(addr);
+      if (getsockname(fd, (struct sockaddr *)&addr, &len) != 0) {
+        close(fd);
+        return -1;
+      }
+      *port = ntohs(addr.sin_port);
+    }
+  } else {
+    int v6only = 1;
+    if (setsockopt(fd, IPPROTO_IPV6, IPV6_V6ONLY, &v6only, sizeof(v6only)) != 0) {
+      close(fd);
+      return -1;
+    }
+    struct sockaddr_in6 addr6;
+    memset(&addr6, 0, sizeof(addr6));
+    addr6.sin6_family = AF_INET6;
+    addr6.sin6_addr = in6addr_loopback;
+    addr6.sin6_port = htons(*port);
+    if (bind(fd, (struct sockaddr *)&addr6, sizeof(addr6)) != 0) {
+      close(fd);
+      return -1;
+    }
+    if (*port == 0) {
+      socklen_t len = sizeof(addr6);
+      if (getsockname(fd, (struct sockaddr *)&addr6, &len) != 0) {
+        close(fd);
+        return -1;
+      }
+      *port = ntohs(addr6.sin6_port);
+    }
+  }
+
+  if (set_nonblocking(fd) != 0) {
+    close(fd);
+    return -1;
+  }
+  return fd;
+}
+
+static int bind_sender_socket(int family, struct sender_socket *sender) {
+  sender->fd = socket(family, SOCK_DGRAM | SOCK_CLOEXEC, 0);
+  if (sender->fd < 0) {
+    return -1;
+  }
+
+  if (family == AF_INET) {
+    struct sockaddr_in addr;
+    memset(&addr, 0, sizeof(addr));
+    addr.sin_family = AF_INET;
+    addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+    if (bind(sender->fd, (struct sockaddr *)&addr, sizeof(addr)) != 0) {
+      close(sender->fd);
+      return -1;
+    }
+    socklen_t len = sizeof(addr);
+    if (getsockname(sender->fd, (struct sockaddr *)&addr, &len) != 0) {
+      close(sender->fd);
+      return -1;
+    }
+    sender->port = ntohs(addr.sin_port);
+  } else {
+    int v6only = 1;
+    if (setsockopt(sender->fd, IPPROTO_IPV6, IPV6_V6ONLY, &v6only, sizeof(v6only)) != 0) {
+      close(sender->fd);
+      return -1;
+    }
+    struct sockaddr_in6 addr6;
+    memset(&addr6, 0, sizeof(addr6));
+    addr6.sin6_family = AF_INET6;
+    addr6.sin6_addr = in6addr_loopback;
+    if (bind(sender->fd, (struct sockaddr *)&addr6, sizeof(addr6)) != 0) {
+      close(sender->fd);
+      return -1;
+    }
+    socklen_t len = sizeof(addr6);
+    if (getsockname(sender->fd, (struct sockaddr *)&addr6, &len) != 0) {
+      close(sender->fd);
+      return -1;
+    }
+    sender->port = ntohs(addr6.sin6_port);
+  }
+  return 0;
+}
+
+static int send_quic_like_packet(int fd,
+                                 int family,
+                                 uint16_t port,
+                                 int short_header,
+                                 const uint8_t *dcid) {
+  uint8_t long_packet[] = {
+    0xc3, 0x00, 0x00, 0x00, 0x01, 0x08,
+    0, 0, 0, 0, 0, 0, 0, 0,
+    0x00, 0x01, 0x02, 0x03, 0x04,
+  };
+  uint8_t short_packet[] = {
+    0x43,
+    0, 0, 0, 0, 0, 0, 0, 0,
+    0x01, 0x02, 0x03, 0x04,
+  };
+  memcpy(long_packet + 6, dcid, sizeof(k_dcid));
+  memcpy(short_packet + 1, dcid, sizeof(k_dcid));
+
+  const uint8_t *packet = short_header ? short_packet : long_packet;
+  size_t packet_len = short_header ? sizeof(short_packet) : sizeof(long_packet);
+
+  if (family == AF_INET) {
+    struct sockaddr_in dst;
+    memset(&dst, 0, sizeof(dst));
+    dst.sin_family = AF_INET;
+    dst.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+    dst.sin_port = htons(port);
+    return sendto(fd, packet, packet_len, 0,
+                  (struct sockaddr *)&dst, sizeof(dst)) == (ssize_t)packet_len
+               ? 0
+               : -1;
+  }
+
+  struct sockaddr_in6 dst6;
+  memset(&dst6, 0, sizeof(dst6));
+  dst6.sin6_family = AF_INET6;
+  dst6.sin6_addr = in6addr_loopback;
+  dst6.sin6_port = htons(port);
+  return sendto(fd, packet, packet_len, 0,
+                (struct sockaddr *)&dst6, sizeof(dst6)) == (ssize_t)packet_len
+             ? 0
+             : -1;
+}
+
+static int receive_worker(const int *workers, size_t count) {
+  struct pollfd fds[WORKER_COUNT];
+  for (size_t i = 0; i < count; i++) {
+    fds[i].fd = workers[i];
+    fds[i].events = POLLIN;
+    fds[i].revents = 0;
+  }
+  if (poll(fds, count, 1000) <= 0) {
+    return -1;
+  }
+  uint8_t buf[2048];
+  for (size_t i = 0; i < count; i++) {
+    if (fds[i].revents & POLLIN) {
+      if (recv(workers[i], buf, sizeof(buf), 0) > 0) {
+        return (int)i;
+      }
+    }
+  }
+  return -1;
+}
+
+static int connect_retry(const char *socket_path, int attempts) {
+  const struct timespec delay = {
+    .tv_sec = 0,
+    .tv_nsec = 20 * 1000 * 1000,
+  };
+
+  for (int i = 0; i < attempts; i++) {
+    int fd = qaff_control_connect(socket_path);
+    if (fd >= 0) {
+      return fd;
+    }
+    nanosleep(&delay, NULL);
+  }
+  return -1;
+}
+
+static pid_t start_qaffd(const char *qaffd_path,
+                         const char *socket_path,
+                         const char *bpf_path) {
+  pid_t pid = fork();
+  if (pid != 0) {
+    return pid;
+  }
+
+  execl(qaffd_path,
+        qaffd_path,
+        "--socket",
+        socket_path,
+        "--bpf",
+        bpf_path,
+        "--short-cid-len",
+        "8",
+        (char *)NULL);
+  perror("execl qaffd");
+  _exit(127);
+}
+
+static int stop_qaffd(const char *socket_path, pid_t pid) {
+  int fd = qaff_control_connect(socket_path);
+  if (fd >= 0) {
+    qaff_control_stop(fd);
+    close(fd);
+  }
+  int status = 0;
+  if (waitpid(pid, &status, 0) < 0) {
+    return -1;
+  }
+  return WIFEXITED(status) && WEXITSTATUS(status) == 0 ? 0 : -1;
+}
+
+static int control_call_register_worker(const char *socket_path,
+                                        uint32_t worker_id,
+                                        int worker_fd) {
+  int fd = qaff_control_connect(socket_path);
+  if (fd < 0) {
+    return -1;
+  }
+  int rc = qaff_control_register_worker(fd, worker_id, worker_fd);
+  close(fd);
+  return rc;
+}
+
+static int control_call_register_cid(const char *socket_path,
+                                     uint32_t worker_id,
+                                     const uint8_t *cid) {
+  int fd = qaff_control_connect(socket_path);
+  if (fd < 0) {
+    return -1;
+  }
+  int rc = qaff_control_register_cid(fd, worker_id, cid, sizeof(k_dcid));
+  close(fd);
+  return rc;
+}
+
+static int control_call_read_stats(const char *socket_path,
+                                   struct qaff_stats *stats) {
+  int fd = qaff_control_connect(socket_path);
+  if (fd < 0) {
+    return -1;
+  }
+  int rc = qaff_control_read_stats(fd, stats);
+  close(fd);
+  return rc;
+}
+
+static int run_case(const char *qaffd_path,
+                    const char *bpf_path,
+                    const struct test_case *test) {
+  char socket_path[108];
+  snprintf(socket_path, sizeof(socket_path),
+           "/tmp/qaffd-control-%ld-%s.sock",
+           (long)getpid(),
+           test->name);
+
+  unlink(socket_path);
+  pid_t daemon_pid = start_qaffd(qaffd_path, socket_path, bpf_path);
+  if (daemon_pid < 0) {
+    perror("fork qaffd");
+    return 1;
+  }
+
+  int ready_fd = connect_retry(socket_path, 100);
+  if (ready_fd < 0) {
+    int status = 0;
+    if (waitpid(daemon_pid, &status, WNOHANG) == daemon_pid) {
+      fprintf(stderr, "skipping: qaffd exited before accepting control connections\n");
+      return TEST_SKIP;
+    }
+    kill(daemon_pid, SIGTERM);
+    waitpid(daemon_pid, NULL, 0);
+    perror("connect qaffd");
+    return 1;
+  }
+  close(ready_fd);
+
+  int workers[WORKER_COUNT] = {-1, -1, -1};
+  uint16_t port = 0;
+  for (uint32_t i = 0; i < WORKER_COUNT; i++) {
+    workers[i] = make_worker_socket(test->family, &port);
+    if (workers[i] < 0) {
+      perror("make_worker_socket");
+      return 1;
+    }
+    if (control_call_register_worker(socket_path, i, workers[i]) != 0) {
+      perror("qaff_control_register_worker");
+      return 1;
+    }
+  }
+
+  if (control_call_register_cid(socket_path, TARGET_WORKER, k_dcid) != 0) {
+    perror("qaff_control_register_cid");
+    return 1;
+  }
+
+  struct sender_socket senders[2] = {{.fd = -1}, {.fd = -1}};
+  if (bind_sender_socket(test->family, &senders[0]) != 0 ||
+      bind_sender_socket(test->family, &senders[1]) != 0) {
+    perror("bind_sender_socket");
+    return 1;
+  }
+  if (senders[0].port == senders[1].port) {
+    fprintf(stderr, "%s: sender ports unexpectedly match\n", test->name);
+    return 1;
+  }
+
+  for (int i = 0; i < 2; i++) {
+    if (send_quic_like_packet(senders[i].fd,
+                              test->family,
+                              port,
+                              i == 1,
+                              k_dcid) != 0) {
+      perror("send_quic_like_packet");
+      return 1;
+    }
+    int worker = receive_worker(workers, WORKER_COUNT);
+    if (worker != TARGET_WORKER) {
+      fprintf(stderr, "%s: expected worker %d, got %d\n",
+              test->name, TARGET_WORKER, worker);
+      return 1;
+    }
+  }
+
+  if (send_quic_like_packet(senders[0].fd,
+                            test->family,
+                            port,
+                            0,
+                            k_unknown_dcid) != 0) {
+    perror("send fallback packet");
+    return 1;
+  }
+  int fallback_worker = receive_worker(workers, WORKER_COUNT);
+  if (fallback_worker != FALLBACK_WORKER) {
+    fprintf(stderr, "%s: expected fallback worker %d, got %d\n",
+            test->name, FALLBACK_WORKER, fallback_worker);
+    return 1;
+  }
+
+  struct qaff_stats stats;
+  if (control_call_read_stats(socket_path, &stats) != 0) {
+    perror("qaff_control_read_stats");
+    return 1;
+  }
+
+  enum qaff_stat_index family_stat =
+      test->family == AF_INET ? QAFF_STAT_IPV4 : QAFF_STAT_IPV6;
+  if (stats.values[QAFF_STAT_PACKETS] != 3 ||
+      stats.values[QAFF_STAT_CID_MAP_HIT] != 2 ||
+      stats.values[QAFF_STAT_FALLBACK] != 1 ||
+      stats.values[QAFF_STAT_PARSE_ERROR] != 0 ||
+      stats.values[family_stat] != 3) {
+    fprintf(stderr, "%s: unexpected qaffd stats\n", test->name);
+    return 1;
+  }
+
+  if (stop_qaffd(socket_path, daemon_pid) != 0) {
+    perror("stop_qaffd");
+    return 1;
+  }
+
+  for (size_t i = 0; i < WORKER_COUNT; i++) {
+    close(workers[i]);
+  }
+  close(senders[0].fd);
+  close(senders[1].fd);
+  unlink(socket_path);
+  return 0;
+}
+
+int main(int argc, char **argv) {
+  if (argc != 3) {
+    fprintf(stderr, "usage: %s PATH_TO_QAFFD PATH_TO_BPF_OBJECT\n", argv[0]);
+    return 2;
+  }
+
+  const struct test_case tests[] = {
+    {.family = AF_INET, .name = "ipv4"},
+    {.family = AF_INET6, .name = "ipv6"},
+  };
+
+  for (size_t i = 0; i < sizeof(tests) / sizeof(tests[0]); i++) {
+    int rc = run_case(argv[1], argv[2], &tests[i]);
+    if (rc != 0) {
+      return rc;
+    }
+  }
+  return 0;
+}

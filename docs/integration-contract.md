@@ -67,6 +67,18 @@ The expected startup sequence is:
 
 The BPF program applies to the reuseport group after attachment.
 
+## qaffd Startup Sequence
+
+When using `qaffd`, the privileged daemon owns BPF setup:
+
+1. Start `qaffd` with a Unix socket path, BPF object path, and `short_cid_len`.
+2. Each worker creates and binds its UDP `SO_REUSEPORT` socket.
+3. Each worker passes its socket fd to `qaffd` with `REGISTER_WORKER`.
+4. `qaffd` registers the socket in the sockarray and attaches BPF on first worker registration.
+5. Workers register and retire server-issued CIDs through the control API.
+
+The current MVP supports one listener per `qaffd` process.
+
 ## CID Registration
 
 When the QUIC stack creates or advertises a server-side CID, it must register that CID before packets using it are expected to arrive:
@@ -168,4 +180,3 @@ int qaff_bpf_object_open(struct qaff_context *ctx,
 int qaff_attach_reuseport_bpf(const struct qaff_bpf_object *object,
                               int socket_fd);
 ```
-
