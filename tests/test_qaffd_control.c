@@ -119,6 +119,40 @@ static int make_worker_socket(int family, uint16_t *port) {
   return fd;
 }
 
+static int make_plain_udp_socket(int family) {
+  int fd = socket(family, SOCK_DGRAM | SOCK_CLOEXEC, 0);
+  if (fd < 0) {
+    return -1;
+  }
+
+  if (family == AF_INET) {
+    struct sockaddr_in addr;
+    memset(&addr, 0, sizeof(addr));
+    addr.sin_family = AF_INET;
+    addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+    if (bind(fd, (struct sockaddr *)&addr, sizeof(addr)) != 0) {
+      close(fd);
+      return -1;
+    }
+  } else {
+    int v6only = 1;
+    if (setsockopt(fd, IPPROTO_IPV6, IPV6_V6ONLY, &v6only, sizeof(v6only)) != 0) {
+      close(fd);
+      return -1;
+    }
+    struct sockaddr_in6 addr6;
+    memset(&addr6, 0, sizeof(addr6));
+    addr6.sin6_family = AF_INET6;
+    addr6.sin6_addr = in6addr_loopback;
+    if (bind(fd, (struct sockaddr *)&addr6, sizeof(addr6)) != 0) {
+      close(fd);
+      return -1;
+    }
+  }
+
+  return fd;
+}
+
 static int bind_sender_socket(int family, struct sender_socket *sender) {
   sender->fd = socket(family, SOCK_DGRAM | SOCK_CLOEXEC, 0);
   if (sender->fd < 0) {
@@ -415,8 +449,46 @@ static int run_case(const char *qaffd_path,
   close(ready_fd);
 
   int workers[WORKER_COUNT] = {-1, -1, -1};
+
+  int plain_udp = make_plain_udp_socket(test->family);
+  if (plain_udp < 0) {
+    perror("make_plain_udp_socket");
+    return 1;
+  }
+  if (control_call_register_worker(socket_path, 10, plain_udp) == 0) {
+    fprintf(stderr,
+            "%s: unexpectedly registered worker without SO_REUSEPORT\n",
+            test->name);
+    return 1;
+  }
+  close(plain_udp);
+
   uint16_t port = 0;
-  for (uint32_t i = 0; i < WORKER_COUNT; i++) {
+  workers[0] = make_worker_socket(test->family, &port);
+  if (workers[0] < 0) {
+    perror("make_worker_socket");
+    return 1;
+  }
+  if (control_call_register_worker(socket_path, 0, workers[0]) != 0) {
+    perror("qaff_control_register_worker first");
+    return 1;
+  }
+
+  uint16_t other_port = 0;
+  int wrong_listener = make_worker_socket(test->family, &other_port);
+  if (wrong_listener < 0) {
+    perror("make_worker_socket wrong_listener");
+    return 1;
+  }
+  if (control_call_register_worker(socket_path, 10, wrong_listener) == 0) {
+    fprintf(stderr,
+            "%s: unexpectedly registered worker bound to another listener\n",
+            test->name);
+    return 1;
+  }
+  close(wrong_listener);
+
+  for (uint32_t i = 1; i < WORKER_COUNT; i++) {
     workers[i] = make_worker_socket(test->family, &port);
     if (workers[i] < 0) {
       perror("make_worker_socket");

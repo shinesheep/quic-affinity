@@ -5,6 +5,7 @@
 #include <errno.h>
 #include <fcntl.h>
 #include <limits.h>
+#include <netinet/in.h>
 #include <signal.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -17,6 +18,10 @@
 #include <bpf/bpf.h>
 
 #define QAFFD_MAX_WORKERS 4096
+
+#ifndef SO_REUSEPORT
+#define SO_REUSEPORT 15
+#endif
 
 struct qaffd_cid_entry {
   struct qaff_cid_key key;
@@ -46,6 +51,8 @@ struct qaffd_state {
   uint32_t fallback_worker_id;
   int attached;
   int stop;
+  int listener_locked;
+  struct sockaddr_storage listener_addr;
 };
 
 struct qaffd_cid_consistency {
@@ -101,6 +108,115 @@ static int copy_config_path(char *dst, size_t dst_len, const char *src) {
   }
   memcpy(dst, src, len);
   dst[len] = '\0';
+  return 0;
+}
+
+static uint16_t sockaddr_port(const struct sockaddr_storage *addr) {
+  if (addr->ss_family == AF_INET) {
+    const struct sockaddr_in *in = (const struct sockaddr_in *)addr;
+    return in->sin_port;
+  }
+  if (addr->ss_family == AF_INET6) {
+    const struct sockaddr_in6 *in6 = (const struct sockaddr_in6 *)addr;
+    return in6->sin6_port;
+  }
+  return 0;
+}
+
+static int sockaddr_listener_equal(const struct sockaddr_storage *left,
+                                   const struct sockaddr_storage *right) {
+  if (left->ss_family != right->ss_family ||
+      sockaddr_port(left) != sockaddr_port(right)) {
+    return 0;
+  }
+
+  if (left->ss_family == AF_INET) {
+    const struct sockaddr_in *a = (const struct sockaddr_in *)left;
+    const struct sockaddr_in *b = (const struct sockaddr_in *)right;
+    return a->sin_addr.s_addr == b->sin_addr.s_addr;
+  }
+
+  if (left->ss_family == AF_INET6) {
+    const struct sockaddr_in6 *a = (const struct sockaddr_in6 *)left;
+    const struct sockaddr_in6 *b = (const struct sockaddr_in6 *)right;
+    return memcmp(&a->sin6_addr, &b->sin6_addr, sizeof(a->sin6_addr)) == 0 &&
+           a->sin6_scope_id == b->sin6_scope_id;
+  }
+
+  return 0;
+}
+
+static int validate_worker_socket(const struct qaffd_state *state,
+                                  int socket_fd,
+                                  struct sockaddr_storage *local_addr) {
+  int type = 0;
+  socklen_t opt_len = sizeof(type);
+  if (getsockopt(socket_fd, SOL_SOCKET, SO_TYPE, &type, &opt_len) != 0) {
+    return -1;
+  }
+  if (type != SOCK_DGRAM) {
+    errno = EPROTOTYPE;
+    return -1;
+  }
+
+#ifdef SO_PROTOCOL
+  int protocol = 0;
+  opt_len = sizeof(protocol);
+  if (getsockopt(socket_fd, SOL_SOCKET, SO_PROTOCOL, &protocol, &opt_len) != 0) {
+    return -1;
+  }
+  if (protocol != IPPROTO_UDP) {
+    errno = EPROTOTYPE;
+    return -1;
+  }
+#endif
+
+  int reuseport = 0;
+  opt_len = sizeof(reuseport);
+  if (getsockopt(socket_fd,
+                 SOL_SOCKET,
+                 SO_REUSEPORT,
+                 &reuseport,
+                 &opt_len) != 0) {
+    return -1;
+  }
+  if (!reuseport) {
+    errno = EINVAL;
+    return -1;
+  }
+
+  socklen_t addr_len = sizeof(*local_addr);
+  memset(local_addr, 0, sizeof(*local_addr));
+  if (getsockname(socket_fd, (struct sockaddr *)local_addr, &addr_len) != 0) {
+    return -1;
+  }
+  if (local_addr->ss_family != AF_INET && local_addr->ss_family != AF_INET6) {
+    errno = EAFNOSUPPORT;
+    return -1;
+  }
+  if (sockaddr_port(local_addr) == 0) {
+    errno = EINVAL;
+    return -1;
+  }
+
+  if (local_addr->ss_family == AF_INET6) {
+    int v6only = 0;
+    opt_len = sizeof(v6only);
+    if (getsockopt(socket_fd, IPPROTO_IPV6, IPV6_V6ONLY, &v6only, &opt_len) != 0) {
+      return -1;
+    }
+    if (!v6only) {
+      errno = EINVAL;
+      return -1;
+    }
+  }
+
+  if (state->listener_locked &&
+      !sockaddr_listener_equal(&state->listener_addr, local_addr)) {
+    errno = EINVAL;
+    return -1;
+  }
+
   return 0;
 }
 
@@ -612,10 +728,25 @@ static int handle_register_worker(struct qaffd_state *state,
     return -1;
   }
 
+  struct sockaddr_storage local_addr;
+  if (validate_worker_socket(state, socket_fd, &local_addr) != 0) {
+    return -1;
+  }
+
   if (qaff_register_worker_socket(state->ctx,
                                   request->worker_id,
                                   socket_fd) != 0) {
     return -1;
+  }
+
+  if (!state->attached) {
+    if (qaff_attach_reuseport_bpf(state->bpf, socket_fd) != 0) {
+      int saved_errno = errno ? errno : EIO;
+      qaff_unregister_worker_socket(state->ctx, request->worker_id);
+      errno = saved_errno;
+      return -1;
+    }
+    state->attached = 1;
   }
 
   if (state->worker_fds[request->worker_id] >= 0) {
@@ -624,11 +755,9 @@ static int handle_register_worker(struct qaffd_state *state,
   state->worker_fds[request->worker_id] = socket_fd;
   state->worker_registered[request->worker_id] = 1;
 
-  if (!state->attached) {
-    if (qaff_attach_reuseport_bpf(state->bpf, socket_fd) != 0) {
-      return -1;
-    }
-    state->attached = 1;
+  if (!state->listener_locked) {
+    state->listener_addr = local_addr;
+    state->listener_locked = 1;
   }
 
   return save_state(state);

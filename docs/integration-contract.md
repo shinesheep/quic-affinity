@@ -34,8 +34,13 @@ All worker sockets for one listener must:
 - set `SO_REUSEPORT` before bind
 - belong to one Linux reuseport group
 - use stable worker IDs for the lifetime of registered CIDs
+- use separate `qaffd` instances for IPv4 and IPv6 listeners; IPv6 worker sockets must set `IPV6_V6ONLY`
 
 The worker ID used in `qaff_register_worker_socket()` is also the key used by the eBPF program to select a socket from the reuseport sockarray.
+
+When using `qaffd`, worker registration is validated at the fd boundary. The daemon rejects non-UDP sockets, sockets without `SO_REUSEPORT`, IPv6 sockets that are not `IPV6_V6ONLY`, and sockets whose local address or port does not match the first accepted worker for that listener. This keeps one `qaffd` process scoped to one UDP reuseport listener group.
+
+Do not intentionally mix unrelated processes into the same address, port, and reuseport group. `quic-affinity` is a selector for the listener group it is attached to, not a global packet router.
 
 ## Listener Configuration
 
