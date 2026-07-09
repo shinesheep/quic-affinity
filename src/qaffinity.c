@@ -267,6 +267,12 @@ const char *qaff_stat_name(uint32_t index) {
     return "zero_length_cid";
   case QAFF_STAT_WORKER_MISSING:
     return "worker_missing";
+  case QAFF_STAT_IPV4:
+    return "ipv4";
+  case QAFF_STAT_IPV6:
+    return "ipv6";
+  case QAFF_STAT_NOT_UDP:
+    return "not_udp";
   default:
     return "unknown";
   }

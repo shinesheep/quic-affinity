@@ -3,6 +3,8 @@
 
 #include "qaff_bpf.h"
 
+#define QAFF_ETH_P_IP 0x0008
+#define QAFF_ETH_P_IPV6 0xdd86
 #define QAFF_IPPROTO_UDP 17
 #define QAFF_UDP_HEADER_LEN 8
 
@@ -77,7 +79,14 @@ static __always_inline int qaff_extract_dcid(struct sk_reuseport_md *ctx,
   void *data_end = (void *)(long)ctx->data_end;
   __u32 payload_offset = QAFF_UDP_HEADER_LEN;
 
+  if (ctx->eth_protocol == QAFF_ETH_P_IP) {
+    qaff_count(QAFF_STAT_IPV4);
+  } else if (ctx->eth_protocol == QAFF_ETH_P_IPV6) {
+    qaff_count(QAFF_STAT_IPV6);
+  }
+
   if (ctx->ip_protocol != QAFF_IPPROTO_UDP) {
+    qaff_count(QAFF_STAT_NOT_UDP);
     return -1;
   }
 
