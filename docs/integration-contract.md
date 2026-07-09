@@ -125,9 +125,11 @@ The probe:
 1. Creates a real quiche server-side connection with `quiche_accept()`.
 2. Reads the connection source CID with `quiche_conn_source_id()`.
 3. Registers that source CID through `qaffd`.
-4. Calls `quiche_conn_new_scid()` to provision an additional server CID.
-5. Registers the additional CID through `qaffd`.
-6. Drains `quiche_conn_retired_scid_iter()` and calls `RETIRE_CID` for any retired source CIDs.
+4. Generates and parses a routable CID profile v1 CID for the registered worker.
+5. Registers the profile CID through `qaffd`.
+6. Calls `quiche_conn_new_scid()` to provision an additional server CID.
+7. Registers the additional CID through `qaffd`.
+8. Drains `quiche_conn_retired_scid_iter()` and calls `RETIRE_CID` for any retired source CIDs.
 
 This is not a complete QUIC server. It is the first integration checkpoint for CID lifecycle hooks.
 

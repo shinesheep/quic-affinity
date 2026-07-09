@@ -1,6 +1,7 @@
 #define _POSIX_C_SOURCE 200809L
 
 #include "quic_affinity/control.h"
+#include "quic_affinity/cid_profile.h"
 
 #include <arpa/inet.h>
 #include <errno.h>
@@ -19,6 +20,14 @@
 
 #define WORKER_ID 2
 #define CID_LEN 8
+
+static struct qaff_cid_profile_key profile_key(void) {
+  struct qaff_cid_profile_key key;
+  for (uint8_t i = 0; i < QAFF_CID_PROFILE_KEY_LEN; i++) {
+    key.bytes[i] = (uint8_t)(0x70u + i);
+  }
+  return key;
+}
 
 static int make_udp_reuseport_socket(void) {
   int fd = socket(AF_INET, SOCK_DGRAM | SOCK_CLOEXEC, 0);
@@ -172,6 +181,50 @@ int main(int argc, char **argv) {
   printf("\n");
 
   if (register_cid(socket_path, source_id, source_id_len, "source_cid") != 0) {
+    quiche_conn_free(conn);
+    quiche_config_free(config);
+    close(worker_lease_fd);
+    close(worker_fd);
+    return 1;
+  }
+
+  struct qaff_cid_profile_key key = profile_key();
+  uint8_t profile_cid[QAFF_CID_PROFILE_V1_LEN];
+  if (qaff_cid_profile_v1_generate(&key,
+                                   WORKER_ID,
+                                   0x010203,
+                                   profile_cid,
+                                   sizeof(profile_cid)) != 0) {
+    perror("qaff_cid_profile_v1_generate");
+    quiche_conn_free(conn);
+    quiche_config_free(config);
+    close(worker_lease_fd);
+    close(worker_fd);
+    return 1;
+  }
+
+  struct qaff_cid_profile_v1_fields profile_fields;
+  if (qaff_cid_profile_v1_parse(&key,
+                                profile_cid,
+                                sizeof(profile_cid),
+                                &profile_fields) != 0 ||
+      profile_fields.worker_id != WORKER_ID) {
+    perror("qaff_cid_profile_v1_parse");
+    quiche_conn_free(conn);
+    quiche_config_free(config);
+    close(worker_lease_fd);
+    close(worker_fd);
+    return 1;
+  }
+  printf("profile_cid=");
+  print_hex(profile_cid, sizeof(profile_cid));
+  printf("\n");
+  printf("profile_worker=%u\n", profile_fields.worker_id);
+
+  if (register_cid(socket_path,
+                   profile_cid,
+                   sizeof(profile_cid),
+                   "profile_cid") != 0) {
     quiche_conn_free(conn);
     quiche_config_free(config);
     close(worker_lease_fd);
