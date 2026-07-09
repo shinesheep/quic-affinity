@@ -213,6 +213,14 @@ add_test(NAME minimal_control_example
     ${CMAKE_CURRENT_BINARY_DIR}/qaff_reuseport.bpf.o)
 set_tests_properties(minimal_control_example PROPERTIES SKIP_RETURN_CODE 77)
 
+add_test(NAME egress_attach_smoke
+  COMMAND /bin/sh
+    ${CMAKE_CURRENT_SOURCE_DIR}/tests/run_egress_attach_smoke.sh
+    $<TARGET_FILE:qaffd>
+    $<TARGET_FILE:qaffctl>
+    ${CMAKE_CURRENT_BINARY_DIR}/qaff_reuseport.bpf.o)
+set_tests_properties(egress_attach_smoke PROPERTIES SKIP_RETURN_CODE 77)
+
 if(TARGET qaff_quiche_control_probe)
   add_test(NAME quiche_control_probe
     COMMAND /bin/sh
