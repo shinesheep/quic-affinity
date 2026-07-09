@@ -94,17 +94,20 @@ static int connect_control(const char *socket_path) {
 
 static int control_register_worker(const char *socket_path,
                                    uint32_t worker_id,
-                                   int worker_fd) {
+                                   int worker_fd,
+                                   int *lease_fd) {
   int fd = connect_control(socket_path);
   if (fd < 0) {
     return -1;
   }
-  int rc = qaff_control_register_worker(fd, worker_id, worker_fd);
+  int rc = qaff_control_register_worker_lease(fd, worker_id, worker_fd);
   if (rc != 0) {
-    perror("qaff_control_register_worker");
+    perror("qaff_control_register_worker_lease");
+    close(fd);
+    return rc;
   }
-  close(fd);
-  return rc;
+  *lease_fd = fd;
+  return 0;
 }
 
 static int control_register_cid(const char *socket_path,
@@ -400,6 +403,7 @@ int main(int argc, char **argv) {
   const char *key = argv[3];
 
   int workers[WORKER_COUNT] = {-1, -1, -1};
+  int worker_leases[WORKER_COUNT] = {-1, -1, -1};
   uint16_t server_port = 0;
   for (uint32_t i = 0; i < WORKER_COUNT; i++) {
     workers[i] = make_udp_socket(&server_port, 1);
@@ -407,7 +411,10 @@ int main(int argc, char **argv) {
       perror("make worker socket");
       return 1;
     }
-    if (control_register_worker(control_sock, i, workers[i]) != 0) {
+    if (control_register_worker(control_sock,
+                                i,
+                                workers[i],
+                                &worker_leases[i]) != 0) {
       return 1;
     }
   }
@@ -557,6 +564,7 @@ int main(int argc, char **argv) {
   close(client_fd1);
   close(client_fd2);
   for (size_t i = 0; i < WORKER_COUNT; i++) {
+    close(worker_leases[i]);
     close(workers[i]);
   }
   control_stop(control_sock);

@@ -250,9 +250,9 @@ The smoke installs the current build into `/usr`, starts a temporary `qaffd@...`
 ## Examples
 
 - `qaff_minimal_registry`: embedded mode. The process creates maps, loads BPF, attaches the program, registers workers, and registers CIDs directly.
-- `qaff_minimal_control`: daemon-controlled mode. `qaffd` owns BPF setup; the worker-side example creates UDP workers and registers worker sockets/CIDs through the Unix socket control API.
-- `qaff_quiche_control_probe`: optional quiche FFI integration probe. It creates a real quiche server connection, registers quiche source CIDs through `qaffd`, and validates the CID lifecycle hook points.
-- `qaff_quiche_udp_smoke`: optional real UDP quiche smoke. It sends real quiche packets through Linux UDP sockets, registers the server CID through `qaffd`, switches the client source port, and verifies a dataplane CID hit.
+- `qaff_minimal_control`: daemon-controlled mode. `qaffd` owns BPF setup; the worker-side example creates UDP workers and registers leased worker sockets/CIDs through the Unix socket control API.
+- `qaff_quiche_control_probe`: optional quiche FFI integration probe. It creates a real quiche server connection, registers a leased worker and quiche source CIDs through `qaffd`, and validates the CID lifecycle hook points.
+- `qaff_quiche_udp_smoke`: optional real UDP quiche smoke. It sends real quiche packets through Linux UDP sockets, registers leased workers and the server CID through `qaffd`, switches the client source port, and verifies a dataplane CID hit.
 
 ### Optional quiche Probe
 

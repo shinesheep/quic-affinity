@@ -44,22 +44,22 @@ static int make_udp_reuseport_socket(void) {
   return fd;
 }
 
-static int register_worker(const char *socket_path, int worker_fd) {
+static int register_worker(const char *socket_path, int worker_fd, int *lease_fd) {
   int control_fd = qaff_control_connect(socket_path);
   if (control_fd < 0) {
     perror("qaff_control_connect");
     return -1;
   }
 
-  int rc = qaff_control_register_worker(control_fd, WORKER_ID, worker_fd);
+  int rc = qaff_control_register_worker_lease(control_fd, WORKER_ID, worker_fd);
   if (rc != 0) {
-    perror("qaff_control_register_worker");
+    perror("qaff_control_register_worker_lease");
     close(control_fd);
     return -1;
   }
 
   printf("registered_worker=%u\n", WORKER_ID);
-  close(control_fd);
+  *lease_fd = control_fd;
   return 0;
 }
 
@@ -103,7 +103,8 @@ int main(int argc, char **argv) {
     perror("make_udp_reuseport_socket");
     return 1;
   }
-  if (register_worker(socket_path, worker_fd) != 0) {
+  int worker_lease_fd = -1;
+  if (register_worker(socket_path, worker_fd, &worker_lease_fd) != 0) {
     close(worker_fd);
     return 1;
   }
@@ -111,6 +112,7 @@ int main(int argc, char **argv) {
   quiche_config *config = quiche_config_new(QUICHE_PROTOCOL_VERSION);
   if (config == NULL) {
     fprintf(stderr, "quiche_config_new failed\n");
+    close(worker_lease_fd);
     close(worker_fd);
     return 1;
   }
@@ -119,6 +121,7 @@ int main(int argc, char **argv) {
   if (quiche_config_set_application_protos(config, alpn, sizeof(alpn)) != 0) {
     fprintf(stderr, "quiche_config_set_application_protos failed\n");
     quiche_config_free(config);
+    close(worker_lease_fd);
     close(worker_fd);
     return 1;
   }
@@ -156,6 +159,7 @@ int main(int argc, char **argv) {
   if (conn == NULL) {
     fprintf(stderr, "quiche_accept failed\n");
     quiche_config_free(config);
+    close(worker_lease_fd);
     close(worker_fd);
     return 1;
   }
@@ -170,6 +174,7 @@ int main(int argc, char **argv) {
   if (register_cid(socket_path, source_id, source_id_len, "source_cid") != 0) {
     quiche_conn_free(conn);
     quiche_config_free(config);
+    close(worker_lease_fd);
     close(worker_fd);
     return 1;
   }
@@ -195,6 +200,7 @@ int main(int argc, char **argv) {
                      "new_scid") != 0) {
       quiche_conn_free(conn);
       quiche_config_free(config);
+      close(worker_lease_fd);
       close(worker_fd);
       return 1;
     }
@@ -218,6 +224,7 @@ int main(int argc, char **argv) {
 
   quiche_conn_free(conn);
   quiche_config_free(config);
+  close(worker_lease_fd);
   close(worker_fd);
   return 0;
 }

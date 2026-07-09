@@ -61,17 +61,20 @@ static int control_connect_once(const char *socket_path) {
 
 static int register_worker(const char *socket_path,
                            uint32_t worker_id,
-                           int worker_fd) {
+                           int worker_fd,
+                           int *lease_fd) {
   int control_fd = control_connect_once(socket_path);
   if (control_fd < 0) {
     return -1;
   }
-  int rc = qaff_control_register_worker(control_fd, worker_id, worker_fd);
+  int rc = qaff_control_register_worker_lease(control_fd, worker_id, worker_fd);
   if (rc != 0) {
-    perror("qaff_control_register_worker");
+    perror("qaff_control_register_worker_lease");
+    close(control_fd);
+    return rc;
   }
-  close(control_fd);
-  return rc;
+  *lease_fd = control_fd;
+  return 0;
 }
 
 static int register_cid(const char *socket_path,
@@ -121,6 +124,7 @@ int main(int argc, char **argv) {
 
   const char *socket_path = argv[1];
   int workers[WORKER_COUNT] = {-1, -1, -1};
+  int worker_leases[WORKER_COUNT] = {-1, -1, -1};
   uint16_t port = 0;
 
   for (uint32_t worker_id = 0; worker_id < WORKER_COUNT; worker_id++) {
@@ -129,7 +133,10 @@ int main(int argc, char **argv) {
       perror("make_udp_reuseport_socket");
       return 1;
     }
-    if (register_worker(socket_path, worker_id, workers[worker_id]) != 0) {
+    if (register_worker(socket_path,
+                        worker_id,
+                        workers[worker_id],
+                        &worker_leases[worker_id]) != 0) {
       return 1;
     }
   }
@@ -152,8 +159,10 @@ int main(int argc, char **argv) {
   }
 
   for (size_t i = 0; i < WORKER_COUNT; i++) {
+    if (worker_leases[i] >= 0) {
+      close(worker_leases[i]);
+    }
     close(workers[i]);
   }
   return 0;
 }
-
