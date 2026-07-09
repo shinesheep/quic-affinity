@@ -22,6 +22,7 @@
 - Pick one first integration target.
 - Add an example that registers server-issued CIDs.
 - Run a real QUIC connection migration/NAT rebinding test.
+- Define the control-plane split between embedded library mode and `qaffd`.
 
 ## Phase 4: Routable CID Profile
 

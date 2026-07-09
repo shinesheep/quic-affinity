@@ -150,6 +150,7 @@ ctest --test-dir build --output-on-failure -R reuseport_smoke
 
 - Design bootstrap: [docs/bootstrap.md](docs/bootstrap.md)
 - Integration contract: [docs/integration-contract.md](docs/integration-contract.md)
+- Control plane plan: [docs/control-plane.md](docs/control-plane.md)
 - Implementation plan: [docs/implementation-plan.md](docs/implementation-plan.md)
 
 ## Status
