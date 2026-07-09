@@ -257,6 +257,16 @@ static int control_workers_len(const char *socket_path, size_t *workers_len) {
   return rc;
 }
 
+static int control_read_stats(const char *socket_path, struct qaff_stats *stats) {
+  int fd = qaff_control_connect(socket_path);
+  if (fd < 0) {
+    return -1;
+  }
+  int rc = qaff_control_read_stats(fd, stats);
+  close(fd);
+  return rc;
+}
+
 int main(int argc, char **argv) {
   if (argc != 5) {
     fprintf(stderr,
@@ -368,6 +378,20 @@ int main(int argc, char **argv) {
   if (send_quic_like_packet(sender, port, k_dcid) != 0 ||
       receive_worker(workers, WORKER_COUNT) != FALLBACK_WORKER) {
     fprintf(stderr, "expected fallback after restarted qaffd worker cleanup\n");
+    return 1;
+  }
+
+  struct qaff_stats stats;
+  if (control_read_stats(socket_path, &stats) != 0) {
+    perror("qaff_control_read_stats");
+    return 1;
+  }
+  if (stats.values[QAFF_STAT_PACKETS] != 3 ||
+      stats.values[QAFF_STAT_CID_MAP_HIT] != 2 ||
+      stats.values[QAFF_STAT_FALLBACK] != 1 ||
+      stats.values[QAFF_STAT_WORKER_MISSING] != 0 ||
+      stats.values[QAFF_STAT_IPV4] != 3) {
+    fprintf(stderr, "unexpected restart stats\n");
     return 1;
   }
 

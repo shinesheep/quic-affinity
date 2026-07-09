@@ -138,20 +138,22 @@ During reload:
 
 The control plane must avoid reusing a worker ID while CIDs still point to the old socket.
 
-The current daemon maintains a daemon-side CID owner index for CIDs registered through the control API. This enables bulk CID cleanup during `UNREGISTER_WORKER`; map pinning and recovery of that index across daemon restarts remain future work.
+The current daemon maintains a daemon-side CID owner index for CIDs registered through the control API. This enables bulk CID cleanup during `UNREGISTER_WORKER`; across restarts, the index is rebuilt from the pinned `qaff_cids` map.
 
 ## Restart Recovery
 
-`qaffd --pin-root PATH` opens existing pinned maps from bpffs or creates and pins new maps under `PATH`. `qaffd --state-path PATH` persists the daemon-side worker list and CID owner index in a regular filesystem snapshot.
+`qaffd --pin-root PATH` opens existing pinned maps from bpffs or creates and pins new maps under `PATH`. `qaffd --state-path PATH` persists the daemon-side worker list in a regular filesystem snapshot. CID ownership is recovered from the pinned `qaff_cids` map.
 
 On daemon restart:
 
 1. `qaffd` opens pinned maps from `--pin-root`.
-2. It reloads worker IDs and CID ownership from `--state-path`.
-3. Existing socket-group BPF attachment can continue using the pinned maps while worker sockets remain open.
-4. New control operations, including `UNREGISTER_WORKER`, operate on the recovered map and owner state.
+2. It reloads worker IDs from `--state-path`.
+3. It rebuilds CID ownership by iterating the pinned CID map.
+4. Existing socket-group BPF attachment can continue using the pinned maps while worker sockets remain open.
+5. New control operations, including `UNREGISTER_WORKER`, operate on the recovered map and owner state.
 
 The state snapshot is not stored in bpffs. Use a normal persistent location such as `/var/lib/quic-affinity/<listener-id>.state`.
+If `--state-path` is configured, `--pin-root` must also be configured.
 
 ## qaffctl MVP
 

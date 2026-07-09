@@ -87,7 +87,9 @@ qaffd --pin-root /sys/fs/bpf/quic-affinity/listeners/<listener-id> \
       --state-path /var/lib/quic-affinity/<listener-id>.state
 ```
 
-`--pin-root` must point to a writable bpffs directory. `--state-path` must point to a normal filesystem path, not bpffs.
+`--pin-root` must point to a writable bpffs directory. `--state-path` must point to a normal filesystem path, not bpffs. If `--state-path` is set, `--pin-root` is required.
+
+On restart, `qaffd` reloads worker IDs from `--state-path` and rebuilds CID ownership from the pinned `qaff_cids` map.
 
 Stats and shutdown are available through `qaffctl`:
 
