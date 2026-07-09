@@ -20,12 +20,14 @@ struct qaff_context {
   int cid_map_fd;
   int passive_cid_map_fd;
   int worker_sock_map_fd;
+  int socket_worker_map_fd;
   int worker_generation_map_fd;
   int stats_map_fd;
   int config_map_fd;
   int owns_cid_map;
   int owns_passive_cid_map;
   int owns_worker_sock_map;
+  int owns_socket_worker_map;
   int owns_worker_generation_map;
   int owns_stats_map;
   int owns_config_map;
@@ -48,6 +50,7 @@ void qaff_options_init(struct qaff_options *options) {
   options->cid_map_fd = -1;
   options->passive_cid_map_fd = -1;
   options->worker_sock_map_fd = -1;
+  options->socket_worker_map_fd = -1;
   options->worker_generation_map_fd = -1;
   options->stats_map_fd = -1;
   options->config_map_fd = -1;
@@ -289,6 +292,11 @@ static int qaff_validate_context_maps(const struct qaff_context *ctx) {
                            sizeof(uint32_t),
                            sizeof(uint32_t),
                            4096) != 0 ||
+      qaff_validate_map_fd(ctx->socket_worker_map_fd,
+                           BPF_MAP_TYPE_HASH,
+                           sizeof(uint64_t),
+                           sizeof(uint32_t),
+                           4096) != 0 ||
       qaff_validate_map_fd(ctx->worker_generation_map_fd,
                            BPF_MAP_TYPE_ARRAY,
                            sizeof(uint32_t),
@@ -329,6 +337,7 @@ int qaff_open(const struct qaff_options *options, struct qaff_context **out) {
   ctx->cid_map_fd = options->cid_map_fd;
   ctx->passive_cid_map_fd = options->passive_cid_map_fd;
   ctx->worker_sock_map_fd = options->worker_sock_map_fd;
+  ctx->socket_worker_map_fd = options->socket_worker_map_fd;
   ctx->worker_generation_map_fd = options->worker_generation_map_fd;
   ctx->stats_map_fd = options->stats_map_fd;
   ctx->config_map_fd = options->config_map_fd;
@@ -444,6 +453,38 @@ int qaff_open(const struct qaff_options *options, struct qaff_context **out) {
     ctx->owns_worker_sock_map = 1;
   }
 
+  if (ctx->socket_worker_map_fd < 0) {
+    ctx->socket_worker_map_fd = qaff_get_pinned_map(ctx->pin_root,
+                                                    "qaff_socket_workers");
+    if (ctx->socket_worker_map_fd < 0 && errno != ENOENT) {
+      goto fail;
+    }
+    if (ctx->socket_worker_map_fd < 0) {
+      ctx->socket_worker_map_fd = qaff_create_hash_map("qaff_socket_workers",
+                                                       sizeof(uint64_t),
+                                                       sizeof(uint32_t),
+                                                       4096);
+    }
+    if (ctx->socket_worker_map_fd < 0) {
+      goto fail;
+    }
+    ctx->socket_worker_map_fd =
+        qaff_open_or_pin_map(ctx->pin_root,
+                             "qaff_socket_workers",
+                             ctx->socket_worker_map_fd);
+    if (ctx->socket_worker_map_fd < 0) {
+      goto fail;
+    }
+    if (qaff_validate_map_fd(ctx->socket_worker_map_fd,
+                             BPF_MAP_TYPE_HASH,
+                             sizeof(uint64_t),
+                             sizeof(uint32_t),
+                             4096) != 0) {
+      goto fail;
+    }
+    ctx->owns_socket_worker_map = 1;
+  }
+
   if (ctx->worker_generation_map_fd < 0) {
     ctx->worker_generation_map_fd = qaff_get_pinned_map(ctx->pin_root,
                                                         "qaff_worker_generations");
@@ -553,6 +594,9 @@ void qaff_close(struct qaff_context *ctx) {
   }
   if (ctx->owns_worker_sock_map && ctx->worker_sock_map_fd >= 0) {
     close(ctx->worker_sock_map_fd);
+  }
+  if (ctx->owns_socket_worker_map && ctx->socket_worker_map_fd >= 0) {
+    close(ctx->socket_worker_map_fd);
   }
   if (ctx->owns_worker_generation_map && ctx->worker_generation_map_fd >= 0) {
     close(ctx->worker_generation_map_fd);
@@ -716,6 +760,10 @@ int qaff_get_passive_cid_map_fd(const struct qaff_context *ctx) {
 
 int qaff_get_worker_sock_map_fd(const struct qaff_context *ctx) {
   return ctx ? ctx->worker_sock_map_fd : -1;
+}
+
+int qaff_get_socket_worker_map_fd(const struct qaff_context *ctx) {
+  return ctx ? ctx->socket_worker_map_fd : -1;
 }
 
 int qaff_get_worker_generation_map_fd(const struct qaff_context *ctx) {

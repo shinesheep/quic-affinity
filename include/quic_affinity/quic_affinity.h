@@ -32,6 +32,8 @@ struct qaff_options {
   int passive_cid_map_fd;
   /** qaff_workers REUSEPORT_SOCKARRAY map fd, or -1 to open/create it. */
   int worker_sock_map_fd;
+  /** qaff_socket_workers map fd, or -1 to open/create it. */
+  int socket_worker_map_fd;
   /** qaff_worker_generations map fd, or -1 to open/create it. */
   int worker_generation_map_fd;
   /** qaff_stats map fd, or -1 to open/create it. */
@@ -156,6 +158,9 @@ int qaff_get_passive_cid_map_fd(const struct qaff_context *ctx);
 
 /** Return the qaff_workers map fd, or -1 for a NULL context. */
 int qaff_get_worker_sock_map_fd(const struct qaff_context *ctx);
+
+/** Return the qaff_socket_workers map fd, or -1 for a NULL context. */
+int qaff_get_socket_worker_map_fd(const struct qaff_context *ctx);
 
 /** Return the qaff_worker_generations map fd, or -1 for a NULL context. */
 int qaff_get_worker_generation_map_fd(const struct qaff_context *ctx);

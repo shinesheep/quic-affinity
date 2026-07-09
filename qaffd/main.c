@@ -29,6 +29,10 @@
 #define SO_REUSEPORT 15
 #endif
 
+#ifndef SO_COOKIE
+#define SO_COOKIE 57
+#endif
+
 #ifndef SYS_pidfd_open
 #if defined(__NR_pidfd_open)
 #define SYS_pidfd_open __NR_pidfd_open
@@ -84,6 +88,7 @@ struct qaffd_state {
   int worker_fds[QAFFD_MAX_WORKERS];
   int worker_lease_fds[QAFFD_MAX_WORKERS];
   int worker_pidfds[QAFFD_MAX_WORKERS];
+  uint64_t worker_socket_cookies[QAFFD_MAX_WORKERS];
   int worker_registered[QAFFD_MAX_WORKERS];
   uint64_t worker_registered_at_ms[QAFFD_MAX_WORKERS];
   uint64_t worker_last_seen_ms[QAFFD_MAX_WORKERS];
@@ -437,6 +442,46 @@ static int validate_worker_socket(const struct qaffd_state *state,
   }
 
   return 0;
+}
+
+static int read_socket_cookie(int socket_fd, uint64_t *out) {
+  uint64_t cookie = 0;
+  socklen_t opt_len = sizeof(cookie);
+  if (getsockopt(socket_fd, SOL_SOCKET, SO_COOKIE, &cookie, &opt_len) != 0) {
+    return -1;
+  }
+  if (opt_len != sizeof(cookie) || cookie == 0) {
+    errno = EINVAL;
+    return -1;
+  }
+  *out = cookie;
+  return 0;
+}
+
+static int register_socket_cookie(struct qaffd_state *state,
+                                  uint32_t worker_id,
+                                  int socket_fd,
+                                  uint64_t *out_cookie) {
+  uint64_t cookie = 0;
+  if (read_socket_cookie(socket_fd, &cookie) != 0) {
+    return -1;
+  }
+  if (bpf_map_update_elem(qaff_get_socket_worker_map_fd(state->ctx),
+                          &cookie,
+                          &worker_id,
+                          BPF_ANY) != 0) {
+    return -1;
+  }
+  *out_cookie = cookie;
+  return 0;
+}
+
+static void unregister_socket_cookie(struct qaffd_state *state,
+                                     uint64_t cookie) {
+  if (cookie == 0 || state->ctx == NULL) {
+    return;
+  }
+  bpf_map_delete_elem(qaff_get_socket_worker_map_fd(state->ctx), &cookie);
 }
 
 static int read_cid_consistency(const struct qaffd_state *state,
@@ -1224,9 +1269,21 @@ static int handle_register_worker(struct qaffd_state *state,
     return -1;
   }
 
+  uint64_t socket_cookie = 0;
+  if (register_socket_cookie(state,
+                             request->worker_id,
+                             socket_fd,
+                             &socket_cookie) != 0) {
+    int saved_errno = errno ? errno : EIO;
+    qaff_unregister_worker_socket(state->ctx, request->worker_id);
+    errno = saved_errno;
+    return -1;
+  }
+
   if (!state->attached) {
     if (qaff_attach_reuseport_bpf(state->bpf, socket_fd) != 0) {
       int saved_errno = errno ? errno : EIO;
+      unregister_socket_cookie(state, socket_cookie);
       qaff_unregister_worker_socket(state->ctx, request->worker_id);
       errno = saved_errno;
       return -1;
@@ -1237,11 +1294,14 @@ static int handle_register_worker(struct qaffd_state *state,
   if (state->worker_fds[request->worker_id] >= 0) {
     close(state->worker_fds[request->worker_id]);
   }
+  unregister_socket_cookie(state,
+                           state->worker_socket_cookies[request->worker_id]);
   if (state->worker_pidfds[request->worker_id] >= 0) {
     close(state->worker_pidfds[request->worker_id]);
     state->worker_pidfds[request->worker_id] = -1;
   }
   state->worker_fds[request->worker_id] = socket_fd;
+  state->worker_socket_cookies[request->worker_id] = socket_cookie;
   state->worker_registered[request->worker_id] = 1;
   state->worker_generations[request->worker_id] = generation;
   uint64_t now = now_ms();
@@ -1289,6 +1349,8 @@ static int unregister_worker_authorized(struct qaffd_state *state,
     close(state->worker_fds[worker_id]);
     state->worker_fds[worker_id] = -1;
   }
+  unregister_socket_cookie(state, state->worker_socket_cookies[worker_id]);
+  state->worker_socket_cookies[worker_id] = 0;
   if (state->worker_lease_fds[worker_id] >= 0) {
     close(state->worker_lease_fds[worker_id]);
     state->worker_lease_fds[worker_id] = -1;
