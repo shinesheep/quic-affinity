@@ -1,0 +1,284 @@
+#define _POSIX_C_SOURCE 200809L
+
+#include "quic_affinity/control.h"
+
+#include <arpa/inet.h>
+#include <errno.h>
+#include <fcntl.h>
+#include <netinet/in.h>
+#include <poll.h>
+#include <stdint.h>
+#include <stdio.h>
+#include <string.h>
+#include <sys/socket.h>
+#include <unistd.h>
+
+#ifndef SO_REUSEPORT
+#define SO_REUSEPORT 15
+#endif
+
+#define WORKER_COUNT 3
+#define TARGET_WORKER 2
+#define TEST_SKIP 77
+
+static const uint8_t k_client_cid[] = {
+  0xc1, 0x1e, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06,
+};
+
+static const uint8_t k_server_cid[] = {
+  0x5e, 0x12, 0x51, 0xd0, 0xaa, 0xbb, 0xcc, 0xdd,
+};
+
+static int set_nonblocking(int fd) {
+  int flags = fcntl(fd, F_GETFL, 0);
+  if (flags < 0) {
+    return -1;
+  }
+  return fcntl(fd, F_SETFL, flags | O_NONBLOCK);
+}
+
+static int make_worker_socket(uint16_t *port) {
+  int fd = socket(AF_INET, SOCK_DGRAM | SOCK_CLOEXEC, 0);
+  if (fd < 0) {
+    return -1;
+  }
+
+  int one = 1;
+  if (setsockopt(fd, SOL_SOCKET, SO_REUSEPORT, &one, sizeof(one)) != 0) {
+    close(fd);
+    return -1;
+  }
+
+  struct sockaddr_in addr;
+  memset(&addr, 0, sizeof(addr));
+  addr.sin_family = AF_INET;
+  addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+  addr.sin_port = htons(*port);
+  if (bind(fd, (struct sockaddr *)&addr, sizeof(addr)) != 0) {
+    close(fd);
+    return -1;
+  }
+  if (*port == 0) {
+    socklen_t len = sizeof(addr);
+    if (getsockname(fd, (struct sockaddr *)&addr, &len) != 0) {
+      close(fd);
+      return -1;
+    }
+    *port = ntohs(addr.sin_port);
+  }
+  if (set_nonblocking(fd) != 0) {
+    close(fd);
+    return -1;
+  }
+  return fd;
+}
+
+static int make_client_socket(uint16_t *port) {
+  int fd = socket(AF_INET, SOCK_DGRAM | SOCK_CLOEXEC, 0);
+  if (fd < 0) {
+    return -1;
+  }
+
+  struct sockaddr_in addr;
+  memset(&addr, 0, sizeof(addr));
+  addr.sin_family = AF_INET;
+  addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+  if (bind(fd, (struct sockaddr *)&addr, sizeof(addr)) != 0) {
+    close(fd);
+    return -1;
+  }
+  socklen_t len = sizeof(addr);
+  if (getsockname(fd, (struct sockaddr *)&addr, &len) != 0) {
+    close(fd);
+    return -1;
+  }
+  *port = ntohs(addr.sin_port);
+  return fd;
+}
+
+static size_t make_long_packet(uint8_t *packet,
+                               size_t packet_len,
+                               const uint8_t *dcid,
+                               size_t dcid_len,
+                               const uint8_t *scid,
+                               size_t scid_len) {
+  if (packet_len < 1 + 4 + 1 + dcid_len + 1 + scid_len + 4) {
+    return 0;
+  }
+
+  size_t off = 0;
+  packet[off++] = 0xc3;
+  packet[off++] = 0x00;
+  packet[off++] = 0x00;
+  packet[off++] = 0x00;
+  packet[off++] = 0x01;
+  packet[off++] = (uint8_t)dcid_len;
+  memcpy(packet + off, dcid, dcid_len);
+  off += dcid_len;
+  packet[off++] = (uint8_t)scid_len;
+  memcpy(packet + off, scid, scid_len);
+  off += scid_len;
+  packet[off++] = 0x00;
+  packet[off++] = 0x01;
+  packet[off++] = 0x02;
+  packet[off++] = 0x03;
+  return off;
+}
+
+static int send_packet_to_port(int fd,
+                               uint16_t port,
+                               const uint8_t *packet,
+                               size_t packet_len) {
+  struct sockaddr_in dst;
+  memset(&dst, 0, sizeof(dst));
+  dst.sin_family = AF_INET;
+  dst.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+  dst.sin_port = htons(port);
+  ssize_t sent = sendto(fd,
+                        packet,
+                        packet_len,
+                        0,
+                        (struct sockaddr *)&dst,
+                        sizeof(dst));
+  return sent == (ssize_t)packet_len ? 0 : -1;
+}
+
+static int receive_worker(const int *workers) {
+  struct pollfd fds[WORKER_COUNT];
+  for (size_t i = 0; i < WORKER_COUNT; i++) {
+    fds[i].fd = workers[i];
+    fds[i].events = POLLIN;
+    fds[i].revents = 0;
+  }
+
+  int rc = poll(fds, WORKER_COUNT, 1000);
+  if (rc <= 0) {
+    return -1;
+  }
+
+  uint8_t buf[2048];
+  for (size_t i = 0; i < WORKER_COUNT; i++) {
+    if (fds[i].revents & POLLIN) {
+      if (recv(workers[i], buf, sizeof(buf), 0) > 0) {
+        return (int)i;
+      }
+    }
+  }
+  return -1;
+}
+
+static int register_worker(const char *socket_path,
+                           uint32_t worker_id,
+                           int worker_fd) {
+  int control_fd = qaff_control_connect(socket_path);
+  if (control_fd < 0) {
+    return -1;
+  }
+  int rc = qaff_control_register_worker(control_fd, worker_id, worker_fd);
+  close(control_fd);
+  return rc;
+}
+
+static int read_stats(const char *socket_path, struct qaff_stats *stats) {
+  int control_fd = qaff_control_connect(socket_path);
+  if (control_fd < 0) {
+    return -1;
+  }
+  int rc = qaff_control_read_stats(control_fd, stats);
+  close(control_fd);
+  return rc;
+}
+
+int main(int argc, char **argv) {
+  if (argc != 2) {
+    fprintf(stderr, "usage: %s QAFFD_SOCKET\n", argv[0]);
+    return 2;
+  }
+
+  const char *socket_path = argv[1];
+  uint16_t listener_port = 0;
+  uint16_t client_port = 0;
+  int workers[WORKER_COUNT] = {-1, -1, -1};
+  int client_fd = -1;
+
+  for (uint32_t i = 0; i < WORKER_COUNT; i++) {
+    workers[i] = make_worker_socket(&listener_port);
+    if (workers[i] < 0) {
+      perror("make_worker_socket");
+      return 1;
+    }
+    if (register_worker(socket_path, i, workers[i]) != 0) {
+      perror("qaff_control_register_worker");
+      return 1;
+    }
+  }
+
+  client_fd = make_client_socket(&client_port);
+  if (client_fd < 0) {
+    perror("make_client_socket");
+    return 1;
+  }
+
+  uint8_t packet[128];
+  size_t packet_len = make_long_packet(packet,
+                                       sizeof(packet),
+                                       k_client_cid,
+                                       sizeof(k_client_cid),
+                                       k_server_cid,
+                                       sizeof(k_server_cid));
+  if (packet_len == 0) {
+    fprintf(stderr, "failed to build server long-header packet\n");
+    return 1;
+  }
+  if (send_packet_to_port(workers[TARGET_WORKER],
+                          client_port,
+                          packet,
+                          packet_len) != 0) {
+    perror("send server packet");
+    return 1;
+  }
+
+  packet_len = make_long_packet(packet,
+                                sizeof(packet),
+                                k_server_cid,
+                                sizeof(k_server_cid),
+                                k_client_cid,
+                                sizeof(k_client_cid));
+  if (packet_len == 0) {
+    fprintf(stderr, "failed to build client long-header packet\n");
+    return 1;
+  }
+  if (send_packet_to_port(client_fd, listener_port, packet, packet_len) != 0) {
+    perror("send client packet");
+    return 1;
+  }
+
+  int worker = receive_worker(workers);
+  if (worker != TARGET_WORKER) {
+    fprintf(stderr,
+            "expected egress-learned packet on worker %d, got %d\n",
+            TARGET_WORKER,
+            worker);
+    return 1;
+  }
+
+  struct qaff_stats stats;
+  if (read_stats(socket_path, &stats) != 0) {
+    perror("qaff_control_read_stats");
+    return 1;
+  }
+  if (stats.values[QAFF_STAT_PASSIVE_EGRESS_LEARN] < 1 ||
+      stats.values[QAFF_STAT_PASSIVE_HIT] < 1) {
+    fprintf(stderr,
+            "expected passive egress learn and passive hit, got learn=%llu hit=%llu\n",
+            (unsigned long long)stats.values[QAFF_STAT_PASSIVE_EGRESS_LEARN],
+            (unsigned long long)stats.values[QAFF_STAT_PASSIVE_HIT]);
+    return 1;
+  }
+
+  close(client_fd);
+  for (size_t i = 0; i < WORKER_COUNT; i++) {
+    close(workers[i]);
+  }
+  return 0;
+}

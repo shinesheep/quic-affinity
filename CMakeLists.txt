@@ -196,6 +196,12 @@ add_test(NAME qaffd_restart
     ${CMAKE_CURRENT_BINARY_DIR}/qaff_reuseport.bpf.o)
 set_tests_properties(qaffd_restart PROPERTIES SKIP_RETURN_CODE 77)
 
+add_executable(test_qaffd_egress
+  tests/test_qaffd_egress.c)
+
+target_link_libraries(test_qaffd_egress PRIVATE qaffinity)
+target_compile_options(test_qaffd_egress PRIVATE -Wall -Wextra -Wpedantic)
+
 add_test(NAME qaffctl_control
   COMMAND /bin/sh
     ${CMAKE_CURRENT_SOURCE_DIR}/tests/run_qaffctl_control.sh
@@ -220,6 +226,15 @@ add_test(NAME egress_attach_smoke
     $<TARGET_FILE:qaffctl>
     ${CMAKE_CURRENT_BINARY_DIR}/qaff_reuseport.bpf.o)
 set_tests_properties(egress_attach_smoke PROPERTIES SKIP_RETURN_CODE 77)
+
+add_test(NAME egress_learn_smoke
+  COMMAND /bin/sh
+    ${CMAKE_CURRENT_SOURCE_DIR}/tests/run_egress_learn_smoke.sh
+    $<TARGET_FILE:qaffd>
+    $<TARGET_FILE:qaffctl>
+    $<TARGET_FILE:test_qaffd_egress>
+    ${CMAKE_CURRENT_BINARY_DIR}/qaff_reuseport.bpf.o)
+set_tests_properties(egress_learn_smoke PROPERTIES SKIP_RETURN_CODE 77)
 
 if(TARGET qaff_quiche_control_probe)
   add_test(NAME quiche_control_probe
@@ -274,6 +289,7 @@ if(QAFF_BUILD_BPF)
     add_dependencies(qaffd qaff_bpf)
     add_dependencies(test_qaffd_control qaff_bpf)
     add_dependencies(test_qaffd_restart qaff_bpf)
+    add_dependencies(test_qaffd_egress qaff_bpf)
   else()
     message(WARNING "clang not found; eBPF object will not be built")
   endif()
