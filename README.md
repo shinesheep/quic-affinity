@@ -233,6 +233,14 @@ systemctl enable --now qaffd@udp-ipv4-127.0.0.1-4433.service
 
 The unit expects `qaffd` at `/usr/sbin/qaffd`, `qaffctl` at `/usr/bin/qaffctl`, and the BPF object at `/usr/libexec/quic-affinity/qaff_reuseport.bpf.o`. The bpffs path used by `QAFF_PIN_ROOT` must be writable.
 
+To verify a real systemd deployment on a host with writable bpffs:
+
+```sh
+sudo -n scripts/systemd_smoke.sh build
+```
+
+The smoke installs the current build into `/usr`, starts a temporary `qaffd@...` listener instance, checks it through `/usr/bin/qaffctl`, then removes only the temporary listener env/state/socket/pin files.
+
 ## Examples
 
 - `qaff_minimal_registry`: embedded mode. The process creates maps, loads BPF, attaches the program, registers workers, and registers CIDs directly.
