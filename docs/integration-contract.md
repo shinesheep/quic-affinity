@@ -78,10 +78,12 @@ When using `qaffd`, the privileged daemon owns BPF setup:
 
 1. Start `qaffd` with a Unix socket path, BPF object path, `short_cid_len`, optional `fallback_worker_id`, and optional restart-recovery paths.
 2. Each worker creates and binds its UDP `SO_REUSEPORT` socket.
-3. Each worker passes its socket fd to `qaffd` with `REGISTER_WORKER`.
+3. Each worker passes its socket fd to `qaffd` with `REGISTER_WORKER_LEASE` and keeps that control connection open for the worker lifetime.
 4. `qaffd` registers the socket in the sockarray and attaches BPF on first worker registration.
 5. Workers register and retire server-issued CIDs through the control API.
 6. Drained workers unregister their socket after their CIDs have been retired.
+
+If the leased control connection closes unexpectedly, `qaffd` treats the worker as dead, unregisters it, closes qaffd's duplicated worker socket fd, and bulk-retires that worker's CIDs. The older one-shot `REGISTER_WORKER` operation remains available for compatibility, but it cannot detect worker process death on its own because fd passing gives `qaffd` a separate reference to the UDP socket.
 
 The current MVP supports one listener per `qaffd` process.
 

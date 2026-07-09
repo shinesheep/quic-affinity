@@ -325,6 +325,22 @@ static int control_call_register_worker(const char *socket_path,
   return rc;
 }
 
+static int control_call_register_worker_lease(const char *socket_path,
+                                              uint32_t worker_id,
+                                              int worker_fd,
+                                              int *lease_fd) {
+  int fd = qaff_control_connect(socket_path);
+  if (fd < 0) {
+    return -1;
+  }
+  if (qaff_control_register_worker_lease(fd, worker_id, worker_fd) != 0) {
+    close(fd);
+    return -1;
+  }
+  *lease_fd = fd;
+  return 0;
+}
+
 static int control_call_unregister_worker(const char *socket_path,
                                           uint32_t worker_id) {
   int fd = qaff_control_connect(socket_path);
@@ -418,6 +434,30 @@ static int expect_registered_workers(const char *socket_path,
   return 0;
 }
 
+static int wait_registered_workers_len(const char *socket_path,
+                                       size_t expected_len) {
+  const struct timespec delay = {
+    .tv_sec = 0,
+    .tv_nsec = 20 * 1000 * 1000,
+  };
+
+  for (int attempt = 0; attempt < 100; attempt++) {
+    uint32_t workers[QAFF_CONTROL_MAX_WORKERS];
+    size_t workers_len = 0;
+    if (control_call_workers(socket_path,
+                             workers,
+                             QAFF_CONTROL_MAX_WORKERS,
+                             &workers_len) == 0 &&
+        workers_len == expected_len) {
+      return 0;
+    }
+    nanosleep(&delay, NULL);
+  }
+
+  errno = ETIMEDOUT;
+  return -1;
+}
+
 static int run_case(const char *qaffd_path,
                     const char *bpf_path,
                     const struct test_case *test) {
@@ -447,6 +487,65 @@ static int run_case(const char *qaffd_path,
     return 1;
   }
   close(ready_fd);
+
+  int lease_fd = -1;
+  int leased_worker = -1;
+  uint16_t lease_port = 0;
+  leased_worker = make_worker_socket(test->family, &lease_port);
+  if (leased_worker < 0) {
+    perror("make_worker_socket leased_worker");
+    return 1;
+  }
+  if (control_call_register_worker_lease(socket_path,
+                                         0,
+                                         leased_worker,
+                                         &lease_fd) != 0) {
+    perror("qaff_control_register_worker_lease");
+    return 1;
+  }
+
+  const uint32_t leased_workers[] = {0};
+  if (expect_registered_workers(socket_path,
+                                test->name,
+                                leased_workers,
+                                sizeof(leased_workers) / sizeof(leased_workers[0])) != 0) {
+    return 1;
+  }
+  if (control_call_register_cid(socket_path, 0, k_dcid) != 0) {
+    perror("qaff_control_register_cid leased");
+    return 1;
+  }
+
+  struct qaff_control_config cid_config;
+  if (control_call_cids(socket_path, &cid_config) != 0) {
+    perror("qaff_control_cids leased");
+    return 1;
+  }
+  if (cid_config.cid_map_count != 1 ||
+      cid_config.cid_owner_count != 1 ||
+      cid_config.cid_index_mismatch != 0) {
+    fprintf(stderr, "%s: unexpected leased CID counts\n", test->name);
+    return 1;
+  }
+
+  close(lease_fd);
+  lease_fd = -1;
+  close(leased_worker);
+  leased_worker = -1;
+  if (wait_registered_workers_len(socket_path, 0) != 0) {
+    perror("wait lease cleanup");
+    return 1;
+  }
+  if (control_call_cids(socket_path, &cid_config) != 0) {
+    perror("qaff_control_cids after lease close");
+    return 1;
+  }
+  if (cid_config.cid_map_count != 0 ||
+      cid_config.cid_owner_count != 0 ||
+      cid_config.cid_index_mismatch != 0) {
+    fprintf(stderr, "%s: leaked CID after worker lease close\n", test->name);
+    return 1;
+  }
 
   int workers[WORKER_COUNT] = {-1, -1, -1};
 
@@ -531,7 +630,6 @@ static int run_case(const char *qaffd_path,
     return 1;
   }
 
-  struct qaff_control_config cid_config;
   if (control_call_cids(socket_path, &cid_config) != 0) {
     perror("qaff_control_cids");
     return 1;

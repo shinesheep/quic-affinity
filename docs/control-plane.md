@@ -17,6 +17,7 @@ The next step is a small control plane that can own privileged BPF operations wh
 The repository currently includes a minimal `qaffd` with these operations:
 
 - `REGISTER_WORKER`
+- `REGISTER_WORKER_LEASE`
 - `UNREGISTER_WORKER`
 - `REGISTER_CID`
 - `RETIRE_CID`
@@ -27,7 +28,7 @@ The repository currently includes a minimal `qaffd` with these operations:
 - `CIDS`
 - `STOP`
 
-Worker registration uses Unix-domain `SCM_RIGHTS` fd passing. `qaffd` attaches the BPF program to the reuseport group when the first worker socket is registered. Worker unregistration retires CIDs owned by that worker, removes the worker ID from the reuseport sockarray, and closes qaffd's duplicated socket fd.
+Worker registration uses Unix-domain `SCM_RIGHTS` fd passing. `qaffd` attaches the BPF program to the reuseport group when the first worker socket is registered. `REGISTER_WORKER_LEASE` keeps the worker's control connection open as a liveness lease; if that connection is closed by worker crash or exit, `qaffd` automatically unregisters the worker. Worker unregistration retires CIDs owned by that worker, removes the worker ID from the reuseport sockarray, and closes qaffd's duplicated socket fd.
 
 The listener config includes `short_cid_len` and `fallback_worker_id`. Fallback is used for unregistered CIDs, parse failures, and the first client Initial before the server has issued a routable CID.
 
@@ -118,13 +119,14 @@ Initial request types:
 
 ```text
 REGISTER_WORKER(listener_id, worker_id, socket_fd)
+REGISTER_WORKER_LEASE(listener_id, worker_id, socket_fd)
 REGISTER_CID(listener_id, worker_id, cid)
 RETIRE_CID(listener_id, cid)
 READ_STATS(listener_id)
 UNREGISTER_WORKER(listener_id, worker_id)
 ```
 
-Worker socket registration needs `SCM_RIGHTS` fd passing.
+Worker socket registration needs `SCM_RIGHTS` fd passing. New integrations should prefer `REGISTER_WORKER_LEASE` and keep the control fd open for the lifetime of the worker. The one-shot `REGISTER_WORKER` path remains for compatibility, but it cannot detect worker process death because `qaffd` owns a duplicated socket fd after registration.
 
 ## Graceful Reload
 

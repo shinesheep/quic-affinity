@@ -6,6 +6,7 @@
 #include <fcntl.h>
 #include <limits.h>
 #include <netinet/in.h>
+#include <poll.h>
 #include <signal.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -41,6 +42,7 @@ struct qaffd_state {
   struct qaff_context *ctx;
   struct qaff_bpf_object *bpf;
   int worker_fds[QAFFD_MAX_WORKERS];
+  int worker_lease_fds[QAFFD_MAX_WORKERS];
   int worker_registered[QAFFD_MAX_WORKERS];
   struct qaffd_cid_entry *cid_entries;
   size_t cid_entries_len;
@@ -784,7 +786,16 @@ static int handle_unregister_worker(struct qaffd_state *state,
     close(state->worker_fds[request->worker_id]);
     state->worker_fds[request->worker_id] = -1;
   }
+  if (state->worker_lease_fds[request->worker_id] >= 0) {
+    close(state->worker_lease_fds[request->worker_id]);
+    state->worker_lease_fds[request->worker_id] = -1;
+  }
   state->worker_registered[request->worker_id] = 0;
+  if (worker_count(state) == 0) {
+    state->attached = 0;
+    state->listener_locked = 0;
+    memset(&state->listener_addr, 0, sizeof(state->listener_addr));
+  }
   return save_state(state);
 }
 
@@ -837,9 +848,29 @@ static int handle_retire_cid(struct qaffd_state *state,
   return save_state(state);
 }
 
-static int handle_request(struct qaffd_state *state, int client_fd) {
+static void install_worker_lease(struct qaffd_state *state,
+                                 uint32_t worker_id,
+                                 int lease_fd) {
+  if (state->worker_lease_fds[worker_id] >= 0) {
+    close(state->worker_lease_fds[worker_id]);
+  }
+  state->worker_lease_fds[worker_id] = lease_fd;
+}
+
+static int unregister_worker_id(struct qaffd_state *state, uint32_t worker_id) {
+  struct qaff_control_msg request;
+  memset(&request, 0, sizeof(request));
+  request.worker_id = worker_id;
+  return handle_unregister_worker(state, &request);
+}
+
+static int handle_request(struct qaffd_state *state,
+                          int client_fd,
+                          int *keep_client_fd) {
   struct qaff_control_msg request;
   int received_fd = -1;
+  int lease_worker_id = -1;
+  *keep_client_fd = 0;
 
   if (recv_request(client_fd, &request, &received_fd) != 0) {
     if (received_fd >= 0) {
@@ -866,6 +897,17 @@ static int handle_request(struct qaffd_state *state, int client_fd) {
           close(received_fd);
         }
       } else {
+        received_fd = -1;
+      }
+      break;
+    case QAFF_CONTROL_REGISTER_WORKER_LEASE:
+      if (handle_register_worker(state, &request, received_fd) != 0) {
+        reply.status = errno ? errno : EIO;
+        if (received_fd >= 0) {
+          close(received_fd);
+        }
+      } else {
+        lease_worker_id = (int)request.worker_id;
         received_fd = -1;
       }
       break;
@@ -911,7 +953,24 @@ static int handle_request(struct qaffd_state *state, int client_fd) {
     }
   }
 
-  return write_exact(client_fd, &reply, sizeof(reply));
+  int rc = write_exact(client_fd, &reply, sizeof(reply));
+  if (rc != 0) {
+    if (lease_worker_id >= 0) {
+      unregister_worker_id(state, (uint32_t)lease_worker_id);
+    }
+    return -1;
+  }
+
+  if (lease_worker_id >= 0) {
+    install_worker_lease(state, (uint32_t)lease_worker_id, client_fd);
+    *keep_client_fd = 1;
+  }
+
+  if (received_fd >= 0) {
+    close(received_fd);
+  }
+
+  return 0;
 }
 
 static int make_server_socket(const char *path) {
@@ -966,6 +1025,36 @@ static int accept_cloexec(int server_fd) {
   return fd;
 }
 
+static nfds_t build_pollfds(const struct qaffd_state *state,
+                            int server_fd,
+                            struct pollfd *fds,
+                            uint32_t *worker_ids,
+                            nfds_t cap) {
+  nfds_t count = 0;
+  if (cap == 0) {
+    return 0;
+  }
+
+  fds[count].fd = server_fd;
+  fds[count].events = POLLIN;
+  fds[count].revents = 0;
+  worker_ids[count] = UINT32_MAX;
+  count++;
+
+  for (uint32_t i = 0; i < QAFFD_MAX_WORKERS && count < cap; i++) {
+    if (state->worker_lease_fds[i] < 0) {
+      continue;
+    }
+    fds[count].fd = state->worker_lease_fds[i];
+    fds[count].events = POLLIN;
+    fds[count].revents = 0;
+    worker_ids[count] = i;
+    count++;
+  }
+
+  return count;
+}
+
 int main(int argc, char **argv) {
   struct qaffd_options daemon_options;
   if (parse_args(argc, argv, &daemon_options) != 0) {
@@ -987,6 +1076,7 @@ int main(int argc, char **argv) {
   state.fallback_worker_id = daemon_options.fallback_worker_id;
   for (size_t i = 0; i < QAFFD_MAX_WORKERS; i++) {
     state.worker_fds[i] = -1;
+    state.worker_lease_fds[i] = -1;
   }
 
   struct qaff_options options;
@@ -1034,19 +1124,61 @@ int main(int argc, char **argv) {
     return 1;
   }
 
+  struct pollfd pollfds[QAFFD_MAX_WORKERS + 1];
+  uint32_t poll_worker_ids[QAFFD_MAX_WORKERS + 1];
+
   while (!state.stop && !g_stop_requested) {
-    int client_fd = accept_cloexec(server_fd);
-    if (client_fd < 0) {
+    nfds_t pollfds_len = build_pollfds(&state,
+                                       server_fd,
+                                       pollfds,
+                                       poll_worker_ids,
+                                       QAFFD_MAX_WORKERS + 1);
+    int poll_rc;
+    do {
+      poll_rc = poll(pollfds, pollfds_len, -1);
+    } while (poll_rc < 0 && errno == EINTR && !g_stop_requested);
+
+    if (poll_rc < 0) {
       if (g_stop_requested) {
         break;
       }
-      perror("accept4");
+      perror("poll");
       break;
     }
-    if (handle_request(&state, client_fd) != 0) {
-      perror("handle_request");
+
+    if (pollfds[0].revents & POLLIN) {
+      int client_fd = accept_cloexec(server_fd);
+      if (client_fd < 0) {
+        if (g_stop_requested) {
+          break;
+        }
+        perror("accept");
+      } else {
+        int keep_client_fd = 0;
+        if (handle_request(&state, client_fd, &keep_client_fd) != 0) {
+          perror("handle_request");
+        }
+        if (!keep_client_fd) {
+          close(client_fd);
+        }
+      }
     }
-    close(client_fd);
+
+    for (nfds_t i = 1; i < pollfds_len; i++) {
+      if ((pollfds[i].revents & (POLLIN | POLLHUP | POLLERR | POLLNVAL)) == 0) {
+        continue;
+      }
+
+      uint32_t worker_id = poll_worker_ids[i];
+      if (worker_id >= QAFFD_MAX_WORKERS ||
+          state.worker_lease_fds[worker_id] != pollfds[i].fd) {
+        continue;
+      }
+
+      if (unregister_worker_id(&state, worker_id) != 0 && errno != ENOENT) {
+        perror("unregister_worker_lease");
+      }
+    }
   }
 
   close(server_fd);
@@ -1054,6 +1186,9 @@ int main(int argc, char **argv) {
   for (size_t i = 0; i < QAFFD_MAX_WORKERS; i++) {
     if (state.worker_fds[i] >= 0) {
       close(state.worker_fds[i]);
+    }
+    if (state.worker_lease_fds[i] >= 0) {
+      close(state.worker_lease_fds[i]);
     }
   }
   free(state.cid_entries);

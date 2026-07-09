@@ -170,6 +170,7 @@ ctest --test-dir build --output-on-failure -R reuseport_smoke
 Current control operations:
 
 - register worker socket using `SCM_RIGHTS`
+- register leased worker socket using `SCM_RIGHTS`
 - unregister worker socket
 - register CID
 - retire CID
@@ -188,6 +189,8 @@ build/qaffd --socket /tmp/qaffd.sock --bpf build/qaff_reuseport.bpf.o --short-ci
 ```
 
 `--fallback-worker` selects the worker socket used when the incoming packet cannot be parsed or its DCID is not registered yet. This is the expected path for the first client Initial, because that DCID is client-generated.
+
+New worker integrations should use the leased worker registration API and keep the control fd open for the worker lifetime. If that fd closes unexpectedly, `qaffd` automatically unregisters the worker, closes its duplicated UDP socket fd, and retires the worker's CIDs.
 
 For restart recovery, run `qaffd` with a writable bpffs pin root and a state snapshot path:
 
@@ -211,7 +214,7 @@ build/qaffctl unregister-worker /tmp/qaffd.sock 2
 build/qaffctl stop /tmp/qaffd.sock
 ```
 
-The `qaffd_control` test starts `qaffd`, registers IPv4 and IPv6 reuseport workers through the control API, registers a CID, verifies hit and fallback routing, unregisters workers, and verifies that CIDs owned by removed workers are retired before later packets fall back. The `qaffd_restart` test verifies pinned map and state recovery when bpffs is writable; it is skipped on systems where `/sys/fs/bpf` is unavailable or read-only.
+The `qaffd_control` test starts `qaffd`, registers IPv4 and IPv6 reuseport workers through the control API, verifies leased worker cleanup on control-fd close, registers a CID, verifies hit and fallback routing, unregisters workers, and verifies that CIDs owned by removed workers are retired before later packets fall back. The `qaffd_restart` test verifies pinned map and state recovery when bpffs is writable; it is skipped on systems where `/sys/fs/bpf` is unavailable or read-only.
 
 ## Deployment Skeleton
 
