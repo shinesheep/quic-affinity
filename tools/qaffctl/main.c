@@ -209,6 +209,7 @@ static void print_config(const struct qaff_control_config *config) {
   printf("cid_profile_v2_config_id=%u\n", config->cid_profile_v2_config_id);
   printf("passive_affinity_enabled=%u\n", config->passive_affinity_enabled);
   printf("passive_min_confidence=%u\n", config->passive_min_confidence);
+  printf("egress_attached=%u\n", config->egress_attached);
   printf("attached=%u\n", config->attached);
   printf("worker_count=%u\n", config->worker_count);
   printf("fallback_worker_id=%u\n", config->fallback_worker_id);

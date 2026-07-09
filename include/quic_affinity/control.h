@@ -66,7 +66,8 @@ struct qaff_control_config {
   uint8_t passive_affinity_enabled;
   /** Minimum passive confidence accepted by the dataplane. */
   uint8_t passive_min_confidence;
-  uint8_t reserved[1];
+  /** Non-zero when the cgroup egress learner has been attached. */
+  uint8_t egress_attached;
   /** Number of registered workers. */
   uint32_t worker_count;
   /** Worker used for parse misses, unknown CIDs, and client-generated Initials. */

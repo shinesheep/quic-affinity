@@ -117,6 +117,7 @@ struct qaffd_state {
   uint32_t socket_gid;
   mode_t socket_mode;
   int attached;
+  int egress_attached;
   int stop;
   int listener_locked;
   struct sockaddr_storage listener_addr;
@@ -496,6 +497,7 @@ static void fill_config_reply(const struct qaffd_state *state,
   reply->config.cid_profile_v2_config_id = state->cid_profile_v2_config_id;
   reply->config.passive_affinity_enabled = state->passive_affinity_enabled;
   reply->config.passive_min_confidence = state->passive_min_confidence;
+  reply->config.egress_attached = state->egress_attached ? 1 : 0;
   reply->config.attached = state->attached ? 1 : 0;
   reply->config.worker_count = worker_count(state);
   reply->config.fallback_worker_id = state->fallback_worker_id;
@@ -2003,6 +2005,7 @@ int main(int argc, char **argv) {
     qaff_close(state.ctx);
     return 1;
   }
+  state.egress_attached = daemon_options.egress_cgroup_path != NULL;
 
   if (load_state(&state) != 0) {
     perror("load_state");

@@ -71,6 +71,7 @@ grep -q '^cid_profile_v2_enabled=1$' /tmp/qaffctl-control-$$.config
 grep -q '^cid_profile_v2_config_id=7$' /tmp/qaffctl-control-$$.config
 grep -q '^passive_affinity_enabled=1$' /tmp/qaffctl-control-$$.config
 grep -q '^passive_min_confidence=2$' /tmp/qaffctl-control-$$.config
+grep -q '^egress_attached=0$' /tmp/qaffctl-control-$$.config
 grep -q '^attached=0$' /tmp/qaffctl-control-$$.config
 grep -q '^worker_count=0$' /tmp/qaffctl-control-$$.config
 grep -q '^fallback_worker_id=1$' /tmp/qaffctl-control-$$.config
