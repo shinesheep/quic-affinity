@@ -50,12 +50,27 @@ fi
 
 "$qaffctl_bin" health "$sock" >/tmp/qaffctl-control-$$.health
 grep -q '^ok=1$' /tmp/qaffctl-control-$$.health
+grep -q '^attached=0$' /tmp/qaffctl-control-$$.health
+grep -q '^worker_count=0$' /tmp/qaffctl-control-$$.health
+grep -q '^cid_map_count=0$' /tmp/qaffctl-control-$$.health
+grep -q '^cid_owner_count=0$' /tmp/qaffctl-control-$$.health
+grep -q '^cid_index_mismatch=0$' /tmp/qaffctl-control-$$.health
 
 "$qaffctl_bin" config "$sock" >/tmp/qaffctl-control-$$.config
 grep -q '^short_cid_len=8$' /tmp/qaffctl-control-$$.config
 grep -q '^attached=0$' /tmp/qaffctl-control-$$.config
 grep -q '^worker_count=0$' /tmp/qaffctl-control-$$.config
 grep -q '^fallback_worker_id=1$' /tmp/qaffctl-control-$$.config
+grep -q '^cid_map_count=0$' /tmp/qaffctl-control-$$.config
+grep -q '^cid_owner_count=0$' /tmp/qaffctl-control-$$.config
+grep -q '^cid_index_mismatch=0$' /tmp/qaffctl-control-$$.config
+grep -q '^pin_root=$' /tmp/qaffctl-control-$$.config
+grep -q '^state_path=$' /tmp/qaffctl-control-$$.config
+
+"$qaffctl_bin" cids "$sock" --count >/tmp/qaffctl-control-$$.cids
+grep -q '^cid_map_count=0$' /tmp/qaffctl-control-$$.cids
+grep -q '^cid_owner_count=0$' /tmp/qaffctl-control-$$.cids
+grep -q '^cid_index_mismatch=0$' /tmp/qaffctl-control-$$.cids
 
 "$qaffctl_bin" workers "$sock" >/tmp/qaffctl-control-$$.workers
 grep -q '^workers_len=0$' /tmp/qaffctl-control-$$.workers
@@ -67,4 +82,6 @@ grep -q '^fallback=0$' /tmp/qaffctl-control-$$.out
 "$qaffctl_bin" stop "$sock"
 wait "$daemon_pid"
 daemon_pid=
-rm -f /tmp/qaffctl-control-$$.out /tmp/qaffctl-control-$$.err
+rm -f /tmp/qaffctl-control-$$.out /tmp/qaffctl-control-$$.err \
+  /tmp/qaffctl-control-$$.health /tmp/qaffctl-control-$$.config \
+  /tmp/qaffctl-control-$$.cids /tmp/qaffctl-control-$$.workers

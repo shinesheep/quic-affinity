@@ -14,6 +14,7 @@ extern "C" {
 #define QAFF_CONTROL_MAGIC 0x51414646u
 #define QAFF_CONTROL_VERSION 1u
 #define QAFF_CONTROL_MAX_WORKERS 64u
+#define QAFF_CONTROL_MAX_PATH 256u
 
 enum qaff_control_op {
   QAFF_CONTROL_REGISTER_WORKER = 1,
@@ -25,6 +26,7 @@ enum qaff_control_op {
   QAFF_CONTROL_CONFIG = 7,
   QAFF_CONTROL_WORKERS = 8,
   QAFF_CONTROL_UNREGISTER_WORKER = 9,
+  QAFF_CONTROL_CIDS = 10,
 };
 
 struct qaff_control_config {
@@ -33,6 +35,11 @@ struct qaff_control_config {
   uint16_t reserved;
   uint32_t worker_count;
   uint32_t fallback_worker_id;
+  uint64_t cid_map_count;
+  uint64_t cid_owner_count;
+  uint64_t cid_index_mismatch;
+  char pin_root[QAFF_CONTROL_MAX_PATH];
+  char state_path[QAFF_CONTROL_MAX_PATH];
 };
 
 struct qaff_control_msg {
@@ -71,6 +78,8 @@ int qaff_control_read_stats(int control_fd, struct qaff_stats *out);
 int qaff_control_health(int control_fd);
 
 int qaff_control_config(int control_fd, struct qaff_control_config *out);
+
+int qaff_control_cids(int control_fd, struct qaff_control_config *out);
 
 int qaff_control_workers(int control_fd,
                          uint32_t *workers,

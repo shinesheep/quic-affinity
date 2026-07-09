@@ -24,6 +24,7 @@ The repository currently includes a minimal `qaffd` with these operations:
 - `HEALTH`
 - `CONFIG`
 - `WORKERS`
+- `CIDS`
 - `STOP`
 
 Worker registration uses Unix-domain `SCM_RIGHTS` fd passing. `qaffd` attaches the BPF program to the reuseport group when the first worker socket is registered. Worker unregistration retires CIDs owned by that worker, removes the worker ID from the reuseport sockarray, and closes qaffd's duplicated socket fd.
@@ -163,6 +164,7 @@ Initial commands:
 qaffctl stats LISTENER_ID
 qaffctl health LISTENER_ID
 qaffctl config LISTENER_ID
+qaffctl cids LISTENER_ID --count
 qaffctl workers LISTENER_ID
 qaffctl unregister-worker LISTENER_ID WORKER_ID
 qaffctl stop LISTENER_ID
@@ -175,7 +177,7 @@ qaffctl listeners
 qaffctl cids LISTENER_ID --limit 20
 ```
 
-`qaffctl` currently talks to `qaffd` over the daemon Unix socket. Direct pinned-map inspection remains future work.
+`qaffctl health`, `qaffctl config`, and `qaffctl cids --count` expose `cid_map_count`, `cid_owner_count`, and `cid_index_mismatch`. CID bytes are not printed by default. `qaffctl` currently talks to `qaffd` over the daemon Unix socket. Direct pinned-map inspection remains future work.
 
 ## Open Decisions
 

@@ -40,11 +40,18 @@ struct qaffd_state {
   struct qaffd_cid_entry *cid_entries;
   size_t cid_entries_len;
   size_t cid_entries_cap;
+  const char *pin_root;
   const char *state_path;
   uint8_t short_cid_len;
   uint32_t fallback_worker_id;
   int attached;
   int stop;
+};
+
+struct qaffd_cid_consistency {
+  uint64_t map_count;
+  uint64_t owner_count;
+  uint64_t mismatch_count;
 };
 
 static volatile sig_atomic_t g_stop_requested = 0;
@@ -80,12 +87,45 @@ static uint32_t worker_count(const struct qaffd_state *state) {
   return count;
 }
 
+static int copy_config_path(char *dst, size_t dst_len, const char *src) {
+  if (dst_len == 0) {
+    return 0;
+  }
+  dst[0] = '\0';
+  if (src == NULL) {
+    return 0;
+  }
+  size_t len = strlen(src);
+  if (len >= dst_len) {
+    len = dst_len - 1;
+  }
+  memcpy(dst, src, len);
+  dst[len] = '\0';
+  return 0;
+}
+
+static int read_cid_consistency(const struct qaffd_state *state,
+                                struct qaffd_cid_consistency *out);
+
 static void fill_config_reply(const struct qaffd_state *state,
                               struct qaff_control_msg *reply) {
   reply->config.short_cid_len = state->short_cid_len;
   reply->config.attached = state->attached ? 1 : 0;
   reply->config.worker_count = worker_count(state);
   reply->config.fallback_worker_id = state->fallback_worker_id;
+  copy_config_path(reply->config.pin_root,
+                   sizeof(reply->config.pin_root),
+                   state->pin_root);
+  copy_config_path(reply->config.state_path,
+                   sizeof(reply->config.state_path),
+                   state->state_path);
+
+  struct qaffd_cid_consistency consistency;
+  if (read_cid_consistency(state, &consistency) == 0) {
+    reply->config.cid_map_count = consistency.map_count;
+    reply->config.cid_owner_count = consistency.owner_count;
+    reply->config.cid_index_mismatch = consistency.mismatch_count;
+  }
 }
 
 static void fill_workers_reply(const struct qaffd_state *state,
@@ -311,6 +351,58 @@ static void forget_cid(struct qaffd_state *state,
   if (index >= 0) {
     forget_cid_at(state, (size_t)index);
   }
+}
+
+static int read_cid_consistency(const struct qaffd_state *state,
+                                struct qaffd_cid_consistency *out) {
+  memset(out, 0, sizeof(*out));
+  out->owner_count = state->cid_entries_len;
+
+  int map_fd = qaff_get_cid_map_fd(state->ctx);
+  if (map_fd < 0) {
+    errno = EINVAL;
+    return -1;
+  }
+
+  struct qaff_cid_key key;
+  struct qaff_cid_key next_key;
+  struct qaff_cid_key *previous = NULL;
+
+  while (bpf_map_get_next_key(map_fd, previous, &next_key) == 0) {
+    uint32_t worker_id = 0;
+    out->map_count++;
+    if (bpf_map_lookup_elem(map_fd, &next_key, &worker_id) != 0) {
+      out->mismatch_count++;
+      key = next_key;
+      previous = &key;
+      continue;
+    }
+
+    ssize_t index = find_cid_entry(state, &next_key);
+    if (index < 0 ||
+        state->cid_entries[index].worker_id != worker_id) {
+      out->mismatch_count++;
+    }
+
+    key = next_key;
+    previous = &key;
+  }
+
+  if (errno != ENOENT) {
+    return -1;
+  }
+
+  for (size_t i = 0; i < state->cid_entries_len; i++) {
+    uint32_t worker_id = 0;
+    if (bpf_map_lookup_elem(map_fd,
+                            &state->cid_entries[i].key,
+                            &worker_id) != 0 ||
+        worker_id != state->cid_entries[i].worker_id) {
+      out->mismatch_count++;
+    }
+  }
+
+  return 0;
 }
 
 static int retire_worker_cids(struct qaffd_state *state, uint32_t worker_id) {
@@ -678,6 +770,9 @@ static int handle_request(struct qaffd_state *state, int client_fd) {
       fill_config_reply(state, &reply);
       fill_workers_reply(state, &reply);
       break;
+    case QAFF_CONTROL_CIDS:
+      fill_config_reply(state, &reply);
+      break;
     case QAFF_CONTROL_STOP:
       state->stop = 1;
       break;
@@ -757,6 +852,7 @@ int main(int argc, char **argv) {
 
   struct qaffd_state state;
   memset(&state, 0, sizeof(state));
+  state.pin_root = daemon_options.pin_root;
   state.state_path = daemon_options.state_path;
   state.short_cid_len = daemon_options.short_cid_len;
   state.fallback_worker_id = daemon_options.fallback_worker_id;

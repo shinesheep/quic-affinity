@@ -267,6 +267,17 @@ static int control_read_stats(const char *socket_path, struct qaff_stats *stats)
   return rc;
 }
 
+static int control_cids(const char *socket_path,
+                        struct qaff_control_config *config) {
+  int fd = qaff_control_connect(socket_path);
+  if (fd < 0) {
+    return -1;
+  }
+  int rc = qaff_control_cids(fd, config);
+  close(fd);
+  return rc;
+}
+
 int main(int argc, char **argv) {
   if (argc != 5) {
     fprintf(stderr,
@@ -364,6 +375,18 @@ int main(int argc, char **argv) {
     return 1;
   }
 
+  struct qaff_control_config cid_config;
+  if (control_cids(socket_path, &cid_config) != 0) {
+    perror("qaff_control_cids restart");
+    return 1;
+  }
+  if (cid_config.cid_map_count != 1 ||
+      cid_config.cid_owner_count != 1 ||
+      cid_config.cid_index_mismatch != 0) {
+    fprintf(stderr, "unexpected restored CID counts\n");
+    return 1;
+  }
+
   if (send_quic_like_packet(sender, port, k_dcid) != 0 ||
       receive_worker(workers, WORKER_COUNT) != TARGET_WORKER) {
     fprintf(stderr, "expected restarted qaffd CID hit on worker %d\n", TARGET_WORKER);
@@ -372,6 +395,17 @@ int main(int argc, char **argv) {
 
   if (control_unregister_worker(socket_path, TARGET_WORKER) != 0) {
     perror("qaff_control_unregister_worker restart");
+    return 1;
+  }
+
+  if (control_cids(socket_path, &cid_config) != 0) {
+    perror("qaff_control_cids after cleanup");
+    return 1;
+  }
+  if (cid_config.cid_map_count != 0 ||
+      cid_config.cid_owner_count != 0 ||
+      cid_config.cid_index_mismatch != 0) {
+    fprintf(stderr, "unexpected CID counts after restarted cleanup\n");
     return 1;
   }
 

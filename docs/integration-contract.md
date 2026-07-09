@@ -96,11 +96,14 @@ Stats and shutdown are available through `qaffctl`:
 ```sh
 qaffctl health /tmp/qaffd.sock
 qaffctl config /tmp/qaffd.sock
+qaffctl cids /tmp/qaffd.sock --count
 qaffctl workers /tmp/qaffd.sock
 qaffctl unregister-worker /tmp/qaffd.sock 2
 qaffctl stats /tmp/qaffd.sock
 qaffctl stop /tmp/qaffd.sock
 ```
+
+The CID count command reports aggregate counts and consistency status only. It does not print CID bytes by default.
 
 The repository includes `qaff_minimal_control` as a small worker-side example for this mode. It creates UDP reuseport sockets, passes them to `qaffd`, and registers a sample server CID.
 

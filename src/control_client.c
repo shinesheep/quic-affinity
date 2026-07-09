@@ -214,6 +214,22 @@ int qaff_control_config(int control_fd, struct qaff_control_config *out) {
   return 0;
 }
 
+int qaff_control_cids(int control_fd, struct qaff_control_config *out) {
+  if (out == NULL) {
+    errno = EINVAL;
+    return -1;
+  }
+
+  struct qaff_control_msg msg;
+  struct qaff_control_msg reply;
+  qaff_control_msg_init(&msg, QAFF_CONTROL_CIDS);
+  if (qaff_round_trip(control_fd, &msg, -1, &reply) != 0) {
+    return -1;
+  }
+  *out = reply.config;
+  return 0;
+}
+
 int qaff_control_workers(int control_fd,
                          uint32_t *workers,
                          size_t workers_cap,

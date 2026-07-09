@@ -325,6 +325,17 @@ static int control_call_read_stats(const char *socket_path,
   return rc;
 }
 
+static int control_call_cids(const char *socket_path,
+                             struct qaff_control_config *config) {
+  int fd = qaff_control_connect(socket_path);
+  if (fd < 0) {
+    return -1;
+  }
+  int rc = qaff_control_cids(fd, config);
+  close(fd);
+  return rc;
+}
+
 static int control_call_workers(const char *socket_path,
                                 uint32_t *workers,
                                 size_t workers_cap,
@@ -448,6 +459,18 @@ static int run_case(const char *qaffd_path,
     return 1;
   }
 
+  struct qaff_control_config cid_config;
+  if (control_call_cids(socket_path, &cid_config) != 0) {
+    perror("qaff_control_cids");
+    return 1;
+  }
+  if (cid_config.cid_map_count != 2 ||
+      cid_config.cid_owner_count != 2 ||
+      cid_config.cid_index_mismatch != 0) {
+    fprintf(stderr, "%s: unexpected CID counts after registration\n", test->name);
+    return 1;
+  }
+
   struct sender_socket senders[2] = {{.fd = -1}, {.fd = -1}};
   if (bind_sender_socket(test->family, &senders[0]) != 0 ||
       bind_sender_socket(test->family, &senders[1]) != 0) {
@@ -509,6 +532,17 @@ static int run_case(const char *qaffd_path,
     fprintf(stderr,
             "%s: unexpectedly registered CID to unregistered worker\n",
             test->name);
+    return 1;
+  }
+
+  if (control_call_cids(socket_path, &cid_config) != 0) {
+    perror("qaff_control_cids after unregister");
+    return 1;
+  }
+  if (cid_config.cid_map_count != 0 ||
+      cid_config.cid_owner_count != 0 ||
+      cid_config.cid_index_mismatch != 0) {
+    fprintf(stderr, "%s: unexpected CID counts after worker unregister\n", test->name);
     return 1;
   }
 

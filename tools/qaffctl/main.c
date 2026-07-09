@@ -16,6 +16,7 @@ static void usage(FILE *out) {
           "  qaffctl parse HEX_PACKET [SHORT_CID_LEN]\n"
           "  qaffctl health SOCKET\n"
           "  qaffctl config SOCKET\n"
+          "  qaffctl cids SOCKET --count\n"
           "  qaffctl workers SOCKET\n"
           "  qaffctl unregister-worker SOCKET WORKER_ID\n"
           "  qaffctl stats SOCKET\n"
@@ -179,13 +180,22 @@ static int cmd_health(int argc, char **argv) {
     return 1;
   }
 
-  if (qaff_control_health(fd) != 0) {
-    perror("qaff_control_health");
+  struct qaff_control_config config;
+  if (qaff_control_config(fd, &config) != 0) {
+    perror("qaff_control_config");
     close(fd);
     return 1;
   }
 
   printf("ok=1\n");
+  printf("attached=%u\n", config.attached);
+  printf("worker_count=%u\n", config.worker_count);
+  printf("cid_map_count=%llu\n",
+         (unsigned long long)config.cid_map_count);
+  printf("cid_owner_count=%llu\n",
+         (unsigned long long)config.cid_owner_count);
+  printf("cid_index_mismatch=%llu\n",
+         (unsigned long long)config.cid_index_mismatch);
   close(fd);
   return 0;
 }
@@ -195,6 +205,14 @@ static void print_config(const struct qaff_control_config *config) {
   printf("attached=%u\n", config->attached);
   printf("worker_count=%u\n", config->worker_count);
   printf("fallback_worker_id=%u\n", config->fallback_worker_id);
+  printf("cid_map_count=%llu\n",
+         (unsigned long long)config->cid_map_count);
+  printf("cid_owner_count=%llu\n",
+         (unsigned long long)config->cid_owner_count);
+  printf("cid_index_mismatch=%llu\n",
+         (unsigned long long)config->cid_index_mismatch);
+  printf("pin_root=%s\n", config->pin_root);
+  printf("state_path=%s\n", config->state_path);
 }
 
 static int cmd_config(int argc, char **argv) {
@@ -216,6 +234,34 @@ static int cmd_config(int argc, char **argv) {
   }
 
   print_config(&config);
+  close(fd);
+  return 0;
+}
+
+static int cmd_cids(int argc, char **argv) {
+  if (argc != 4 || strcmp(argv[3], "--count") != 0) {
+    usage(stderr);
+    return 2;
+  }
+
+  int fd = open_control_or_die(argv[2]);
+  if (fd < 0) {
+    return 1;
+  }
+
+  struct qaff_control_config config;
+  if (qaff_control_cids(fd, &config) != 0) {
+    perror("qaff_control_cids");
+    close(fd);
+    return 1;
+  }
+
+  printf("cid_map_count=%llu\n",
+         (unsigned long long)config.cid_map_count);
+  printf("cid_owner_count=%llu\n",
+         (unsigned long long)config.cid_owner_count);
+  printf("cid_index_mismatch=%llu\n",
+         (unsigned long long)config.cid_index_mismatch);
   close(fd);
   return 0;
 }
@@ -342,6 +388,10 @@ int main(int argc, char **argv) {
 
   if (strcmp(argv[1], "config") == 0) {
     return cmd_config(argc, argv);
+  }
+
+  if (strcmp(argv[1], "cids") == 0) {
+    return cmd_cids(argc, argv);
   }
 
   if (strcmp(argv[1], "workers") == 0) {

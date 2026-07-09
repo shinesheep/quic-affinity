@@ -162,6 +162,7 @@ Current control operations:
 - read stats
 - health check
 - read config
+- read CID counts and consistency status
 - list registered workers
 - stop daemon
 
@@ -189,7 +190,8 @@ Inspect and stop it with `qaffctl`:
 ```sh
 build/qaffctl stats /tmp/qaffd.sock
 build/qaffctl health /tmp/qaffd.sock
-build/qaffctl config /tmp/qaffd.sock   # includes short_cid_len, attached, worker_count, fallback_worker_id
+build/qaffctl config /tmp/qaffd.sock   # includes config, paths, CID counts, and consistency status
+build/qaffctl cids /tmp/qaffd.sock --count
 build/qaffctl workers /tmp/qaffd.sock
 build/qaffctl unregister-worker /tmp/qaffd.sock 2
 build/qaffctl stop /tmp/qaffd.sock
