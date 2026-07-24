@@ -63,6 +63,9 @@ grep -q '^worker_count=0$' /tmp/qaffctl-control-$$.health
 grep -q '^cid_map_count=0$' /tmp/qaffctl-control-$$.health
 grep -q '^cid_owner_count=0$' /tmp/qaffctl-control-$$.health
 grep -q '^cid_index_mismatch=0$' /tmp/qaffctl-control-$$.health
+grep -q '^passive_entry_count=0$' /tmp/qaffctl-control-$$.health
+grep -q '^passive_entry_capacity=1048576$' /tmp/qaffctl-control-$$.health
+grep -q '^passive_cleanup_error_count=0$' /tmp/qaffctl-control-$$.health
 
 "$qaffctl_bin" config "$sock" >/tmp/qaffctl-control-$$.config
 grep -q '^short_cid_len=12$' /tmp/qaffctl-control-$$.config
@@ -78,6 +81,13 @@ grep -q '^fallback_worker_id=1$' /tmp/qaffctl-control-$$.config
 grep -q '^cid_map_count=0$' /tmp/qaffctl-control-$$.config
 grep -q '^cid_owner_count=0$' /tmp/qaffctl-control-$$.config
 grep -q '^cid_index_mismatch=0$' /tmp/qaffctl-control-$$.config
+grep -q '^passive_entry_count=0$' /tmp/qaffctl-control-$$.config
+grep -q '^passive_entry_capacity=1048576$' /tmp/qaffctl-control-$$.config
+grep -q '^passive_expired_count=0$' /tmp/qaffctl-control-$$.config
+grep -q '^passive_worker_purged_count=0$' /tmp/qaffctl-control-$$.config
+grep -q '^passive_expiry_initialized_count=0$' /tmp/qaffctl-control-$$.config
+grep -q '^passive_cleanup_error_count=0$' /tmp/qaffctl-control-$$.config
+grep -q '^passive_scan_interval_ms=30000$' /tmp/qaffctl-control-$$.config
 grep -q '^pin_root=$' /tmp/qaffctl-control-$$.config
 grep -q '^state_path=$' /tmp/qaffctl-control-$$.config
 

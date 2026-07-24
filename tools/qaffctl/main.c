@@ -198,6 +198,12 @@ static int cmd_health(int argc, char **argv) {
          (unsigned long long)config.cid_owner_count);
   printf("cid_index_mismatch=%llu\n",
          (unsigned long long)config.cid_index_mismatch);
+  printf("passive_entry_count=%llu\n",
+         (unsigned long long)config.passive_entry_count);
+  printf("passive_entry_capacity=%llu\n",
+         (unsigned long long)config.passive_entry_capacity);
+  printf("passive_cleanup_error_count=%llu\n",
+         (unsigned long long)config.passive_cleanup_error_count);
   close(fd);
   return 0;
 }
@@ -219,6 +225,20 @@ static void print_config(const struct qaff_control_config *config) {
          (unsigned long long)config->cid_owner_count);
   printf("cid_index_mismatch=%llu\n",
          (unsigned long long)config->cid_index_mismatch);
+  printf("passive_entry_count=%llu\n",
+         (unsigned long long)config->passive_entry_count);
+  printf("passive_entry_capacity=%llu\n",
+         (unsigned long long)config->passive_entry_capacity);
+  printf("passive_expired_count=%llu\n",
+         (unsigned long long)config->passive_expired_count);
+  printf("passive_worker_purged_count=%llu\n",
+         (unsigned long long)config->passive_worker_purged_count);
+  printf("passive_expiry_initialized_count=%llu\n",
+         (unsigned long long)config->passive_expiry_initialized_count);
+  printf("passive_cleanup_error_count=%llu\n",
+         (unsigned long long)config->passive_cleanup_error_count);
+  printf("passive_scan_interval_ms=%llu\n",
+         (unsigned long long)config->passive_scan_interval_ms);
   printf("pin_root=%s\n", config->pin_root);
   printf("state_path=%s\n", config->state_path);
 }

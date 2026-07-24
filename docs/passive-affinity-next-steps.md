@@ -49,8 +49,11 @@ Tasks:
 
 ## 3. Improve Passive Map Observability
 
-Current observability is mostly packet counters. Operators also need table-level
-health.
+Status: implemented in qaffd/qaffctl config and health output.
+
+Operators can now inspect passive entry count and capacity, cleanup interval,
+expiry and worker-purge totals, legacy expiry initialization, and cleanup
+errors without exposing CID bytes.
 
 Tasks:
 

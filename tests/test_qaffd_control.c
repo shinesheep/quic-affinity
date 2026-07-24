@@ -1077,8 +1077,17 @@ static int run_case(const char *qaffd_path,
   }
   if (cid_config.cid_map_count != 0 ||
       cid_config.cid_owner_count != 0 ||
-      cid_config.cid_index_mismatch != 0) {
-    fprintf(stderr, "%s: unexpected CID counts after worker unregister\n", test->name);
+      cid_config.cid_index_mismatch != 0 ||
+      cid_config.passive_entry_count != 0 ||
+      cid_config.passive_entry_capacity != 1024 * 1024 ||
+      cid_config.passive_expired_count != 1 ||
+      cid_config.passive_worker_purged_count != 1 ||
+      cid_config.passive_expiry_initialized_count != 0 ||
+      cid_config.passive_cleanup_error_count != 0 ||
+      cid_config.passive_scan_interval_ms != 20) {
+    fprintf(stderr,
+            "%s: unexpected CID counts after worker unregister\n",
+            test->name);
     return 1;
   }
 

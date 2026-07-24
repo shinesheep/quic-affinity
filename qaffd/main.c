@@ -24,7 +24,7 @@
 #include <bpf/bpf.h>
 
 #define QAFFD_MAX_WORKERS 4096
-#define QAFFD_PASSIVE_SCAN_INTERVAL_MS_DEFAULT 1000u
+#define QAFFD_PASSIVE_SCAN_INTERVAL_MS_DEFAULT 30000u
 
 #ifndef SO_REUSEPORT
 #define SO_REUSEPORT 15
@@ -135,6 +135,11 @@ struct qaffd_cid_consistency {
   uint64_t map_count;
   uint64_t owner_count;
   uint64_t mismatch_count;
+};
+
+struct qaffd_passive_table_info {
+  uint64_t entry_count;
+  uint64_t entry_capacity;
 };
 
 static volatile sig_atomic_t g_stop_requested = 0;
@@ -504,6 +509,8 @@ static void unregister_socket_cookie(struct qaffd_state *state,
 
 static int read_cid_consistency(const struct qaffd_state *state,
                                 struct qaffd_cid_consistency *out);
+static int read_passive_table_info(const struct qaffd_state *state,
+                                   struct qaffd_passive_table_info *out);
 
 static void fill_config_reply(const struct qaffd_state *state,
                               struct qaff_control_msg *reply) {
@@ -517,6 +524,15 @@ static void fill_config_reply(const struct qaffd_state *state,
   reply->config.attached = state->attached ? 1 : 0;
   reply->config.worker_count = worker_count(state);
   reply->config.fallback_worker_id = state->fallback_worker_id;
+  reply->config.passive_expired_count = state->passive_expired_count;
+  reply->config.passive_worker_purged_count =
+      state->passive_worker_purged_count;
+  reply->config.passive_expiry_initialized_count =
+      state->passive_expiry_initialized_count;
+  reply->config.passive_cleanup_error_count =
+      state->passive_cleanup_error_count;
+  reply->config.passive_scan_interval_ms =
+      state->passive_scan_interval_ms;
   copy_config_path(reply->config.pin_root,
                    sizeof(reply->config.pin_root),
                    state->pin_root);
@@ -529,6 +545,12 @@ static void fill_config_reply(const struct qaffd_state *state,
     reply->config.cid_map_count = consistency.map_count;
     reply->config.cid_owner_count = consistency.owner_count;
     reply->config.cid_index_mismatch = consistency.mismatch_count;
+  }
+
+  struct qaffd_passive_table_info passive;
+  if (read_passive_table_info(state, &passive) == 0) {
+    reply->config.passive_entry_count = passive.entry_count;
+    reply->config.passive_entry_capacity = passive.entry_capacity;
   }
 }
 
@@ -1044,6 +1066,35 @@ static int read_cid_consistency(const struct qaffd_state *state,
   }
 
   return 0;
+}
+
+static int read_passive_table_info(const struct qaffd_state *state,
+                                   struct qaffd_passive_table_info *out) {
+  memset(out, 0, sizeof(*out));
+
+  int map_fd = qaff_get_passive_cid_map_fd(state->ctx);
+  if (map_fd < 0) {
+    errno = EINVAL;
+    return -1;
+  }
+
+  struct bpf_map_info map_info;
+  memset(&map_info, 0, sizeof(map_info));
+  uint32_t map_info_len = sizeof(map_info);
+  if (bpf_obj_get_info_by_fd(map_fd, &map_info, &map_info_len) != 0) {
+    return -1;
+  }
+  out->entry_capacity = map_info.max_entries;
+
+  struct qaff_cid_key key;
+  struct qaff_cid_key next_key;
+  struct qaff_cid_key *previous = NULL;
+  while (bpf_map_get_next_key(map_fd, previous, &next_key) == 0) {
+    out->entry_count++;
+    key = next_key;
+    previous = &key;
+  }
+  return errno == ENOENT ? 0 : -1;
 }
 
 static int retire_worker_cids(struct qaffd_state *state, uint32_t worker_id) {

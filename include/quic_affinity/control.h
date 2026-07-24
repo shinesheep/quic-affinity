@@ -15,7 +15,7 @@ extern "C" {
 #define QAFF_CONTROL_MAGIC 0x51414646u
 
 /** Current qaffd control protocol version. */
-#define QAFF_CONTROL_VERSION 1u
+#define QAFF_CONTROL_VERSION 2u
 
 /** Maximum workers returned by one control-plane list request. */
 #define QAFF_CONTROL_MAX_WORKERS 64u
@@ -78,6 +78,20 @@ struct qaff_control_config {
   uint64_t cid_owner_count;
   /** Number of detected differences between qaffd's CID index and BPF map. */
   uint64_t cid_index_mismatch;
+  /** Number of entries currently present in qaff_passive_cids. */
+  uint64_t passive_entry_count;
+  /** Maximum number of entries supported by qaff_passive_cids. */
+  uint64_t passive_entry_capacity;
+  /** Passive entries removed after their monotonic TTL elapsed. */
+  uint64_t passive_expired_count;
+  /** Passive entries removed because their worker was unregistered. */
+  uint64_t passive_worker_purged_count;
+  /** Legacy zero-expiry entries assigned a default lifetime during cleanup. */
+  uint64_t passive_expiry_initialized_count;
+  /** Passive map cleanup operations that failed. */
+  uint64_t passive_cleanup_error_count;
+  /** Interval between passive map cleanup scans. */
+  uint64_t passive_scan_interval_ms;
   /** bpffs pin root, if configured. */
   char pin_root[QAFF_CONTROL_MAX_PATH];
   /** qaffd restart snapshot path, if configured. */
