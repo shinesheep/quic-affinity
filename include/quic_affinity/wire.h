@@ -161,8 +161,24 @@ enum qaff_stat_index {
   QAFF_STAT_PASSIVE_EGRESS_LEARN = 15,
   /** Egress observer could not map the sending socket to a worker. */
   QAFF_STAT_PASSIVE_EGRESS_NO_WORKER = 16,
+  /** Passive entry existed but its monotonic TTL had elapsed. */
+  QAFF_STAT_PASSIVE_REJECT_EXPIRED = 17,
+  /** Egress observer could not parse a supported QUIC long header. */
+  QAFF_STAT_PASSIVE_EGRESS_PARSE_MISS = 18,
+  /** Egress observer saw a non-UDP packet. */
+  QAFF_STAT_PASSIVE_EGRESS_NOT_UDP = 19,
+  /** Egress observer saw a zero-length server SCID. */
+  QAFF_STAT_PASSIVE_EGRESS_ZERO_LENGTH_SCID = 20,
+  /** Egress observer saw a server SCID longer than the supported maximum. */
+  QAFF_STAT_PASSIVE_EGRESS_TOO_LONG_SCID = 21,
+  /** Egress observer mapped a sending socket cookie to a worker. */
+  QAFF_STAT_PASSIVE_EGRESS_SOCKET_COOKIE_HIT = 22,
+  /** Egress observer could not map a sending socket cookie to a worker. */
+  QAFF_STAT_PASSIVE_EGRESS_SOCKET_COOKIE_MISS = 23,
+  /** Egress observer failed to update the passive CID map. */
+  QAFF_STAT_PASSIVE_EGRESS_MAP_UPDATE_ERROR = 24,
   /** Number of stats slots; always keep this last. */
-  QAFF_STAT_MAX = 17,
+  QAFF_STAT_MAX = 25,
 };
 
 #endif

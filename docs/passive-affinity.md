@@ -79,11 +79,10 @@ The passive CID table is:
 ```text
 CID -> {
   worker_id,
+  worker_generation,
   confidence,
-  learned_at,
-  last_seen,
   source,
-  generation_or_epoch
+  expires_at_ns
 }
 ```
 
@@ -210,13 +209,15 @@ Recommended cleanup:
 Example defaults:
 
 ```text
-low confidence TTL      10-30 seconds
-medium confidence TTL   2-5 minutes
-high confidence TTL     10-30 minutes
-max entries             deployment sized, bounded by memory budget
+low confidence TTL      30 seconds
+medium confidence TTL   5 minutes
+high confidence TTL     15 minutes
+egress-learned TTL      60 minutes
+cleanup scan interval   30 seconds
+max entries             1,048,576 with LRU eviction
 ```
 
-These values are policy defaults, not protocol rules.
+These are the implemented policy defaults, not QUIC protocol rules.
 
 ## Safety Risks
 
@@ -301,47 +302,42 @@ Passive mode should therefore be opt-in and ship with conservative defaults.
 
 ## Observability
 
-Add counters for:
+Current counters include:
 
 ```text
-passive_ingress_hit_high
-passive_ingress_hit_medium
-passive_ingress_hit_low
-passive_ingress_miss
-passive_egress_learn
-passive_ingress_learn
-passive_promote
-passive_expire
-passive_evict
+passive_hit
+passive_miss
+passive_reject_confidence
 passive_reject_generation
-passive_reject_parse
-passive_reject_pressure
-passive_worker_missing
-passive_rebinding_hit
+passive_reject_expired
+passive_egress_learn
+passive_egress_parse_miss
+passive_egress_not_udp
+passive_egress_zero_length_scid
+passive_egress_too_long_scid
+passive_egress_socket_cookie_hit
+passive_egress_socket_cookie_miss
+passive_egress_map_update_error
 ```
 
-`qaffctl` should expose:
+`qaffctl config` and `qaffctl health` expose:
 
 - passive mode enabled/disabled
 - table size and capacity
-- hit rate by confidence
-- eviction and expiration rates
-- worker generation mismatch count
-- rebinding hit count
+- cleanup scan interval
+- expiry and worker-purge totals
+- cleanup errors
 - top-level health status without printing CID bytes by default
 
 ## Recommended Rollout
 
-1. Implement passive table metadata in userspace first, with bounded cleanup and
-   counters.
-2. Add ingress-only passive learning behind an explicit feature flag.
-3. Keep low-confidence routing disabled by default; observe miss and candidate
-   rates first.
-4. Add egress learning and promote egress-learned entries to high confidence.
-5. Enable routing only for high-confidence entries by default.
-6. Add aggressive mode for operators that accept best-effort behavior.
-7. Add worker epoch handling before recommending passive mode for reloads or
-   long-running production listeners.
+1. Start with egress learning and the default high-confidence threshold.
+2. Monitor passive hit/miss, expiry, cookie-miss, and map-update-error counters.
+3. Validate worker-unregister purging and generation rejection during reloads.
+4. Tune the cleanup interval only after measuring table size and scan cost.
+5. Add ingress-only learning only behind a separate feature flag.
+6. Keep low-confidence ingress routing disabled until rate limits and pressure
+   controls are in place.
 
 ## Product Positioning
 

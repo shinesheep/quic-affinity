@@ -96,6 +96,26 @@ If the leased control connection closes unexpectedly, `qaffd` treats the worker 
 
 The current MVP supports one listener per `qaffd` process.
 
+### Optional Passive Egress Learning
+
+Passive affinity is opt-in. Add both arguments:
+
+```sh
+qaffd --passive-affinity --egress-cgroup /sys/fs/cgroup ...
+```
+
+`--egress-cgroup` must name a cgroup v2 directory containing the worker
+processes whose UDP sends should be observed. qaffd treats an explicit attach
+request as required configuration and fails startup if the directory cannot be
+opened or the BPF link cannot be attached.
+
+The black-box learner sees only server SCIDs carried in visible QUIC long
+headers. It cannot parse encrypted short-header frames such as
+`NEW_CONNECTION_ID`. Learned entries use a longer egress TTL and are refreshed
+when another visible long-header packet carries the same SCID. qaffd scans the
+passive map every 30 seconds by default; use
+`--passive-scan-interval-ms` to tune that control-plane cost.
+
 For restart recovery, use both:
 
 ```sh
@@ -199,10 +219,19 @@ The dataplane behavior is:
 1. Confirm the packet is UDP.
 2. Skip the UDP header.
 3. Parse the QUIC DCID.
-4. Lookup the DCID in the CID map.
-5. If found, select the registered worker socket.
-6. If the worker socket is missing, record `worker_missing` and select the fallback worker.
-7. If not found or parsing fails, select the fallback worker.
+4. Prefer an exact CID registration.
+5. On an exact miss, validate an enabled routable CID profile.
+6. On a profile miss, consult the passive CID table when passive mode is
+   enabled.
+7. Reject passive entries below the configured confidence, past their monotonic
+   expiry, or tied to an old worker generation.
+8. If no route is selected, use the fallback worker.
+
+The resulting priority is:
+
+```text
+exact CID registration > routable CID profile > passive CID > fallback
+```
 
 Fallback worker:
 
@@ -226,6 +255,9 @@ Loading and attaching eBPF usually requires privileges such as:
 cap_bpf,cap_net_admin,cap_perfmon,cap_sys_resource
 ```
 
+The cgroup egress learner also requires cgroup v2 and permission to attach a
+`BPF_PROG_TYPE_CGROUP_SKB` program to the configured cgroup.
+
 Development tests can use file capabilities on the test executable. Production deployments should prefer a small privileged control-plane process and keep business workers unprivileged where possible.
 
 ## Error Semantics
@@ -242,6 +274,10 @@ The application should read dataplane counters through `qaff_read_stats()` and a
 - `fallback`
 - `worker_missing`
 - `zero_length_cid`
+- `passive_reject_expired`
+- `passive_egress_parse_miss`
+- `passive_egress_socket_cookie_miss`
+- `passive_egress_map_update_error`
 
 ## Minimal API Surface
 

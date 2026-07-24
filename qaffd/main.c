@@ -1089,10 +1089,14 @@ static int read_passive_table_info(const struct qaffd_state *state,
   struct qaff_cid_key key;
   struct qaff_cid_key next_key;
   struct qaff_cid_key *previous = NULL;
-  while (bpf_map_get_next_key(map_fd, previous, &next_key) == 0) {
+  while (out->entry_count < out->entry_capacity &&
+         bpf_map_get_next_key(map_fd, previous, &next_key) == 0) {
     out->entry_count++;
     key = next_key;
     previous = &key;
+  }
+  if (out->entry_count == out->entry_capacity) {
+    return 0;
   }
   return errno == ENOENT ? 0 : -1;
 }
@@ -1142,12 +1146,19 @@ static int cleanup_passive_cids(struct qaffd_state *state,
     return -1;
   }
 
+  struct bpf_map_info map_info;
+  memset(&map_info, 0, sizeof(map_info));
+  uint32_t map_info_len = sizeof(map_info);
+  if (bpf_obj_get_info_by_fd(map_fd, &map_info, &map_info_len) != 0) {
+    return -1;
+  }
+
   struct qaff_cid_key current;
   if (bpf_map_get_next_key(map_fd, NULL, &current) != 0) {
     return errno == ENOENT ? 0 : -1;
   }
 
-  for (;;) {
+  for (uint32_t inspected = 0; inspected < map_info.max_entries; inspected++) {
     struct qaff_cid_key next;
     int has_next = bpf_map_get_next_key(map_fd, &current, &next) == 0;
     if (!has_next && errno != ENOENT) {
@@ -1668,12 +1679,16 @@ static int validate_passive_request(const struct qaffd_state *state,
     errno = EIO;
     return -1;
   }
-  if (value->expires_at_ns == 0) {
-    value->expires_at_ns =
-        monotonic_now_ns + passive_default_ttl_ns(value);
-  } else if (value->expires_at_ns <= monotonic_now_ns) {
+  uint64_t default_expiry =
+      monotonic_now_ns + passive_default_ttl_ns(value);
+  if (value->expires_at_ns != 0 &&
+      value->expires_at_ns <= monotonic_now_ns) {
     errno = EINVAL;
     return -1;
+  }
+  if (value->expires_at_ns == 0 ||
+      value->expires_at_ns > default_expiry) {
+    value->expires_at_ns = default_expiry;
   }
   return 0;
 }

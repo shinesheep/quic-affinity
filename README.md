@@ -73,6 +73,26 @@ integrity check, not a cryptographic MAC.
 
 The exact profile formats are documented in [docs/cid-profile.md](docs/cid-profile.md).
 
+### Passive Affinity
+
+Passive affinity is an opt-in black-box mode for applications that can register
+worker sockets but cannot provide CID lifecycle hooks. With
+`--passive-affinity --egress-cgroup PATH`, a cgroup v2 egress program observes
+server QUIC long headers, maps the sending socket cookie to a registered
+worker, and learns the visible server SCID as a high-confidence passive route.
+
+The egress learner cannot read encrypted `NEW_CONNECTION_ID` frames in QUIC
+short-header packets. Explicit CID registration or a routable CID profile
+therefore remains the stronger production contract. Routing priority is:
+
+```text
+exact CID registration > routable CID profile > passive CID > fallback
+```
+
+Passive entries use bounded LRU storage, monotonic TTLs, generation checks,
+periodic cleanup, and immediate worker-unregister purging. Low-confidence
+routing remains disabled by the default minimum confidence.
+
 ## First Packet Behavior
 
 The first client Initial normally uses a client-generated DCID. The server has
@@ -119,6 +139,10 @@ ctest --test-dir build --output-on-failure
 Some tests load and attach eBPF programs. They need the kernel capabilities
 required for BPF and may be skipped on hosts without writable bpffs or suitable
 privileges.
+
+Passive egress learning additionally requires cgroup v2. Supplying
+`--egress-cgroup` is an explicit request: `qaffd` fails startup if the path
+cannot be opened or the cgroup egress program cannot be attached.
 
 If passwordless `sudo -n setcap` is available, the test wrappers can restore
 capabilities after rebuilds:
@@ -170,6 +194,17 @@ build/qaffctl stats /tmp/qaffd.sock
 build/qaffctl cids /tmp/qaffd.sock --count
 ```
 
+Enable passive egress learning for workers in the root cgroup:
+
+```sh
+build/qaffd \
+  --socket /tmp/qaffd.sock \
+  --bpf build/qaff_reuseport.bpf.o \
+  --short-cid-len 8 \
+  --passive-affinity \
+  --egress-cgroup /sys/fs/cgroup
+```
+
 New integrations should prefer leased worker registration. If the control
 connection closes unexpectedly, `qaffd` unregisters the worker, closes its
 duplicated socket fd, and retires CIDs owned by that worker.
@@ -218,6 +253,11 @@ Current hardening:
 - Pin roots must be directories and must not be group/other writable.
 - Audit logs record worker/CID lifecycle events and denied mutations without
   printing CID bytes or profile keys.
+- Passive affinity is disabled unless explicitly requested.
+- Passive routing defaults to high-confidence entries; ingress-only low
+  confidence routing requires an explicit policy change.
+- Passive entries are bounded by an LRU map, expire by monotonic TTL, and are
+  purged when their worker is unregistered.
 
 ## Restart Recovery
 

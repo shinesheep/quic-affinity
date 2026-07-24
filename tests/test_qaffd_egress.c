@@ -268,11 +268,17 @@ int main(int argc, char **argv) {
     return 1;
   }
   if (stats.values[QAFF_STAT_PASSIVE_EGRESS_LEARN] < 1 ||
-      stats.values[QAFF_STAT_PASSIVE_HIT] < 1) {
+      stats.values[QAFF_STAT_PASSIVE_HIT] < 1 ||
+      stats.values[QAFF_STAT_PASSIVE_EGRESS_SOCKET_COOKIE_HIT] < 1 ||
+      stats.values[QAFF_STAT_PASSIVE_EGRESS_MAP_UPDATE_ERROR] != 0) {
     fprintf(stderr,
-            "expected passive egress learn and passive hit, got learn=%llu hit=%llu\n",
+            "unexpected egress stats learn=%llu hit=%llu cookie_hit=%llu update_error=%llu\n",
             (unsigned long long)stats.values[QAFF_STAT_PASSIVE_EGRESS_LEARN],
-            (unsigned long long)stats.values[QAFF_STAT_PASSIVE_HIT]);
+            (unsigned long long)stats.values[QAFF_STAT_PASSIVE_HIT],
+            (unsigned long long)
+                stats.values[QAFF_STAT_PASSIVE_EGRESS_SOCKET_COOKIE_HIT],
+            (unsigned long long)
+                stats.values[QAFF_STAT_PASSIVE_EGRESS_MAP_UPDATE_ERROR]);
     return 1;
   }
 

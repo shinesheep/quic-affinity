@@ -118,6 +118,14 @@ grep -q '^cid_map_hit=0$' /tmp/qaffctl-control-$$.out
 grep -q '^cid_profile_hit=0$' /tmp/qaffctl-control-$$.out
 grep -q '^cid_profile_reject=0$' /tmp/qaffctl-control-$$.out
 grep -q '^fallback=0$' /tmp/qaffctl-control-$$.out
+grep -q '^passive_reject_expired=0$' /tmp/qaffctl-control-$$.out
+grep -q '^passive_egress_parse_miss=0$' /tmp/qaffctl-control-$$.out
+grep -q '^passive_egress_not_udp=0$' /tmp/qaffctl-control-$$.out
+grep -q '^passive_egress_zero_length_scid=0$' /tmp/qaffctl-control-$$.out
+grep -q '^passive_egress_too_long_scid=0$' /tmp/qaffctl-control-$$.out
+grep -q '^passive_egress_socket_cookie_hit=0$' /tmp/qaffctl-control-$$.out
+grep -q '^passive_egress_socket_cookie_miss=0$' /tmp/qaffctl-control-$$.out
+grep -q '^passive_egress_map_update_error=0$' /tmp/qaffctl-control-$$.out
 
 "$qaffctl_bin" stop "$sock"
 wait "$daemon_pid"

@@ -832,6 +832,22 @@ const char *qaff_stat_name(uint32_t index) {
     return "passive_egress_learn";
   case QAFF_STAT_PASSIVE_EGRESS_NO_WORKER:
     return "passive_egress_no_worker";
+  case QAFF_STAT_PASSIVE_REJECT_EXPIRED:
+    return "passive_reject_expired";
+  case QAFF_STAT_PASSIVE_EGRESS_PARSE_MISS:
+    return "passive_egress_parse_miss";
+  case QAFF_STAT_PASSIVE_EGRESS_NOT_UDP:
+    return "passive_egress_not_udp";
+  case QAFF_STAT_PASSIVE_EGRESS_ZERO_LENGTH_SCID:
+    return "passive_egress_zero_length_scid";
+  case QAFF_STAT_PASSIVE_EGRESS_TOO_LONG_SCID:
+    return "passive_egress_too_long_scid";
+  case QAFF_STAT_PASSIVE_EGRESS_SOCKET_COOKIE_HIT:
+    return "passive_egress_socket_cookie_hit";
+  case QAFF_STAT_PASSIVE_EGRESS_SOCKET_COOKIE_MISS:
+    return "passive_egress_socket_cookie_miss";
+  case QAFF_STAT_PASSIVE_EGRESS_MAP_UPDATE_ERROR:
+    return "passive_egress_map_update_error";
   default:
     return "unknown";
   }

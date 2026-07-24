@@ -6,6 +6,9 @@ cgroup egress learner have landed.
 
 ## 1. Productionize Egress Learner Boundaries
 
+Status: implemented in README, the integration contract, detailed passive-mode
+documentation, and egress-specific counters.
+
 The current egress learner intentionally learns only visible QUIC long-header
 Source Connection IDs. That is the right first scope, but the product boundary
 needs to be explicit everywhere operators read about the feature.
@@ -122,6 +125,9 @@ rebinding or migration behavior without explicit CID registration.
 
 ## 6. Complete Deployment and Packaging Support
 
+Status: implemented in the systemd environment template, service unit,
+packaging smoke, README, and integration contract.
+
 The systemd templates and packaging smoke should know about passive affinity
 and optional egress attach.
 
@@ -131,7 +137,7 @@ Tasks:
 
 ```text
 QAFF_EGRESS_CGROUP=/sys/fs/cgroup
-QAFF_EXTRA_ARGS=--passive-affinity --egress-cgroup ${QAFF_EGRESS_CGROUP}
+QAFF_EXTRA_ARGS=--passive-affinity --egress-cgroup /sys/fs/cgroup
 ```
 
 - Update packaging smoke expectations.
@@ -141,6 +147,9 @@ QAFF_EXTRA_ARGS=--passive-affinity --egress-cgroup ${QAFF_EGRESS_CGROUP}
   but attach fails.
 
 ## 7. Define Passive Affinity Safety Policy
+
+Status: conservative baseline implemented and documented. Per-source learning
+rate limits remain a future hardening item if ingress-only learning is added.
 
 Passive affinity must remain opt-in and conservative by default.
 
