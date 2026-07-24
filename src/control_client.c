@@ -136,10 +136,19 @@ int qaff_control_register_worker(int control_fd,
 int qaff_control_register_worker_lease(int control_fd,
                                        uint32_t worker_id,
                                        int socket_fd) {
+  return qaff_control_register_worker_lease_for_pid(
+      control_fd, worker_id, socket_fd, 0);
+}
+
+int qaff_control_register_worker_lease_for_pid(int control_fd,
+                                               uint32_t worker_id,
+                                               int socket_fd,
+                                               uint32_t target_pid) {
   struct qaff_control_msg msg;
   struct qaff_control_msg reply;
   qaff_control_msg_init(&msg, QAFF_CONTROL_REGISTER_WORKER_LEASE);
   msg.worker_id = worker_id;
+  msg.target_pid = target_pid;
   return qaff_round_trip(control_fd, &msg, socket_fd, &reply);
 }
 

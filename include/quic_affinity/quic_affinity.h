@@ -54,9 +54,11 @@ struct qaff_options {
   uint8_t passive_affinity_enabled;
   /** Minimum passive confidence accepted by the dataplane. */
   uint8_t passive_min_confidence;
+  /** Fallback policy: QAFF_FALLBACK_MODE_FIXED or _KERNEL. */
+  uint8_t fallback_mode;
   /** Listener-local key used by enabled routable CID profiles. */
   uint8_t cid_profile_v1_key[QAFF_CID_PROFILE_KEY_LEN];
-  /** Worker ID used when parsing or CID lookup cannot select an owner. */
+  /** Worker ID used by QAFF_FALLBACK_MODE_FIXED. */
   uint32_t fallback_worker_id;
 };
 

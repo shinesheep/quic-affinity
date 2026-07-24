@@ -15,7 +15,7 @@ extern "C" {
 #define QAFF_CONTROL_MAGIC 0x51414646u
 
 /** Current qaffd control protocol version. */
-#define QAFF_CONTROL_VERSION 2u
+#define QAFF_CONTROL_VERSION 3u
 
 /** Maximum workers returned by one control-plane list request. */
 #define QAFF_CONTROL_MAX_WORKERS 64u
@@ -68,9 +68,12 @@ struct qaff_control_config {
   uint8_t passive_min_confidence;
   /** Non-zero when the cgroup egress learner has been attached. */
   uint8_t egress_attached;
+  /** Fallback policy: QAFF_FALLBACK_MODE_FIXED or _KERNEL. */
+  uint8_t fallback_mode;
+  uint8_t reserved[3];
   /** Number of registered workers. */
   uint32_t worker_count;
-  /** Worker used for parse misses, unknown CIDs, and client-generated Initials. */
+  /** Worker used for fallback when fallback_mode is FIXED. */
   uint32_t fallback_worker_id;
   /** Number of exact CID entries in qaffd's ownership index. */
   uint64_t cid_map_count;
@@ -110,7 +113,8 @@ struct qaff_control_worker_info {
   uint32_t uid;
   /** Registering process GID when credentials were available. */
   uint32_t gid;
-  uint32_t reserved;
+  /** Real application PID reported by a supervising agent, or zero. */
+  uint32_t target_pid;
   /** Approximate age of this registration. */
   uint64_t registered_ms_ago;
   /** Approximate time since the last heartbeat or registration. */
@@ -130,6 +134,8 @@ struct qaff_control_msg {
   uint16_t op;
   int32_t status;
   uint32_t worker_id;
+  /** Optional real worker PID when a supervisor owns the control lease. */
+  uint32_t target_pid;
   uint32_t cid_len;
   uint8_t cid[QAFF_MAX_CID_LEN];
   struct qaff_passive_cid_value passive_value;
@@ -168,6 +174,17 @@ int qaff_control_register_worker(int control_fd,
 int qaff_control_register_worker_lease(int control_fd,
                                        uint32_t worker_id,
                                        int socket_fd);
+
+/**
+ * Register a leased worker on behalf of a supervised target PID.
+ *
+ * target_pid is diagnostic metadata; the registering process remains
+ * responsible for monitoring that target and holding the control lease.
+ */
+int qaff_control_register_worker_lease_for_pid(int control_fd,
+                                               uint32_t worker_id,
+                                               int socket_fd,
+                                               uint32_t target_pid);
 
 /** Refresh liveness for a leased worker when qaffd heartbeat timeout is used. */
 int qaff_control_worker_heartbeat(int control_fd, uint32_t worker_id);

@@ -38,6 +38,7 @@ struct qaff_context {
   uint8_t cid_profile_v2_config_id;
   uint8_t passive_affinity_enabled;
   uint8_t passive_min_confidence;
+  uint8_t fallback_mode;
   uint8_t cid_profile_v1_key[QAFF_CID_PROFILE_KEY_LEN];
   uint32_t fallback_worker_id;
 };
@@ -60,6 +61,7 @@ void qaff_options_init(struct qaff_options *options) {
   options->cid_profile_v2_config_id = 0;
   options->passive_affinity_enabled = 0;
   options->passive_min_confidence = QAFF_PASSIVE_CONFIDENCE_HIGH;
+  options->fallback_mode = QAFF_FALLBACK_MODE_FIXED;
   memset(options->cid_profile_v1_key, 0, sizeof(options->cid_profile_v1_key));
   options->fallback_worker_id = 0;
 }
@@ -267,6 +269,7 @@ static int qaff_write_config(struct qaff_context *ctx) {
   value.cid_profile_v2_config_id = ctx->cid_profile_v2_config_id;
   value.passive_affinity_enabled = ctx->passive_affinity_enabled;
   value.passive_min_confidence = ctx->passive_min_confidence;
+  value.fallback_mode = ctx->fallback_mode;
   memcpy(value.cid_profile_v1_key,
          ctx->cid_profile_v1_key,
          sizeof(value.cid_profile_v1_key));
@@ -348,6 +351,12 @@ int qaff_open(const struct qaff_options *options, struct qaff_context **out) {
   ctx->cid_profile_v2_config_id = options->cid_profile_v2_config_id;
   ctx->passive_affinity_enabled = options->passive_affinity_enabled;
   ctx->passive_min_confidence = options->passive_min_confidence;
+  ctx->fallback_mode = options->fallback_mode;
+  if (ctx->fallback_mode != QAFF_FALLBACK_MODE_FIXED &&
+      ctx->fallback_mode != QAFF_FALLBACK_MODE_KERNEL) {
+    errno = EINVAL;
+    goto fail;
+  }
   if (ctx->passive_min_confidence == 0) {
     ctx->passive_min_confidence = QAFF_PASSIVE_CONFIDENCE_HIGH;
   }

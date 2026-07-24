@@ -48,6 +48,12 @@ add_executable(qaffd
 target_link_libraries(qaffd PRIVATE qaffinity)
 target_compile_options(qaffd PRIVATE -Wall -Wextra -Wpedantic)
 
+add_executable(qaff-agent
+  tools/qaff-agent/main.c)
+
+target_link_libraries(qaff-agent PRIVATE qaffinity)
+target_compile_options(qaff-agent PRIVATE -Wall -Wextra -Wpedantic)
+
 install(TARGETS qaffinity
   ARCHIVE DESTINATION ${CMAKE_INSTALL_LIBDIR})
 
@@ -57,10 +63,16 @@ install(TARGETS qaffctl
 install(TARGETS qaffd
   RUNTIME DESTINATION ${CMAKE_INSTALL_SBINDIR})
 
+install(TARGETS qaff-agent
+  RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
+
 install(DIRECTORY include/quic_affinity
   DESTINATION ${CMAKE_INSTALL_INCLUDEDIR})
 
 install(FILES packaging/systemd/qaffd@.service
+  DESTINATION lib/systemd/system)
+
+install(FILES packaging/systemd/qaff-agent@.service
   DESTINATION lib/systemd/system)
 
 install(FILES packaging/systemd/quic-affinity.tmpfiles
@@ -72,6 +84,9 @@ install(FILES packaging/systemd/quic-affinity.sysusers
   DESTINATION lib/sysusers.d)
 
 install(FILES packaging/systemd/qaffd.env.example
+  DESTINATION ${CMAKE_INSTALL_DOCDIR}/examples)
+
+install(FILES packaging/systemd/qaff-agent.env.example
   DESTINATION ${CMAKE_INSTALL_DOCDIR}/examples)
 
 install(FILES README.md
@@ -180,7 +195,9 @@ add_test(NAME qaffd_control
     $<TARGET_FILE:qaffd>
     $<TARGET_FILE:test_qaffd_control>
     ${CMAKE_CURRENT_BINARY_DIR}/qaff_reuseport.bpf.o)
-set_tests_properties(qaffd_control PROPERTIES SKIP_RETURN_CODE 77)
+set_tests_properties(qaffd_control PROPERTIES
+  SKIP_RETURN_CODE 77
+  TIMEOUT 20)
 
 add_executable(test_qaffd_restart
   tests/test_qaffd_restart.c)
@@ -203,6 +220,24 @@ add_executable(test_qaffd_egress
 
 target_link_libraries(test_qaffd_egress PRIVATE qaffinity)
 target_compile_options(test_qaffd_egress PRIVATE -Wall -Wextra -Wpedantic)
+
+add_executable(test_qaff_agent_target
+  tests/test_qaff_agent_target.c)
+
+target_compile_options(test_qaff_agent_target PRIVATE
+  -Wall -Wextra -Wpedantic)
+
+add_test(NAME qaff_agent
+  COMMAND /bin/sh
+    ${CMAKE_CURRENT_SOURCE_DIR}/tests/run_qaff_agent.sh
+    $<TARGET_FILE:qaffd>
+    $<TARGET_FILE:qaffctl>
+    $<TARGET_FILE:qaff-agent>
+    $<TARGET_FILE:test_qaff_agent_target>
+    ${CMAKE_CURRENT_BINARY_DIR}/qaff_reuseport.bpf.o)
+set_tests_properties(qaff_agent PROPERTIES
+  SKIP_RETURN_CODE 77
+  TIMEOUT 20)
 
 add_test(NAME qaffctl_control
   COMMAND /bin/sh

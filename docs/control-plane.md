@@ -31,7 +31,22 @@ The repository currently includes a minimal `qaffd` with these operations:
 
 Worker registration uses Unix-domain `SCM_RIGHTS` fd passing. `qaffd` attaches the BPF program to the reuseport group when the first worker socket is registered. `REGISTER_WORKER_LEASE` keeps the worker's control connection open as a liveness lease; if that connection is closed by worker crash or exit, `qaffd` automatically unregisters the worker. For leased workers, `qaffd` also opens a pidfd when supported and unregisters the worker if the registering process exits. `WORKER_HEARTBEAT` refreshes the lease on that same control connection, and `--worker-heartbeat-timeout-ms` can remove stuck leased workers that stop heartbeating. `qaffd` records Unix peer credentials for worker registration and can restrict registration with `--allow-worker-uid` and `--allow-worker-gid`. Existing worker IDs, worker CID registration, CID retirement, and worker unregistration can be mutated only by the original worker process or by the configured management identity. Worker unregistration retires CIDs owned by that worker, removes the worker ID from the reuseport sockarray, and closes qaffd's duplicated socket fd.
 
-The listener config includes `short_cid_len`, `fallback_worker_id`, and optional routable CID profile settings. Fallback is used for unregistered opaque CIDs, invalid profile CIDs, parse failures, and the first client Initial before the server has issued a routable CID. Profile v2 adds a config ID, worker generation, and a 32-bit keyed tag.
+`qaff-agent` supplies the same leased registration for applications that cannot
+call the control API. In `run` mode it launches the application, discovers the
+matching bound UDP socket through pidfd, and ties the lease to the child
+lifetime. In `watch` mode it monitors an existing PID; this normally needs
+`CAP_SYS_PTRACE`. qaffd sees the agent as the registering peer, while the agent
+is responsible for tracking the real worker PID. The agent retains its
+duplicated worker fd and automatically restores the leased registration after
+a qaffd disconnect or restart.
+
+The listener config includes `short_cid_len`, `fallback_mode`,
+`fallback_worker_id`, and optional routable CID profile settings. Fallback is
+used for unregistered opaque CIDs, invalid profile CIDs, parse failures, and the
+first client Initial before the server has issued a routable CID. `fixed`
+selects `fallback_worker_id`; `kernel` leaves selection to Linux's native
+reuseport hash. Profile v2 adds a config ID, worker generation, and a 32-bit
+keyed tag.
 
 In daemon-controlled mode, `REGISTER_CID` is accepted only for currently registered worker IDs. `qaffd` keeps a CID owner index so `UNREGISTER_WORKER` can bulk-retire CIDs owned by the removed worker. The QUIC stack should still drain and retire CIDs first when possible, so delayed packets are less likely to fall back. Profile-routed CIDs do not consume CID map entries. For profile v2, qaffd increments a per-worker generation on replacement and BPF rejects stale CIDs whose generation no longer matches.
 
@@ -63,7 +78,8 @@ qaffd
 
 worker process
   -> creates/binds UDP socket
-  -> registers worker socket with qaffd or libqaffinity
+  -> registers worker socket with qaffd or libqaffinity, or is discovered by
+     qaff-agent without source changes
   -> registers server-issued CIDs
   -> retires CIDs
   -> unregisters worker socket when drained
@@ -158,6 +174,10 @@ On daemon restart:
 3. It rebuilds CID ownership by iterating the pinned CID map.
 4. Existing socket-group BPF attachment can continue using the pinned maps while worker sockets remain open.
 5. New control operations, including `UNREGISTER_WORKER`, operate on the recovered map and owner state.
+6. qaff-agent notices the control connection closing and retries its leased
+   registration. When the pinned socket-cookie map proves it is the same
+   socket, qaffd preserves the worker generation so passive entries remain
+   valid.
 
 The state snapshot is not stored in bpffs. Use a normal persistent location such as `/var/lib/quic-affinity/<listener-id>.state`.
 If `--state-path` is configured, `--pin-root` must also be configured.

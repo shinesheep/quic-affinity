@@ -118,14 +118,20 @@ Acceptable options include:
 
 - qaffd receives worker socket fds through the existing control API, but the
   application does not register CIDs.
-- A launcher or supervisor creates the reuseport sockets, registers them with
-  qaffd, and then starts the customer program with inherited sockets.
-- A deployment-specific agent discovers sockets and registers only those that
-  safely match the listener. This is the least preferred option and requires
-  strict validation.
+- `qaff-agent run` launches an existing application, discovers its socket, and
+  owns a leased registration for the child lifetime.
+- `qaff-agent watch` discovers a socket in an existing PID. This uses strict
+  protocol, `SO_REUSEPORT`, bound-address, port, and unique socket-cookie
+  validation, but usually requires `CAP_SYS_PTRACE`.
 
 Without a reliable socket-to-worker mapping, passive mode cannot safely select
 from the reuseport sockarray.
+
+Traffic readiness must be gated on all expected agents being registered. If a
+worker sends its first long-header response before qaff-agent installs the
+socket-cookie mapping, the egress learner cannot retroactively recover that
+SCID. Likewise, attaching `watch` to an already-busy process cannot reconstruct
+CIDs that were visible only in earlier packets.
 
 ## Fallback Selection
 
@@ -138,19 +144,16 @@ Fallback selection is used for:
 - expired or rejected passive entries
 - worker-missing conditions
 
-Possible fallback policies:
+Implemented fallback policies:
 
 ```text
-fixed worker        route all unknown packets to one worker
-kernel default      let Linux reuseport choose normally
-tuple hash          hash client/server 4-tuple to a worker
-CPU/RSS hint        choose a worker associated with the receiving CPU
+fixed worker        --fallback-mode fixed; route to --fallback-worker
+kernel default      --fallback-mode kernel; use Linux reuseport selection
 ```
 
-For black-box deployments, `tuple hash` or `kernel default` are usually safer
-than `fixed worker`. A fixed worker is simple but can overload one worker and
-can place new connections far from where the application would naturally handle
-them.
+For black-box deployments, `kernel default` is usually safer than `fixed
+worker`. A fixed worker is simple but can overload one worker and can place new
+connections far from where the application would naturally handle them.
 
 ## Ingress-Only Mode
 
@@ -194,12 +197,15 @@ they are promoted by repeated successful observations.
 ## Expiration and Cleanup
 
 Because the application does not provide CID retirement events, passive mode
-must expire entries.
+must expire entries. Valid ingress hits use a sliding lifetime: the dataplane
+refreshes an entry only after it enters the latter half of its TTL. This keeps
+active long-lived connections routable without writing the map on every
+packet.
 
 Recommended cleanup:
 
 - Use an LRU hash map or userspace-managed hash table with bounded size.
-- Track `last_seen` and remove stale entries.
+- Refresh active entries and remove stale entries.
 - Use shorter TTL for low-confidence entries.
 - Use longer TTL for egress-learned high-confidence entries.
 - Drop all entries for a worker when that worker socket is unregistered.

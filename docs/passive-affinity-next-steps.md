@@ -164,6 +164,21 @@ Tasks:
 - Document that ingress-only learning is weaker than egress learning and should
   be treated as aggressive mode.
 
+## 8. Add Zero-Source-Change Worker Onboarding
+
+Status: implemented with `qaff-agent run` and `qaff-agent watch`.
+
+The agent discovers one exact UDP `SO_REUSEPORT` socket through pidfd, rejects
+ambiguous matches, registers a qaffd lease, reports the real target PID,
+monitors target lifetime, and restores registration after qaffd restarts.
+Kernel-default fallback and sliding passive TTLs are also implemented for
+black-box deployments.
+
+Remaining protocol boundary: an external observer cannot decrypt
+`NEW_CONNECTION_ID` frames. A connection that first uses an unseen server CID
+at the same moment it migrates to a new path still needs explicit CID hooks or
+a routable CID profile for a hard guarantee.
+
 ## Suggested Order
 
 1. Worker restart and stale passive entry test.

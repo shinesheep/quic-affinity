@@ -52,6 +52,11 @@
 #define QAFF_PASSIVE_TTL_HIGH_NS (15ULL * 60ULL * 1000000000ULL)
 #define QAFF_PASSIVE_TTL_EGRESS_NS (60ULL * 60ULL * 1000000000ULL)
 
+/** Always direct fallback traffic to fallback_worker_id. */
+#define QAFF_FALLBACK_MODE_FIXED 0u
+/** Leave fallback traffic to the kernel's native SO_REUSEPORT hash. */
+#define QAFF_FALLBACK_MODE_KERNEL 1u
+
 /**
  * Fixed-size BPF map key for a QUIC connection ID.
  *
@@ -109,7 +114,8 @@ struct qaff_config_value {
   __u8 cid_profile_v2_config_id;
   __u8 passive_affinity_enabled;
   __u8 passive_min_confidence;
-  __u16 reserved;
+  __u8 fallback_mode;
+  __u8 reserved;
   __u32 fallback_worker_id;
   __u8 cid_profile_v1_key[QAFF_CID_PROFILE_KEY_LEN];
 #else
@@ -119,7 +125,8 @@ struct qaff_config_value {
   uint8_t cid_profile_v2_config_id;
   uint8_t passive_affinity_enabled;
   uint8_t passive_min_confidence;
-  uint16_t reserved;
+  uint8_t fallback_mode;
+  uint8_t reserved;
   uint32_t fallback_worker_id;
   uint8_t cid_profile_v1_key[QAFF_CID_PROFILE_KEY_LEN];
 #endif
@@ -131,7 +138,7 @@ enum qaff_stat_index {
   QAFF_STAT_PACKETS = 0,
   /** Packets routed through an exact DCID map hit. */
   QAFF_STAT_CID_MAP_HIT = 1,
-  /** Packets sent to the configured fallback worker. */
+  /** Packets handled by either fixed-worker or kernel-default fallback. */
   QAFF_STAT_FALLBACK = 2,
   /** Packets that could not be parsed as a supported QUIC UDP packet. */
   QAFF_STAT_PARSE_ERROR = 3,

@@ -1,3 +1,5 @@
+#define _POSIX_C_SOURCE 200809L
+
 #include "quic_affinity/quic_affinity.h"
 #include "quic_affinity/cid_profile.h"
 
@@ -11,7 +13,10 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/socket.h>
+#include <time.h>
 #include <unistd.h>
+
+#include <bpf/bpf.h>
 
 #ifndef SO_REUSEPORT
 #define SO_REUSEPORT 15
@@ -43,6 +48,15 @@ static struct qaff_cid_profile_key profile_key(void) {
   return key;
 }
 
+static uint64_t monotonic_ns(void) {
+  struct timespec ts;
+  if (clock_gettime(CLOCK_MONOTONIC, &ts) != 0) {
+    return 0;
+  }
+  return (uint64_t)ts.tv_sec * 1000000000u +
+         (uint64_t)ts.tv_nsec;
+}
+
 static int set_nonblocking(int fd) {
   int flags = fcntl(fd, F_GETFL, 0);
   if (flags < 0) {
@@ -55,6 +69,8 @@ struct test_case {
   int family;
   const char *name;
   uint32_t fallback_worker;
+  uint8_t fallback_mode;
+  uint32_t kernel_probe_packets;
 };
 
 struct sender_socket {
@@ -348,19 +364,22 @@ static int expect_case_stats(struct qaff_context *ctx,
                              const struct test_case *test) {
   enum qaff_stat_index family_stat =
       test->family == AF_INET ? QAFF_STAT_IPV4 : QAFF_STAT_IPV6;
+  uint64_t packets = 6u + test->kernel_probe_packets;
+  uint64_t fallback = 2u + test->kernel_probe_packets;
+  uint64_t passive_miss = 1u + test->kernel_probe_packets;
 
-  if (expect_stat(ctx, QAFF_STAT_PACKETS, 6) != 0 ||
+  if (expect_stat(ctx, QAFF_STAT_PACKETS, packets) != 0 ||
       expect_stat(ctx, QAFF_STAT_CID_MAP_HIT, 2) != 0 ||
-      expect_stat(ctx, QAFF_STAT_FALLBACK, 2) != 0 ||
+      expect_stat(ctx, QAFF_STAT_FALLBACK, fallback) != 0 ||
       expect_stat(ctx, QAFF_STAT_PARSE_ERROR, 0) != 0 ||
       expect_stat(ctx, QAFF_STAT_ZERO_LENGTH_CID, 0) != 0 ||
       expect_stat(ctx, QAFF_STAT_WORKER_MISSING, 0) != 0 ||
-      expect_stat(ctx, family_stat, 6) != 0 ||
+      expect_stat(ctx, family_stat, packets) != 0 ||
       expect_stat(ctx, QAFF_STAT_NOT_UDP, 0) != 0 ||
       expect_stat(ctx, QAFF_STAT_CID_PROFILE_HIT, 1) != 0 ||
       expect_stat(ctx, QAFF_STAT_CID_PROFILE_REJECT, 1) != 0 ||
       expect_stat(ctx, QAFF_STAT_PASSIVE_HIT, 1) != 0 ||
-      expect_stat(ctx, QAFF_STAT_PASSIVE_MISS, 1) != 0 ||
+      expect_stat(ctx, QAFF_STAT_PASSIVE_MISS, passive_miss) != 0 ||
       expect_stat(ctx, QAFF_STAT_PASSIVE_REJECT_CONFIDENCE, 0) != 0 ||
       expect_stat(ctx, QAFF_STAT_PASSIVE_REJECT_GENERATION, 0) != 0) {
     fprintf(stderr, "%s: unexpected dataplane stats\n", test->name);
@@ -407,6 +426,7 @@ static int run_case(const char *object_path, const struct test_case *test) {
   qaff_options_init(&options);
   options.short_cid_len = sizeof(k_dcid);
   options.fallback_worker_id = test->fallback_worker;
+  options.fallback_mode = test->fallback_mode;
   options.cid_profile_v2_enabled = 1;
   options.cid_profile_v2_config_id = 7;
   options.passive_affinity_enabled = 1;
@@ -457,6 +477,13 @@ static int run_case(const char *object_path, const struct test_case *test) {
   passive_value.worker_generation = QAFF_WORKER_GENERATION_DEFAULT;
   passive_value.confidence = QAFF_PASSIVE_CONFIDENCE_HIGH;
   passive_value.source = QAFF_PASSIVE_SOURCE_EGRESS;
+  uint64_t passive_registered_ns = monotonic_ns();
+  if (passive_registered_ns == 0) {
+    perror("clock_gettime");
+    return 1;
+  }
+  passive_value.expires_at_ns =
+      passive_registered_ns + 1000000000u;
   if (qaff_register_passive_cid(ctx,
                                 k_passive_dcid,
                                 sizeof(k_passive_dcid),
@@ -550,7 +577,9 @@ static int run_case(const char *object_path, const struct test_case *test) {
   }
 
   int tampered_fallback_worker = receive_worker(workers, WORKER_COUNT, 1000);
-  if (tampered_fallback_worker != (int)test->fallback_worker) {
+  if (tampered_fallback_worker < 0 ||
+      (test->fallback_mode == QAFF_FALLBACK_MODE_FIXED &&
+       tampered_fallback_worker != (int)test->fallback_worker)) {
     fprintf(stderr,
             "%s: expected tampered profile fallback worker %d, got %d\n",
             test->name,
@@ -580,6 +609,23 @@ static int run_case(const char *object_path, const struct test_case *test) {
     print_stats(ctx);
     return 1;
   }
+  struct qaff_cid_key passive_key;
+  struct qaff_passive_cid_value refreshed_passive;
+  if (qaff_cid_key_from_bytes(k_passive_dcid,
+                              sizeof(k_passive_dcid),
+                              &passive_key) != QAFF_PARSE_OK ||
+      bpf_map_lookup_elem(qaff_get_passive_cid_map_fd(ctx),
+                          &passive_key,
+                          &refreshed_passive) != 0) {
+    perror("lookup refreshed passive CID");
+    return 1;
+  }
+  if (refreshed_passive.expires_at_ns <
+      passive_registered_ns + QAFF_PASSIVE_TTL_EGRESS_NS) {
+    fprintf(stderr, "%s: passive CID lifetime was not refreshed\n",
+            test->name);
+    return 1;
+  }
 
   if (send_quic_like_packet(senders[0].fd,
                             test->family,
@@ -592,7 +638,9 @@ static int run_case(const char *object_path, const struct test_case *test) {
   }
 
   int fallback_worker = receive_worker(workers, WORKER_COUNT, 1000);
-  if (fallback_worker != (int)test->fallback_worker) {
+  if (fallback_worker < 0 ||
+      (test->fallback_mode == QAFF_FALLBACK_MODE_FIXED &&
+       fallback_worker != (int)test->fallback_worker)) {
     fprintf(stderr,
             "%s: expected fallback worker %d, got %d\n",
             test->name,
@@ -600,6 +648,46 @@ static int run_case(const char *object_path, const struct test_case *test) {
             fallback_worker);
     print_stats(ctx);
     return 1;
+  }
+
+  if (test->fallback_mode == QAFF_FALLBACK_MODE_KERNEL) {
+    uint32_t worker_mask =
+        (1u << (uint32_t)tampered_fallback_worker) |
+        (1u << (uint32_t)fallback_worker);
+    for (uint32_t i = 0; i < test->kernel_probe_packets; i++) {
+      struct sender_socket probe = {.fd = -1, .port = 0};
+      if (bind_sender_socket(test->family, &probe) != 0) {
+        perror("bind kernel fallback probe");
+        return 1;
+      }
+      int send_rc = send_quic_like_packet(probe.fd,
+                                          test->family,
+                                          port,
+                                          0,
+                                          k_unknown_dcid,
+                                          sizeof(k_unknown_dcid));
+      int saved_errno = errno;
+      close(probe.fd);
+      errno = saved_errno;
+      if (send_rc != 0) {
+        perror("send kernel fallback probe");
+        return 1;
+      }
+      int selected = receive_worker(workers, WORKER_COUNT, 1000);
+      if (selected < 0) {
+        fprintf(stderr, "%s: kernel fallback probe was not delivered\n",
+                test->name);
+        return 1;
+      }
+      worker_mask |= 1u << (uint32_t)selected;
+    }
+    if ((worker_mask & (worker_mask - 1u)) == 0) {
+      fprintf(stderr,
+              "%s: kernel fallback did not distribute across workers\n",
+              test->name);
+      print_stats(ctx);
+      return 1;
+    }
   }
 
   if (expect_case_stats(ctx, test) != 0) {
@@ -631,6 +719,13 @@ int main(int argc, char **argv) {
       .family = AF_INET,
       .name = "ipv4-configured-fallback",
       .fallback_worker = CONFIGURED_FALLBACK_WORKER,
+    },
+    {
+      .family = AF_INET,
+      .name = "ipv4-kernel-fallback",
+      .fallback_worker = FALLBACK_WORKER,
+      .fallback_mode = QAFF_FALLBACK_MODE_KERNEL,
+      .kernel_probe_packets = 48,
     },
   };
 

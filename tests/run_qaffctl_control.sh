@@ -30,6 +30,7 @@ printf '%s\n' 707172737475767778797a7b7c7d7e7f >"$key_file"
 chmod 600 "$key_file"
 "$qaffd_bin" --socket "$sock" --bpf "$bpf_obj" --short-cid-len 12 \
   --fallback-worker 1 \
+  --fallback-mode kernel \
   --cid-profile-v2-key-file "$key_file" \
   --cid-profile-v2-config-id 7 \
   --passive-affinity \
@@ -77,6 +78,7 @@ grep -q '^passive_min_confidence=2$' /tmp/qaffctl-control-$$.config
 grep -q '^egress_attached=0$' /tmp/qaffctl-control-$$.config
 grep -q '^attached=0$' /tmp/qaffctl-control-$$.config
 grep -q '^worker_count=0$' /tmp/qaffctl-control-$$.config
+grep -q '^fallback_mode=kernel$' /tmp/qaffctl-control-$$.config
 grep -q '^fallback_worker_id=1$' /tmp/qaffctl-control-$$.config
 grep -q '^cid_map_count=0$' /tmp/qaffctl-control-$$.config
 grep -q '^cid_owner_count=0$' /tmp/qaffctl-control-$$.config

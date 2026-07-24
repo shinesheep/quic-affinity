@@ -1,0 +1,19 @@
+[Unit]
+Description=QUIC Affinity socket agent for %i
+After=network.target
+
+[Service]
+Type=simple
+EnvironmentFile=/etc/quic-affinity/agents/%i.env
+ExecStart=/usr/bin/qaff-agent watch --socket ${QAFF_SOCKET} --pid ${QAFF_TARGET_PID} --worker-id ${QAFF_WORKER_ID} --address ${QAFF_LISTEN_ADDRESS} --port ${QAFF_LISTEN_PORT} --discovery-timeout-ms ${QAFF_DISCOVERY_TIMEOUT_MS} --heartbeat-ms ${QAFF_HEARTBEAT_MS}
+Restart=on-failure
+RestartSec=1s
+NoNewPrivileges=yes
+CapabilityBoundingSet=CAP_SYS_PTRACE
+AmbientCapabilities=CAP_SYS_PTRACE
+ProtectSystem=strict
+ProtectHome=yes
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+
+[Install]
+WantedBy=multi-user.target

@@ -65,6 +65,7 @@ struct qaffd_options {
   uint8_t cid_profile_v2_config_id;
   uint8_t passive_affinity_enabled;
   uint8_t passive_min_confidence;
+  uint8_t fallback_mode;
   uint8_t cid_profile_v1_key[QAFF_CID_PROFILE_KEY_LEN];
   uint32_t fallback_worker_id;
   uint64_t worker_heartbeat_timeout_ms;
@@ -96,6 +97,7 @@ struct qaffd_state {
   uint64_t worker_registered_at_ms[QAFFD_MAX_WORKERS];
   uint64_t worker_last_seen_ms[QAFFD_MAX_WORKERS];
   uint32_t worker_generations[QAFFD_MAX_WORKERS];
+  uint32_t worker_target_pids[QAFFD_MAX_WORKERS];
   struct qaffd_peer_cred worker_creds[QAFFD_MAX_WORKERS];
   struct qaffd_cid_entry *cid_entries;
   size_t cid_entries_len;
@@ -108,6 +110,7 @@ struct qaffd_state {
   uint8_t cid_profile_v2_config_id;
   uint8_t passive_affinity_enabled;
   uint8_t passive_min_confidence;
+  uint8_t fallback_mode;
   uint8_t cid_profile_v1_key[QAFF_CID_PROFILE_KEY_LEN];
   uint32_t fallback_worker_id;
   uint64_t worker_heartbeat_timeout_ms;
@@ -281,6 +284,17 @@ static int authorize_worker_mutation(const struct qaffd_state *state,
       !state->worker_registered[worker_id]) {
     errno = ENOENT;
     return -1;
+  }
+  /*
+   * A recovered worker has no live daemon-side fd or peer credential. In the
+   * default 0600 control-socket mode, a peer that can connect may reclaim or
+   * clean up that placeholder. Live registrations remain process-owned.
+   */
+  if (!state->allow_worker_uid_set &&
+      !state->allow_worker_gid_set &&
+      state->worker_fds[worker_id] < 0 &&
+      !state->worker_creds[worker_id].valid) {
+    return 0;
   }
   if (peer_matches_configured_admin(state, peer) ||
       peer_matches_worker(state, worker_id, peer)) {
@@ -499,6 +513,30 @@ static int register_socket_cookie(struct qaffd_state *state,
   return 0;
 }
 
+static int is_same_registered_socket(const struct qaffd_state *state,
+                                     uint32_t worker_id,
+                                     int socket_fd) {
+  if (!state->worker_registered[worker_id] ||
+      state->worker_generations[worker_id] == 0) {
+    return 0;
+  }
+
+  uint64_t cookie = 0;
+  if (read_socket_cookie(socket_fd, &cookie) != 0) {
+    return -1;
+  }
+  uint32_t mapped_worker = UINT32_MAX;
+  if (bpf_map_lookup_elem(qaff_get_socket_worker_map_fd(state->ctx),
+                          &cookie,
+                          &mapped_worker) != 0) {
+    if (errno == ENOENT) {
+      return 0;
+    }
+    return -1;
+  }
+  return mapped_worker == worker_id;
+}
+
 static void unregister_socket_cookie(struct qaffd_state *state,
                                      uint64_t cookie) {
   if (cookie == 0 || state->ctx == NULL) {
@@ -521,6 +559,7 @@ static void fill_config_reply(const struct qaffd_state *state,
   reply->config.passive_affinity_enabled = state->passive_affinity_enabled;
   reply->config.passive_min_confidence = state->passive_min_confidence;
   reply->config.egress_attached = state->egress_attached ? 1 : 0;
+  reply->config.fallback_mode = state->fallback_mode;
   reply->config.attached = state->attached ? 1 : 0;
   reply->config.worker_count = worker_count(state);
   reply->config.fallback_worker_id = state->fallback_worker_id;
@@ -575,6 +614,8 @@ static void fill_workers_reply(const struct qaffd_state *state,
         reply->worker_infos[written].uid = state->worker_creds[i].uid;
         reply->worker_infos[written].gid = state->worker_creds[i].gid;
       }
+      reply->worker_infos[written].target_pid =
+          state->worker_target_pids[i];
       if (state->worker_pidfds[i] >= 0) {
         reply->worker_infos[written].flags |= QAFF_CONTROL_WORKER_FLAG_PIDFD;
       }
@@ -594,7 +635,8 @@ static void fill_workers_reply(const struct qaffd_state *state,
 static void usage(FILE *out) {
   fprintf(out,
           "Usage: qaffd --socket PATH --bpf PATH --short-cid-len N "
-          "[--fallback-worker ID] [--pin-root PATH] [--state-path PATH] "
+          "[--fallback-worker ID] [--fallback-mode fixed|kernel] "
+          "[--pin-root PATH] [--state-path PATH] "
           "[--egress-cgroup PATH] "
           "[--cid-profile-v1-key HEX32 | --cid-profile-v1-key-file PATH] "
           "[--cid-profile-v2-key HEX32 | --cid-profile-v2-key-file PATH] "
@@ -733,6 +775,15 @@ static int parse_args(int argc, char **argv, struct qaffd_options *options) {
         return -1;
       }
       options->fallback_worker_id = (uint32_t)value;
+    } else if (strcmp(argv[i], "--fallback-mode") == 0 && i + 1 < argc) {
+      const char *mode = argv[++i];
+      if (strcmp(mode, "fixed") == 0) {
+        options->fallback_mode = QAFF_FALLBACK_MODE_FIXED;
+      } else if (strcmp(mode, "kernel") == 0) {
+        options->fallback_mode = QAFF_FALLBACK_MODE_KERNEL;
+      } else {
+        return -1;
+      }
     } else if (strcmp(argv[i], "--cid-profile-v1-key") == 0 && i + 1 < argc) {
       if (parse_fixed_hex(argv[++i],
                           options->cid_profile_v1_key,
@@ -1431,8 +1482,29 @@ static int handle_register_worker(struct qaffd_state *state,
     return -1;
   }
 
-  uint32_t generation = next_worker_generation(
-      state->worker_generations[request->worker_id]);
+  /*
+   * Attach before inserting the socket into a newly-created sockarray. After
+   * an unpinned qaffd restart, the live reuseport socket can still be held by
+   * the old program's sockarray; replacing the program releases that reference
+   * and avoids BPF_MAP_UPDATE_ELEM returning EBUSY.
+   */
+  if (!state->attached) {
+    if (qaff_attach_reuseport_bpf(state->bpf, socket_fd) != 0) {
+      return -1;
+    }
+    state->attached = 1;
+  }
+
+  int same_socket =
+      is_same_registered_socket(state, request->worker_id, socket_fd);
+  if (same_socket < 0) {
+    return -1;
+  }
+  uint32_t generation =
+      same_socket
+          ? state->worker_generations[request->worker_id]
+          : next_worker_generation(
+                state->worker_generations[request->worker_id]);
   if (qaff_register_worker_socket_generation(state->ctx,
                                              request->worker_id,
                                              socket_fd,
@@ -1451,22 +1523,14 @@ static int handle_register_worker(struct qaffd_state *state,
     return -1;
   }
 
-  if (!state->attached) {
-    if (qaff_attach_reuseport_bpf(state->bpf, socket_fd) != 0) {
-      int saved_errno = errno ? errno : EIO;
-      unregister_socket_cookie(state, socket_cookie);
-      qaff_unregister_worker_socket(state->ctx, request->worker_id);
-      errno = saved_errno;
-      return -1;
-    }
-    state->attached = 1;
-  }
-
   if (state->worker_fds[request->worker_id] >= 0) {
     close(state->worker_fds[request->worker_id]);
   }
-  unregister_socket_cookie(state,
-                           state->worker_socket_cookies[request->worker_id]);
+  if (state->worker_socket_cookies[request->worker_id] != socket_cookie) {
+    unregister_socket_cookie(
+        state,
+        state->worker_socket_cookies[request->worker_id]);
+  }
   if (state->worker_pidfds[request->worker_id] >= 0) {
     close(state->worker_pidfds[request->worker_id]);
     state->worker_pidfds[request->worker_id] = -1;
@@ -1475,6 +1539,8 @@ static int handle_register_worker(struct qaffd_state *state,
   state->worker_socket_cookies[request->worker_id] = socket_cookie;
   state->worker_registered[request->worker_id] = 1;
   state->worker_generations[request->worker_id] = generation;
+  state->worker_target_pids[request->worker_id] =
+      enable_pidfd ? request->target_pid : 0;
   uint64_t now = now_ms();
   state->worker_registered_at_ms[request->worker_id] = now;
   state->worker_last_seen_ms[request->worker_id] = now;
@@ -1497,10 +1563,13 @@ static int handle_register_worker(struct qaffd_state *state,
   }
   audit_event("worker_registered",
               peer,
-              "worker_id=%u generation=%u leased=%u",
+              "worker_id=%u generation=%u leased=%u same_socket=%u "
+              "target_pid=%u",
               request->worker_id,
               generation,
-              enable_pidfd ? 1u : 0u);
+              enable_pidfd ? 1u : 0u,
+              same_socket ? 1u : 0u,
+              state->worker_target_pids[request->worker_id]);
   return 0;
 }
 
@@ -1537,6 +1606,7 @@ static int unregister_worker_authorized(struct qaffd_state *state,
   state->worker_registered[worker_id] = 0;
   state->worker_registered_at_ms[worker_id] = 0;
   state->worker_last_seen_ms[worker_id] = 0;
+  state->worker_target_pids[worker_id] = 0;
   memset(&state->worker_creds[worker_id],
          0,
          sizeof(state->worker_creds[worker_id]));
@@ -2186,6 +2256,7 @@ int main(int argc, char **argv) {
   state.cid_profile_v2_config_id = daemon_options.cid_profile_v2_config_id;
   state.passive_affinity_enabled = daemon_options.passive_affinity_enabled;
   state.passive_min_confidence = daemon_options.passive_min_confidence;
+  state.fallback_mode = daemon_options.fallback_mode;
   memcpy(state.cid_profile_v1_key,
          daemon_options.cid_profile_v1_key,
          sizeof(state.cid_profile_v1_key));
@@ -2216,6 +2287,7 @@ int main(int argc, char **argv) {
   options.cid_profile_v2_config_id = daemon_options.cid_profile_v2_config_id;
   options.passive_affinity_enabled = daemon_options.passive_affinity_enabled;
   options.passive_min_confidence = daemon_options.passive_min_confidence;
+  options.fallback_mode = daemon_options.fallback_mode;
   memcpy(options.cid_profile_v1_key,
          daemon_options.cid_profile_v1_key,
          sizeof(options.cid_profile_v1_key));

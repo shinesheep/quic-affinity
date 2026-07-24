@@ -83,7 +83,9 @@ The BPF program applies to the reuseport group after attachment.
 
 When using `qaffd`, the privileged daemon owns BPF setup:
 
-1. Start `qaffd` with a Unix socket path, BPF object path, `short_cid_len`, optional `fallback_worker_id`, optional profile key/config arguments, optional socket permission arguments, and optional restart-recovery paths.
+1. Start `qaffd` with a Unix socket path, BPF object path, `short_cid_len`,
+   optional fallback mode/worker, optional profile key/config arguments,
+   optional socket permission arguments, and optional restart-recovery paths.
 2. Each worker creates and binds its UDP `SO_REUSEPORT` socket.
 3. Each worker passes its socket fd to `qaffd` with `REGISTER_WORKER_LEASE` and keeps that control connection open for the worker lifetime.
 4. `qaffd` registers the socket in the sockarray and attaches BPF on first worker registration.
@@ -112,8 +114,9 @@ opened or the BPF link cannot be attached.
 The black-box learner sees only server SCIDs carried in visible QUIC long
 headers. It cannot parse encrypted short-header frames such as
 `NEW_CONNECTION_ID`. Learned entries use a longer egress TTL and are refreshed
-when another visible long-header packet carries the same SCID. qaffd scans the
-passive map every 30 seconds by default; use
+when another visible long-header packet carries the same SCID or when a valid
+ingress hit reaches the latter half of its TTL. qaffd scans the passive map
+every 30 seconds by default; use
 `--passive-scan-interval-ms` to tune that control-plane cost.
 
 For restart recovery, use both:
@@ -230,7 +233,8 @@ The dataplane behavior is:
    enabled.
 7. Reject passive entries below the configured confidence, past their monotonic
    expiry, or tied to an old worker generation.
-8. If no route is selected, use the fallback worker.
+8. If no route is selected, use the configured fixed-worker or kernel-default
+   fallback policy.
 
 The resulting priority is:
 
@@ -238,13 +242,25 @@ The resulting priority is:
 exact CID registration > routable CID profile > passive CID > fallback
 ```
 
-Fallback worker:
+Fixed fallback:
 
 ```text
 worker_id = qaff_options.fallback_worker_id
 ```
 
 The default is `0`. In daemon-controlled mode this is set with `qaffd --fallback-worker ID` and can be inspected with `qaffctl config`.
+
+`qaffd --fallback-mode kernel` skips explicit socket selection on a fallback,
+so Linux applies its normal SO_REUSEPORT 4-tuple hash. This is recommended for
+black-box onboarding because first Initial packets remain distributed across
+the application's worker group. `fixed` remains the compatibility default.
+
+An application that cannot pass its own socket can be started through
+`qaff-agent run`, or an existing PID can be registered through
+`qaff-agent watch`. The agent matches one exact bound address/port, duplicates
+the UDP `SO_REUSEPORT` fd through pidfd, and owns the qaffd lease for the real
+worker lifetime. It also reconnects and restores registration after qaffd
+restarts. This changes no application source code.
 
 ## IPv4 and IPv6
 

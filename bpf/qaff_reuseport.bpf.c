@@ -271,8 +271,9 @@ static __always_inline int qaff_passive_worker(
     return -1;
   }
 
+  __u64 now_ns = bpf_ktime_get_ns();
   if (value->expires_at_ns != 0 &&
-      value->expires_at_ns <= bpf_ktime_get_ns()) {
+      value->expires_at_ns <= now_ns) {
     qaff_count(QAFF_STAT_PASSIVE_REJECT_EXPIRED);
     return -1;
   }
@@ -285,6 +286,26 @@ static __always_inline int qaff_passive_worker(
         *current_generation != value->worker_generation) {
       qaff_count(QAFF_STAT_PASSIVE_REJECT_GENERATION);
       return -1;
+    }
+  }
+
+  if (value->expires_at_ns != 0) {
+    __u64 ttl_ns = QAFF_PASSIVE_TTL_HIGH_NS;
+    if (value->source == QAFF_PASSIVE_SOURCE_EGRESS) {
+      ttl_ns = QAFF_PASSIVE_TTL_EGRESS_NS;
+    } else if (value->confidence == QAFF_PASSIVE_CONFIDENCE_LOW) {
+      ttl_ns = QAFF_PASSIVE_TTL_LOW_NS;
+    } else if (value->confidence == QAFF_PASSIVE_CONFIDENCE_MEDIUM) {
+      ttl_ns = QAFF_PASSIVE_TTL_MEDIUM_NS;
+    }
+
+    /*
+     * Use a sliding lifetime for active connections, but refresh only in the
+     * latter half of the current TTL to avoid a map-value write per packet.
+     * Rejected generation/confidence entries never receive an extension.
+     */
+    if (value->expires_at_ns - now_ns < ttl_ns / 2u) {
+      value->expires_at_ns = now_ns + ttl_ns;
     }
   }
 
@@ -440,6 +461,9 @@ int qaff_select(struct sk_reuseport_md *ctx) {
   }
 
   qaff_count(QAFF_STAT_FALLBACK);
+  if (config && config->fallback_mode == QAFF_FALLBACK_MODE_KERNEL) {
+    return SK_PASS;
+  }
   bpf_sk_select_reuseport(ctx, &qaff_workers, &fallback, 0);
   return SK_PASS;
 }

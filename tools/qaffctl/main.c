@@ -218,6 +218,10 @@ static void print_config(const struct qaff_control_config *config) {
   printf("egress_attached=%u\n", config->egress_attached);
   printf("attached=%u\n", config->attached);
   printf("worker_count=%u\n", config->worker_count);
+  printf("fallback_mode=%s\n",
+         config->fallback_mode == QAFF_FALLBACK_MODE_KERNEL
+             ? "kernel"
+             : "fixed");
   printf("fallback_worker_id=%u\n", config->fallback_worker_id);
   printf("cid_map_count=%llu\n",
          (unsigned long long)config->cid_map_count);
@@ -318,13 +322,14 @@ static int cmd_workers(int argc, char **argv) {
 
   printf("workers_len=%zu\n", workers_len);
   for (size_t i = 0; i < workers_len && i < QAFF_CONTROL_MAX_WORKERS; i++) {
-    printf("worker=%u leased=%u has_cred=%u pidfd=%u pid=%u uid=%u gid=%u "
-           "registered_ms_ago=%llu last_seen_ms_ago=%llu\n",
+    printf("worker=%u leased=%u has_cred=%u pidfd=%u pid=%u target_pid=%u "
+           "uid=%u gid=%u registered_ms_ago=%llu last_seen_ms_ago=%llu\n",
            workers[i].worker_id,
            (workers[i].flags & QAFF_CONTROL_WORKER_FLAG_LEASED) ? 1u : 0u,
            (workers[i].flags & QAFF_CONTROL_WORKER_FLAG_CRED) ? 1u : 0u,
            (workers[i].flags & QAFF_CONTROL_WORKER_FLAG_PIDFD) ? 1u : 0u,
            workers[i].pid,
+           workers[i].target_pid,
            workers[i].uid,
            workers[i].gid,
            (unsigned long long)workers[i].registered_ms_ago,

@@ -43,6 +43,8 @@ Main components:
 - `bpf/qaff_reuseport.bpf.c`: `BPF_PROG_TYPE_SK_REUSEPORT` dataplane.
 - `qaffd`: privileged control-plane daemon for BPF setup, worker registration,
   CID lifecycle, cleanup, restart recovery, authorization, and audit logs.
+- `qaff-agent`: zero-source-change socket discovery and lifecycle wrapper for
+  existing UDP `SO_REUSEPORT` workers.
 - `qaffctl`: diagnostic and management CLI.
 - `include/quic_affinity/`: public C API.
 - `examples/`: minimal embedded/control-plane examples and optional quiche
@@ -75,8 +77,9 @@ The exact profile formats are documented in [docs/cid-profile.md](docs/cid-profi
 
 ### Passive Affinity
 
-Passive affinity is an opt-in black-box mode for applications that can register
-worker sockets but cannot provide CID lifecycle hooks. With
+Passive affinity is an opt-in black-box mode for applications that cannot
+provide CID lifecycle hooks. Worker sockets can be registered by the
+application or discovered without source changes by `qaff-agent`. With
 `--passive-affinity --egress-cgroup PATH`, a cgroup v2 egress program observes
 server QUIC long headers, maps the sending socket cookie to a registered
 worker, and learns the visible server SCID as a high-confidence passive route.
@@ -97,9 +100,12 @@ routing remains disabled by the default minimum confidence.
 
 The first client Initial normally uses a client-generated DCID. The server has
 not issued a routable or registered CID yet, so that packet must use fallback
-routing. After the server creates its own Source Connection ID and registers it
-or uses a routable profile, later packets can be steered to the owning worker
-even if the client's address or port changes.
+routing. `--fallback-mode kernel` preserves Linux's normal reuseport 4-tuple
+hash for this traffic and avoids concentrating new connections on one worker.
+The legacy-compatible default is `fixed`, controlled by `--fallback-worker`.
+After the server creates its own Source Connection ID and registers it, uses a
+routable profile, or exposes it to passive egress learning, later packets can
+be steered to the owning worker even if the client's address or port changes.
 
 ## Compared With NGINX `quic_bpf`
 
@@ -173,7 +179,7 @@ build/qaffd \
   --socket /tmp/qaffd.sock \
   --bpf build/qaff_reuseport.bpf.o \
   --short-cid-len 8 \
-  --fallback-worker 0
+  --fallback-mode kernel
 ```
 
 Register workers and CIDs from a QUIC server through the control API:
@@ -208,6 +214,63 @@ build/qaffd \
 New integrations should prefer leased worker registration. If the control
 connection closes unexpectedly, `qaffd` unregisters the worker, closes its
 duplicated socket fd, and retires CIDs owned by that worker.
+
+## Zero-Source-Change Onboarding
+
+`qaff-agent` can launch an existing server and register its bound UDP
+`SO_REUSEPORT` socket without changing application code:
+
+```sh
+build/qaff-agent run \
+  --socket /tmp/qaffd.sock \
+  --worker-id 0 \
+  --address 0.0.0.0 \
+  --port 4433 \
+  -- /path/to/existing-quic-server --listen 0.0.0.0:4433
+```
+
+Start one agent per worker with a unique worker ID. The agent waits for the
+target to bind, duplicates the matching socket with `pidfd_getfd`, registers a
+leased worker with qaffd, sends optional heartbeats, restores the registration
+after qaffd restarts, and removes the lease when the real target exits.
+File-descriptor aliases of one socket are deduplicated by socket cookie;
+multiple distinct matching sockets in one worker are rejected as ambiguous.
+`qaffctl workers` reports both the registering agent PID and its target PID.
+
+An already-running process can be onboarded with:
+
+```sh
+sudo build/qaff-agent watch \
+  --socket /tmp/qaffd.sock \
+  --pid 12345 \
+  --worker-id 0 \
+  --address 0.0.0.0 \
+  --port 4433
+```
+
+`run` makes the agent the target's parent and normally satisfies Linux ptrace
+access checks without an extra capability. `watch` usually requires
+`CAP_SYS_PTRACE` (or an equivalent ptrace policy) and access to the target's
+`/proc/<pid>/fd` directory. Both modes require Linux `pidfd_open` and
+`pidfd_getfd`; security policies such as seccomp can still deny those syscalls.
+The supplied `qaff-agent@.service` is a privileged `watch` template using
+`/etc/quic-affinity/agents/<agent-id>.env`.
+
+The address must exactly match `getsockname()` on the socket: use `0.0.0.0` or
+`::` for wildcard binds. The target must expose exactly one distinct matching
+UDP `SO_REUSEPORT` socket and remain in the foreground in `run` mode. Start
+qaffd before qaff-agent. If qaffd uses `--allow-worker-uid` or
+`--allow-worker-gid`, configure the agent's identity—not merely the target
+process identity—as the allowed registration identity. qaffd, qaff-agent, and
+the target should share the relevant network namespace; the target must also
+be inside the cgroup observed by passive egress learning.
+
+Keep the listener out of load-balancer/service discovery until every expected
+agent appears in `qaffctl workers` and `attached=1` appears in `qaffctl config`.
+Otherwise the application can send its first long-header response before its
+socket-cookie mapping exists, so passive learning may miss that server SCID.
+`watch` protects new traffic after registration; it cannot reconstruct server
+CIDs that were visible only before the agent started.
 
 ## Routable CID Profile v2
 
@@ -328,6 +391,8 @@ Implemented:
 - Stateful CID routing and profile v1/v2 routing.
 - `qaffd` control plane with fd passing, map pinning, restart recovery,
   worker cleanup, authorization, audit logs, and observability.
+- Zero-source-change worker onboarding and real-process lifecycle tracking with
+  `qaff-agent`.
 - `qaffctl` diagnostics for health, config, stats, workers, and CID counts.
 - systemd deployment templates.
 
