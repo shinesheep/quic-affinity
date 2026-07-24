@@ -31,8 +31,12 @@ exact CID registration > routable CID profile > passive CID > fallback
 
 ## 2. Add Passive Entry Lifecycle Management
 
-The passive map is currently bounded by LRU behavior, but qaffd does not yet
-perform TTL cleanup.
+Status: implemented with monotonic TTLs, periodic qaffd cleanup, dataplane
+expiry rejection, and worker-unregister purging.
+
+The passive map remains bounded by LRU behavior. qaffd also assigns monotonic
+TTLs by confidence and source, periodically removes expired entries, and
+purges all entries owned by an unregistered worker.
 
 Tasks:
 

@@ -46,6 +46,12 @@
 /** Passive entry learned from outbound server traffic. */
 #define QAFF_PASSIVE_SOURCE_EGRESS 2u
 
+/** Default monotonic lifetimes for passive entries. */
+#define QAFF_PASSIVE_TTL_LOW_NS (30ULL * 1000000000ULL)
+#define QAFF_PASSIVE_TTL_MEDIUM_NS (5ULL * 60ULL * 1000000000ULL)
+#define QAFF_PASSIVE_TTL_HIGH_NS (15ULL * 60ULL * 1000000000ULL)
+#define QAFF_PASSIVE_TTL_EGRESS_NS (60ULL * 60ULL * 1000000000ULL)
+
 /**
  * Fixed-size BPF map key for a QUIC connection ID.
  *
@@ -68,8 +74,8 @@ struct qaff_cid_key {
  *
  * This is used for best-effort black-box affinity. The dataplane routes by this
  * table only when passive routing is enabled and no stronger exact/profile
- * route was selected. expires_at_ns is reserved for user-space cleanup policy;
- * the reuseport dataplane does not currently evaluate wall-clock expiry.
+ * route was selected. expires_at_ns is an absolute CLOCK_MONOTONIC timestamp.
+ * The dataplane rejects expired entries and qaffd removes them periodically.
  */
 struct qaff_passive_cid_value {
 #if defined(__KERNEL__) || defined(QAFF_BPF)

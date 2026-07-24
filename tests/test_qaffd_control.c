@@ -53,6 +53,14 @@ static const uint8_t k_passive_dcid[] = {
   0x70, 0x61, 0x73, 0x73, 0x0a, 0x0b, 0x0c, 0x0d,
 };
 
+static const uint8_t k_expiring_passive_dcid[] = {
+  0x65, 0x78, 0x70, 0x69, 0x72, 0x65, 0x01, 0x02,
+};
+
+static const uint8_t k_purged_passive_dcid[] = {
+  0x70, 0x75, 0x72, 0x67, 0x65, 0x64, 0x01, 0x02,
+};
+
 static int set_nonblocking(int fd) {
   int flags = fcntl(fd, F_GETFL, 0);
   if (flags < 0) {
@@ -283,6 +291,14 @@ static int connect_retry(const char *socket_path, int attempts) {
   return -1;
 }
 
+static uint64_t monotonic_now_ns(void) {
+  struct timespec ts;
+  if (clock_gettime(CLOCK_MONOTONIC, &ts) != 0) {
+    return 0;
+  }
+  return (uint64_t)ts.tv_sec * 1000000000u + (uint64_t)ts.tv_nsec;
+}
+
 static pid_t start_qaffd(const char *qaffd_path,
                          const char *socket_path,
                          const char *bpf_path) {
@@ -302,6 +318,8 @@ static pid_t start_qaffd(const char *qaffd_path,
         "--passive-affinity",
         "--passive-min-confidence",
         "3",
+        "--passive-scan-interval-ms",
+        "20",
         "--worker-heartbeat-timeout-ms",
         "500",
         (char *)NULL);
@@ -391,7 +409,8 @@ static int control_call_register_passive_cid(const char *socket_path,
                                              uint32_t worker_id,
                                              const uint8_t *cid,
                                              uint8_t confidence,
-                                             uint8_t source) {
+                                             uint8_t source,
+                                             uint64_t expires_after_ms) {
   int fd = qaff_control_connect(socket_path);
   if (fd < 0) {
     return -1;
@@ -401,6 +420,16 @@ static int control_call_register_passive_cid(const char *socket_path,
   value.worker_id = worker_id;
   value.confidence = confidence;
   value.source = source;
+  if (expires_after_ms != 0) {
+    uint64_t current_ns = monotonic_now_ns();
+    if (current_ns == 0) {
+      close(fd);
+      errno = EIO;
+      return -1;
+    }
+    value.expires_at_ns =
+        current_ns + expires_after_ms * 1000000u;
+  }
   int rc = qaff_control_register_passive_cid(fd,
                                              cid,
                                              sizeof(k_dcid),
@@ -919,7 +948,8 @@ static int run_case(const char *qaffd_path,
                                         TARGET_WORKER,
                                         k_passive_dcid,
                                         QAFF_PASSIVE_CONFIDENCE_HIGH,
-                                        QAFF_PASSIVE_SOURCE_EGRESS) != 0) {
+                                        QAFF_PASSIVE_SOURCE_EGRESS,
+                                        0) != 0) {
     perror("qaff_control_register_passive_cid");
     return 1;
   }
@@ -940,6 +970,37 @@ static int run_case(const char *qaffd_path,
 
   if (control_call_retire_passive_cid(socket_path, k_passive_dcid) != 0) {
     perror("qaff_control_retire_passive_cid");
+    return 1;
+  }
+
+  if (control_call_register_passive_cid(socket_path,
+                                        TARGET_WORKER,
+                                        k_expiring_passive_dcid,
+                                        QAFF_PASSIVE_CONFIDENCE_LOW,
+                                        QAFF_PASSIVE_SOURCE_INGRESS,
+                                        40) != 0) {
+    perror("qaff_control_register_passive_cid expiring");
+    return 1;
+  }
+  const struct timespec passive_expiry_delay = {
+    .tv_sec = 0,
+    .tv_nsec = 120 * 1000 * 1000,
+  };
+  nanosleep(&passive_expiry_delay, NULL);
+  if (control_call_retire_passive_cid(socket_path,
+                                      k_expiring_passive_dcid) == 0 ||
+      errno != ENOENT) {
+    fprintf(stderr, "%s: expired passive CID was not cleaned up\n", test->name);
+    return 1;
+  }
+
+  if (control_call_register_passive_cid(socket_path,
+                                        TARGET_WORKER,
+                                        k_purged_passive_dcid,
+                                        QAFF_PASSIVE_CONFIDENCE_HIGH,
+                                        QAFF_PASSIVE_SOURCE_EGRESS,
+                                        0) != 0) {
+    perror("qaff_control_register_passive_cid purge");
     return 1;
   }
   if (send_quic_like_packet(senders[1].fd,
@@ -996,10 +1057,17 @@ static int run_case(const char *qaffd_path,
                                         TARGET_WORKER,
                                         k_passive_dcid,
                                         QAFF_PASSIVE_CONFIDENCE_HIGH,
-                                        QAFF_PASSIVE_SOURCE_EGRESS) == 0) {
+                                        QAFF_PASSIVE_SOURCE_EGRESS,
+                                        0) == 0) {
     fprintf(stderr,
             "%s: unexpectedly registered passive CID to unregistered worker\n",
             test->name);
+    return 1;
+  }
+  if (control_call_retire_passive_cid(socket_path,
+                                      k_purged_passive_dcid) == 0 ||
+      errno != ENOENT) {
+    fprintf(stderr, "%s: worker passive CID was not purged\n", test->name);
     return 1;
   }
 

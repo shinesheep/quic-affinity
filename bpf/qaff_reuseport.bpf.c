@@ -266,6 +266,11 @@ static __always_inline int qaff_passive_worker(
     return -1;
   }
 
+  if (value->expires_at_ns != 0 &&
+      value->expires_at_ns <= bpf_ktime_get_ns()) {
+    return -1;
+  }
+
   if (value->worker_generation != 0) {
     __u32 *current_generation =
         bpf_map_lookup_elem(&qaff_worker_generations, &value->worker_id);
@@ -464,6 +469,7 @@ int qaff_egress_learn(struct __sk_buff *skb) {
   }
   value.confidence = QAFF_PASSIVE_CONFIDENCE_HIGH;
   value.source = QAFF_PASSIVE_SOURCE_EGRESS;
+  value.expires_at_ns = bpf_ktime_get_ns() + QAFF_PASSIVE_TTL_EGRESS_NS;
 
   if (bpf_map_update_elem(&qaff_passive_cids, &key, &value, BPF_ANY) == 0) {
     qaff_count(QAFF_STAT_PASSIVE_EGRESS_LEARN);

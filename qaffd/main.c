@@ -24,6 +24,7 @@
 #include <bpf/bpf.h>
 
 #define QAFFD_MAX_WORKERS 4096
+#define QAFFD_PASSIVE_SCAN_INTERVAL_MS_DEFAULT 1000u
 
 #ifndef SO_REUSEPORT
 #define SO_REUSEPORT 15
@@ -67,6 +68,7 @@ struct qaffd_options {
   uint8_t cid_profile_v1_key[QAFF_CID_PROFILE_KEY_LEN];
   uint32_t fallback_worker_id;
   uint64_t worker_heartbeat_timeout_ms;
+  uint64_t passive_scan_interval_ms;
   int allow_worker_uid_set;
   int allow_worker_gid_set;
   int socket_gid_set;
@@ -109,6 +111,12 @@ struct qaffd_state {
   uint8_t cid_profile_v1_key[QAFF_CID_PROFILE_KEY_LEN];
   uint32_t fallback_worker_id;
   uint64_t worker_heartbeat_timeout_ms;
+  uint64_t passive_scan_interval_ms;
+  uint64_t passive_last_scan_ms;
+  uint64_t passive_expired_count;
+  uint64_t passive_worker_purged_count;
+  uint64_t passive_expiry_initialized_count;
+  uint64_t passive_cleanup_error_count;
   int allow_worker_uid_set;
   int allow_worker_gid_set;
   int socket_gid_set;
@@ -180,6 +188,14 @@ static uint64_t now_ms(void) {
     return 0;
   }
   return (uint64_t)ts.tv_sec * 1000u + (uint64_t)ts.tv_nsec / 1000000u;
+}
+
+static uint64_t now_ns(void) {
+  struct timespec ts;
+  if (clock_gettime(CLOCK_MONOTONIC, &ts) != 0) {
+    return 0;
+  }
+  return (uint64_t)ts.tv_sec * 1000000000u + (uint64_t)ts.tv_nsec;
 }
 
 static uint64_t elapsed_ms(uint64_t now, uint64_t then) {
@@ -562,6 +578,7 @@ static void usage(FILE *out) {
           "[--cid-profile-v2-key HEX32 | --cid-profile-v2-key-file PATH] "
           "[--cid-profile-v2-config-id ID] "
           "[--passive-affinity] [--passive-min-confidence N] "
+          "[--passive-scan-interval-ms N] "
           "[--worker-heartbeat-timeout-ms N] [--allow-worker-uid UID] "
           "[--allow-worker-gid GID] [--socket-mode OCTAL] "
           "[--socket-gid GID]\n");
@@ -666,6 +683,8 @@ static int parse_args(int argc, char **argv, struct qaffd_options *options) {
   memset(options, 0, sizeof(*options));
   options->socket_mode = 0600;
   options->passive_min_confidence = QAFF_PASSIVE_CONFIDENCE_HIGH;
+  options->passive_scan_interval_ms =
+      QAFFD_PASSIVE_SCAN_INTERVAL_MS_DEFAULT;
 
   for (int i = 1; i < argc; i++) {
     if (strcmp(argv[i], "--socket") == 0 && i + 1 < argc) {
@@ -743,6 +762,15 @@ static int parse_args(int argc, char **argv, struct qaffd_options *options) {
         return -1;
       }
       options->passive_min_confidence = (uint8_t)value;
+    } else if (strcmp(argv[i], "--passive-scan-interval-ms") == 0 &&
+               i + 1 < argc) {
+      char *end = NULL;
+      unsigned long long value = strtoull(argv[++i], &end, 10);
+      if (end == argv[i] || *end != '\0' || value == 0 ||
+          value > INT_MAX) {
+        return -1;
+      }
+      options->passive_scan_interval_ms = (uint64_t)value;
     } else if (strcmp(argv[i], "--worker-heartbeat-timeout-ms") == 0 &&
                i + 1 < argc) {
       char *end = NULL;
@@ -1034,6 +1062,81 @@ static int retire_worker_cids(struct qaffd_state *state, uint32_t worker_id) {
       return -1;
     }
     forget_cid_at(state, i);
+  }
+
+  return 0;
+}
+
+static uint64_t passive_default_ttl_ns(
+    const struct qaff_passive_cid_value *value) {
+  if (value->source == QAFF_PASSIVE_SOURCE_EGRESS) {
+    return QAFF_PASSIVE_TTL_EGRESS_NS;
+  }
+  if (value->confidence == QAFF_PASSIVE_CONFIDENCE_LOW) {
+    return QAFF_PASSIVE_TTL_LOW_NS;
+  }
+  if (value->confidence == QAFF_PASSIVE_CONFIDENCE_MEDIUM) {
+    return QAFF_PASSIVE_TTL_MEDIUM_NS;
+  }
+  return QAFF_PASSIVE_TTL_HIGH_NS;
+}
+
+static int cleanup_passive_cids(struct qaffd_state *state,
+                                uint64_t monotonic_now_ns,
+                                int purge_worker,
+                                uint32_t worker_id) {
+  int map_fd = qaff_get_passive_cid_map_fd(state->ctx);
+  if (map_fd < 0 || monotonic_now_ns == 0) {
+    errno = EINVAL;
+    return -1;
+  }
+
+  struct qaff_cid_key current;
+  if (bpf_map_get_next_key(map_fd, NULL, &current) != 0) {
+    return errno == ENOENT ? 0 : -1;
+  }
+
+  for (;;) {
+    struct qaff_cid_key next;
+    int has_next = bpf_map_get_next_key(map_fd, &current, &next) == 0;
+    if (!has_next && errno != ENOENT) {
+      return -1;
+    }
+
+    struct qaff_passive_cid_value value;
+    if (bpf_map_lookup_elem(map_fd, &current, &value) == 0) {
+      int should_delete = purge_worker && value.worker_id == worker_id;
+      if (!purge_worker && value.expires_at_ns != 0 &&
+          value.expires_at_ns <= monotonic_now_ns) {
+        should_delete = 1;
+      }
+
+      if (should_delete) {
+        if (bpf_map_delete_elem(map_fd, &current) != 0 && errno != ENOENT) {
+          return -1;
+        }
+        if (purge_worker) {
+          state->passive_worker_purged_count++;
+        } else {
+          state->passive_expired_count++;
+        }
+      } else if (!purge_worker && value.expires_at_ns == 0) {
+        value.expires_at_ns =
+            monotonic_now_ns + passive_default_ttl_ns(&value);
+        if (bpf_map_update_elem(map_fd, &current, &value, BPF_EXIST) != 0 &&
+            errno != ENOENT) {
+          return -1;
+        }
+        state->passive_expiry_initialized_count++;
+      }
+    } else if (errno != ENOENT) {
+      return -1;
+    }
+
+    if (!has_next) {
+      break;
+    }
+    current = next;
   }
 
   return 0;
@@ -1345,6 +1448,10 @@ static int unregister_worker_authorized(struct qaffd_state *state,
   if (retire_worker_cids(state, worker_id) != 0) {
     return -1;
   }
+  if (cleanup_passive_cids(state, now_ns(), 1, worker_id) != 0) {
+    state->passive_cleanup_error_count++;
+    return -1;
+  }
 
   if (qaff_unregister_worker_socket(state->ctx, worker_id) != 0 &&
       errno != ENOENT) {
@@ -1489,6 +1596,10 @@ static int validate_passive_request(const struct qaffd_state *state,
     errno = EINVAL;
     return -1;
   }
+  if (value->flags != 0) {
+    errno = EINVAL;
+    return -1;
+  }
 
   uint32_t current_generation = state->worker_generations[value->worker_id];
   if (current_generation == 0) {
@@ -1501,6 +1612,18 @@ static int validate_passive_request(const struct qaffd_state *state,
     return -1;
   }
   value->worker_generation = current_generation;
+  uint64_t monotonic_now_ns = now_ns();
+  if (monotonic_now_ns == 0) {
+    errno = EIO;
+    return -1;
+  }
+  if (value->expires_at_ns == 0) {
+    value->expires_at_ns =
+        monotonic_now_ns + passive_default_ttl_ns(value);
+  } else if (value->expires_at_ns <= monotonic_now_ns) {
+    errno = EINVAL;
+    return -1;
+  }
   return 0;
 }
 
@@ -1898,6 +2021,27 @@ static int expire_worker_heartbeat_timeouts(struct qaffd_state *state) {
   return rc;
 }
 
+static int expire_passive_cids_if_due(struct qaffd_state *state) {
+  if (!state->passive_affinity_enabled ||
+      state->passive_scan_interval_ms == 0) {
+    return 0;
+  }
+
+  uint64_t monotonic_now_ms = now_ms();
+  if (state->passive_last_scan_ms != 0 &&
+      elapsed_ms(monotonic_now_ms, state->passive_last_scan_ms) <
+          state->passive_scan_interval_ms) {
+    return 0;
+  }
+
+  state->passive_last_scan_ms = monotonic_now_ms;
+  if (cleanup_passive_cids(state, now_ns(), 0, 0) != 0) {
+    state->passive_cleanup_error_count++;
+    return -1;
+  }
+  return 0;
+}
+
 static int worker_heartbeat_poll_timeout(const struct qaffd_state *state) {
   if (state->worker_heartbeat_timeout_ms == 0) {
     return -1;
@@ -1926,6 +2070,31 @@ static int worker_heartbeat_poll_timeout(const struct qaffd_state *state) {
     return INT_MAX;
   }
   return (int)min_remaining;
+}
+
+static int passive_cleanup_poll_timeout(const struct qaffd_state *state) {
+  if (!state->passive_affinity_enabled ||
+      state->passive_scan_interval_ms == 0 ||
+      state->passive_last_scan_ms == 0) {
+    return state->passive_affinity_enabled ? 0 : -1;
+  }
+
+  uint64_t age = elapsed_ms(now_ms(), state->passive_last_scan_ms);
+  if (age >= state->passive_scan_interval_ms) {
+    return 0;
+  }
+  uint64_t remaining = state->passive_scan_interval_ms - age;
+  return remaining > (uint64_t)INT_MAX ? INT_MAX : (int)remaining;
+}
+
+static int earlier_poll_timeout(int left, int right) {
+  if (left < 0) {
+    return right;
+  }
+  if (right < 0) {
+    return left;
+  }
+  return left < right ? left : right;
 }
 
 int main(int argc, char **argv) {
@@ -1957,6 +2126,8 @@ int main(int argc, char **argv) {
   state.fallback_worker_id = daemon_options.fallback_worker_id;
   state.worker_heartbeat_timeout_ms =
       daemon_options.worker_heartbeat_timeout_ms;
+  state.passive_scan_interval_ms =
+      daemon_options.passive_scan_interval_ms;
   state.allow_worker_uid_set = daemon_options.allow_worker_uid_set;
   state.allow_worker_gid_set = daemon_options.allow_worker_gid_set;
   state.allow_worker_uid = daemon_options.allow_worker_uid;
@@ -2041,6 +2212,9 @@ int main(int argc, char **argv) {
     if (expire_worker_heartbeat_timeouts(&state) != 0) {
       perror("expire_worker_heartbeat_timeouts");
     }
+    if (expire_passive_cids_if_due(&state) != 0) {
+      perror("expire_passive_cids");
+    }
 
     nfds_t pollfds_len = build_pollfds(&state,
                                        server_fd,
@@ -2048,7 +2222,9 @@ int main(int argc, char **argv) {
                                        poll_worker_ids,
                                        poll_sources,
                                        QAFFD_MAX_WORKERS * 2 + 1);
-    int poll_timeout = worker_heartbeat_poll_timeout(&state);
+    int poll_timeout = earlier_poll_timeout(
+        worker_heartbeat_poll_timeout(&state),
+        passive_cleanup_poll_timeout(&state));
     int poll_rc;
     do {
       poll_rc = poll(pollfds, pollfds_len, poll_timeout);
