@@ -272,6 +272,7 @@ static int recv_client_packet(int fd,
 
 static quiche_conn *accept_server_conn(const char *control_sock,
                                        quiche_config *server_config,
+                                       int passive_egress,
                                        const uint8_t *packet,
                                        size_t packet_len,
                                        const struct sockaddr_storage *server_addr,
@@ -317,7 +318,8 @@ static quiche_conn *accept_server_conn(const char *control_sock,
     return NULL;
   }
 
-  if (control_register_cid(control_sock, 0, k_server_scid, sizeof(k_server_scid)) != 0) {
+  if (!passive_egress &&
+      control_register_cid(control_sock, 0, k_server_scid, sizeof(k_server_scid)) != 0) {
     quiche_conn_free(conn);
     return NULL;
   }
@@ -327,6 +329,7 @@ static quiche_conn *accept_server_conn(const char *control_sock,
 static int drive_server_packet(quiche_conn **server_conn,
                                const char *control_sock,
                                quiche_config *server_config,
+                               int passive_egress,
                                int server_fd,
                                uint8_t *packet,
                                size_t packet_len,
@@ -337,6 +340,7 @@ static int drive_server_packet(quiche_conn **server_conn,
   if (*server_conn == NULL) {
     *server_conn = accept_server_conn(control_sock,
                                       server_config,
+                                      passive_egress,
                                       packet,
                                       packet_len,
                                       server_addr,
@@ -393,14 +397,24 @@ int main(int argc, char **argv) {
     close(fd);
     return 0;
   }
-  if (argc != 4) {
-    fprintf(stderr, "usage: %s QAFFD_SOCKET CERT KEY\n", argv[0]);
+
+  int passive_egress = 0;
+  const char *control_sock = NULL;
+  const char *cert = NULL;
+  const char *key = NULL;
+  if (argc == 5 && strcmp(argv[1], "--passive-egress") == 0) {
+    passive_egress = 1;
+    control_sock = argv[2];
+    cert = argv[3];
+    key = argv[4];
+  } else if (argc == 4) {
+    control_sock = argv[1];
+    cert = argv[2];
+    key = argv[3];
+  } else {
+    fprintf(stderr, "usage: %s [--passive-egress] QAFFD_SOCKET CERT KEY\n", argv[0]);
     return 2;
   }
-
-  const char *control_sock = argv[1];
-  const char *cert = argv[2];
-  const char *key = argv[3];
 
   int workers[WORKER_COUNT] = {-1, -1, -1};
   int worker_leases[WORKER_COUNT] = {-1, -1, -1};
@@ -492,6 +506,7 @@ int main(int argc, char **argv) {
   if (drive_server_packet(&server_conn,
                           control_sock,
                           server_config,
+                          passive_egress,
                           workers[0],
                           buf,
                           (size_t)got,
@@ -540,8 +555,19 @@ int main(int argc, char **argv) {
   if (control_read_stats(control_sock, &stats) != 0) {
     return 1;
   }
-  if (stats.values[QAFF_STAT_CID_MAP_HIT] < 1 ||
-      stats.values[QAFF_STAT_FALLBACK] < 1) {
+  if (passive_egress) {
+    if (stats.values[QAFF_STAT_PASSIVE_EGRESS_LEARN] < 1 ||
+        stats.values[QAFF_STAT_PASSIVE_HIT] < 1 ||
+        stats.values[QAFF_STAT_FALLBACK] < 1) {
+      fprintf(stderr,
+              "expected passive egress learn, passive hit, and fallback, learn=%llu hit=%llu fallback=%llu\n",
+              (unsigned long long)stats.values[QAFF_STAT_PASSIVE_EGRESS_LEARN],
+              (unsigned long long)stats.values[QAFF_STAT_PASSIVE_HIT],
+              (unsigned long long)stats.values[QAFF_STAT_FALLBACK]);
+      return 1;
+    }
+  } else if (stats.values[QAFF_STAT_CID_MAP_HIT] < 1 ||
+             stats.values[QAFF_STAT_FALLBACK] < 1) {
     fprintf(stderr,
             "expected at least one CID hit and one fallback, hit=%llu fallback=%llu\n",
             (unsigned long long)stats.values[QAFF_STAT_CID_MAP_HIT],
@@ -550,10 +576,15 @@ int main(int argc, char **argv) {
   }
 
   printf("quiche_udp_smoke=ok\n");
+  printf("passive_egress=%u\n", passive_egress ? 1u : 0u);
   printf("client_source_port_before=%u\n", client_port1);
   printf("client_source_port_after=%u\n", client_port2);
   printf("cid_map_hit=%llu\n", (unsigned long long)stats.values[QAFF_STAT_CID_MAP_HIT]);
   printf("fallback=%llu\n", (unsigned long long)stats.values[QAFF_STAT_FALLBACK]);
+  printf("passive_egress_learn=%llu\n",
+         (unsigned long long)stats.values[QAFF_STAT_PASSIVE_EGRESS_LEARN]);
+  printf("passive_hit=%llu\n",
+         (unsigned long long)stats.values[QAFF_STAT_PASSIVE_HIT]);
 
   quiche_conn_free(client_conn);
   if (server_conn != NULL) {

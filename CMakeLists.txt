@@ -257,6 +257,17 @@ if(TARGET qaff_quiche_udp_smoke)
       ${CMAKE_CURRENT_SOURCE_DIR}/third_party/quiche/quiche/examples/cert.crt
       ${CMAKE_CURRENT_SOURCE_DIR}/third_party/quiche/quiche/examples/cert.key)
   set_tests_properties(quiche_udp_smoke PROPERTIES SKIP_RETURN_CODE 77)
+
+  add_test(NAME quiche_passive_egress_smoke
+    COMMAND /bin/sh
+      ${CMAKE_CURRENT_SOURCE_DIR}/tests/run_quiche_passive_egress_smoke.sh
+      $<TARGET_FILE:qaffd>
+      $<TARGET_FILE:qaffctl>
+      $<TARGET_FILE:qaff_quiche_udp_smoke>
+      ${CMAKE_CURRENT_BINARY_DIR}/qaff_reuseport.bpf.o
+      ${CMAKE_CURRENT_SOURCE_DIR}/third_party/quiche/quiche/examples/cert.crt
+      ${CMAKE_CURRENT_SOURCE_DIR}/third_party/quiche/quiche/examples/cert.key)
+  set_tests_properties(quiche_passive_egress_smoke PROPERTIES SKIP_RETURN_CODE 77)
 endif()
 
 if(QAFF_BUILD_BPF)

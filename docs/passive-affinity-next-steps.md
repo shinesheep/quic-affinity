@@ -69,6 +69,8 @@ passive_reject_generation=N
 
 ## 4. Verify Worker Restart and Stale Passive Entries
 
+Status: implemented in `tests/test_qaffd_restart.c`.
+
 Passive entries include worker generation, and the dataplane rejects entries
 whose generation no longer matches. This needs focused coverage.
 
@@ -86,6 +88,9 @@ This should be the next implementation task because it validates the main stale
 state safety mechanism.
 
 ## 5. Add Real QUIC Egress Learning Smoke
+
+Status: implemented by `quiche_passive_egress_smoke`, which runs
+`qaff_quiche_udp_smoke --passive-egress` with qaffd egress learning enabled.
 
 The current egress learning smoke uses QUIC-like long-header packets. The next
 proof point should use a real QUIC stack.
@@ -152,4 +157,3 @@ Tasks:
 5. Deployment and packaging updates.
 6. Expanded egress counters.
 7. Broader safety policy and ingress-only learning decisions.
-
