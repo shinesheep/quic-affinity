@@ -194,7 +194,9 @@ add_test(NAME qaffd_restart
     $<TARGET_FILE:qaffd>
     $<TARGET_FILE:test_qaffd_restart>
     ${CMAKE_CURRENT_BINARY_DIR}/qaff_reuseport.bpf.o)
-set_tests_properties(qaffd_restart PROPERTIES SKIP_RETURN_CODE 77)
+set_tests_properties(qaffd_restart PROPERTIES
+  SKIP_RETURN_CODE 77
+  TIMEOUT 20)
 
 add_executable(test_qaffd_egress
   tests/test_qaffd_egress.c)

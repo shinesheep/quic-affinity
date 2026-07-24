@@ -18,6 +18,8 @@
 #include <sys/wait.h>
 #include <unistd.h>
 
+#include <bpf/bpf.h>
+
 #ifndef SO_REUSEPORT
 #define SO_REUSEPORT 15
 #endif
@@ -312,6 +314,46 @@ static int control_cids(const char *socket_path,
   return rc;
 }
 
+static int inject_stale_passive_cid(const char *pin_root,
+                                    uint32_t worker_id,
+                                    uint32_t worker_generation,
+                                    const uint8_t *cid,
+                                    size_t cid_len) {
+  char map_path[4096];
+  int n = snprintf(map_path,
+                   sizeof(map_path),
+                   "%s/qaff_passive_cids",
+                   pin_root);
+  if (n < 0 || (size_t)n >= sizeof(map_path)) {
+    errno = ENAMETOOLONG;
+    return -1;
+  }
+
+  int map_fd = bpf_obj_get(map_path);
+  if (map_fd < 0) {
+    return -1;
+  }
+
+  struct qaff_cid_key key;
+  if (qaff_cid_key_from_bytes(cid, cid_len, &key) != QAFF_PARSE_OK) {
+    close(map_fd);
+    errno = EINVAL;
+    return -1;
+  }
+
+  struct qaff_passive_cid_value value;
+  memset(&value, 0, sizeof(value));
+  value.worker_id = worker_id;
+  value.worker_generation = worker_generation;
+  value.confidence = QAFF_PASSIVE_CONFIDENCE_HIGH;
+  value.source = QAFF_PASSIVE_SOURCE_EGRESS;
+  int rc = bpf_map_update_elem(map_fd, &key, &value, BPF_ANY);
+  int saved_errno = errno;
+  close(map_fd);
+  errno = saved_errno;
+  return rc;
+}
+
 int main(int argc, char **argv) {
   if (argc != 5) {
     fprintf(stderr,
@@ -451,7 +493,9 @@ int main(int argc, char **argv) {
   }
   if (cid_config.cid_map_count != 0 ||
       cid_config.cid_owner_count != 0 ||
-      cid_config.cid_index_mismatch != 0) {
+      cid_config.cid_index_mismatch != 0 ||
+      cid_config.passive_entry_count != 0 ||
+      cid_config.passive_worker_purged_count != 1) {
     fprintf(stderr, "unexpected CID counts after restarted cleanup\n");
     return 1;
   }
@@ -466,6 +510,15 @@ int main(int argc, char **argv) {
                               TARGET_WORKER,
                               workers[TARGET_WORKER]) != 0) {
     perror("qaff_control_register_worker replacement");
+    return 1;
+  }
+
+  if (inject_stale_passive_cid(pin_root,
+                               TARGET_WORKER,
+                               QAFF_WORKER_GENERATION_DEFAULT,
+                               k_passive_dcid,
+                               sizeof(k_passive_dcid)) != 0) {
+    perror("inject stale passive CID");
     return 1;
   }
 
@@ -501,7 +554,19 @@ int main(int argc, char **argv) {
       stats.values[QAFF_STAT_PASSIVE_HIT] != 1 ||
       stats.values[QAFF_STAT_PASSIVE_MISS] != 1 ||
       stats.values[QAFF_STAT_PASSIVE_REJECT_GENERATION] != 1) {
-    fprintf(stderr, "unexpected restart stats\n");
+    fprintf(stderr,
+            "unexpected restart stats packets=%llu cid_hit=%llu fallback=%llu "
+            "ipv4=%llu passive_hit=%llu passive_miss=%llu "
+            "passive_reject_generation=%llu\n",
+            (unsigned long long)stats.values[QAFF_STAT_PACKETS],
+            (unsigned long long)stats.values[QAFF_STAT_CID_MAP_HIT],
+            (unsigned long long)stats.values[QAFF_STAT_FALLBACK],
+            (unsigned long long)stats.values[QAFF_STAT_IPV4],
+            (unsigned long long)stats.values[QAFF_STAT_PASSIVE_HIT],
+            (unsigned long long)stats.values[QAFF_STAT_PASSIVE_MISS],
+            (unsigned long long)
+                stats.values[QAFF_STAT_PASSIVE_REJECT_GENERATION]);
+    stop_qaffd(socket_path, daemon_pid);
     return 1;
   }
 
