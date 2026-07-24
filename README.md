@@ -276,6 +276,12 @@ Pinned maps allow the dataplane state to survive a `qaffd` restart. The state
 snapshot lets `qaffd` rebuild its user-space ownership index and worker
 generation metadata.
 
+Pinned map schemas are validated strictly and incompatible maps fail startup.
+During pre-1.0 upgrades that add statistics slots, stop `qaffd`, unpin only the
+listener's `qaff_stats` map, and restart so it can be recreated. CID ownership,
+worker, and passive routing maps do not need to be discarded for a stats-only
+schema change.
+
 ## Examples
 
 - `qaff_minimal_registry`: embedded mode. One process creates maps, loads BPF,

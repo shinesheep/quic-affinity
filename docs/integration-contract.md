@@ -127,6 +127,11 @@ qaffd --pin-root /sys/fs/bpf/quic-affinity/listeners/<listener-id> \
 
 On restart, `qaffd` reloads worker IDs from `--state-path` and rebuilds CID ownership from the pinned `qaff_cids` map.
 
+Pinned map schema mismatches fail startup rather than silently reinterpreting
+data. For a pre-1.0 upgrade that only expands `QAFF_STAT_MAX`, stop qaffd and
+unpin the listener's `qaff_stats` map before restarting; qaffd recreates that
+map while preserving the routing maps.
+
 Stats and shutdown are available through `qaffctl`:
 
 ```sh
