@@ -3,6 +3,7 @@
 
 #include "quic_affinity/control.h"
 #include "control_protocol.h"
+#include "authorization.h"
 
 #include <ctype.h>
 #include <errno.h>
@@ -105,13 +106,6 @@ struct qaffd_options {
   uint32_t allow_admin_gid;
   uint32_t socket_gid;
   mode_t socket_mode;
-};
-
-struct qaffd_peer_cred {
-  int valid;
-  uint32_t pid;
-  uint32_t uid;
-  uint32_t gid;
 };
 
 struct qaffd_worker_snapshot {
@@ -264,63 +258,36 @@ static uint64_t elapsed_ms(uint64_t now, uint64_t then) {
   return now - then;
 }
 
-static int get_peer_cred(int fd, struct qaffd_peer_cred *out) {
-  memset(out, 0, sizeof(*out));
-#ifdef SO_PEERCRED
-  struct ucred cred;
-  socklen_t len = sizeof(cred);
-  if (getsockopt(fd, SOL_SOCKET, SO_PEERCRED, &cred, &len) != 0) {
-    return -1;
-  }
-  if (cred.pid < 0 || cred.uid > UINT32_MAX || cred.gid > UINT32_MAX) {
-    errno = EOVERFLOW;
-    return -1;
-  }
-  out->valid = 1;
-  out->pid = (uint32_t)cred.pid;
-  out->uid = (uint32_t)cred.uid;
-  out->gid = (uint32_t)cred.gid;
-#else
-  (void)fd;
-#endif
-  return 0;
+static struct qaffd_auth_rule worker_auth_rule(
+    const struct qaffd_state *state) {
+  return (struct qaffd_auth_rule){
+    .uid_set = state->allow_worker_uid_set,
+    .gid_set = state->allow_worker_gid_set,
+    .uid = state->allow_worker_uid,
+    .gid = state->allow_worker_gid,
+  };
+}
+
+static struct qaffd_auth_rule admin_auth_rule(
+    const struct qaffd_state *state) {
+  return (struct qaffd_auth_rule){
+    .uid_set = state->allow_admin_uid_set,
+    .gid_set = state->allow_admin_gid_set,
+    .uid = state->allow_admin_uid,
+    .gid = state->allow_admin_gid,
+  };
 }
 
 static int validate_worker_peer(const struct qaffd_state *state,
                                 const struct qaffd_peer_cred *peer) {
-  if (!state->allow_worker_uid_set && !state->allow_worker_gid_set) {
-    return 0;
-  }
-  if (peer == NULL || !peer->valid) {
-    errno = EACCES;
-    return -1;
-  }
-  if (state->allow_worker_uid_set && peer->uid != state->allow_worker_uid) {
-    errno = EACCES;
-    return -1;
-  }
-  if (state->allow_worker_gid_set && peer->gid != state->allow_worker_gid) {
-    errno = EACCES;
-    return -1;
-  }
-  return 0;
+  struct qaffd_auth_rule rule = worker_auth_rule(state);
+  return qaffd_auth_worker_registration(&rule, peer);
 }
 
 static int peer_matches_configured_admin(const struct qaffd_state *state,
                                          const struct qaffd_peer_cred *peer) {
-  if (!state->allow_admin_uid_set && !state->allow_admin_gid_set) {
-    return 0;
-  }
-  if (peer == NULL || !peer->valid) {
-    return 0;
-  }
-  if (state->allow_admin_uid_set && peer->uid != state->allow_admin_uid) {
-    return 0;
-  }
-  if (state->allow_admin_gid_set && peer->gid != state->allow_admin_gid) {
-    return 0;
-  }
-  return 1;
+  struct qaffd_auth_rule rule = admin_auth_rule(state);
+  return qaffd_auth_rule_matches(&rule, peer);
 }
 
 static int peer_matches_worker(const struct qaffd_state *state,
@@ -330,11 +297,7 @@ static int peer_matches_worker(const struct qaffd_state *state,
     return 0;
   }
 
-  const struct qaffd_peer_cred *worker = &state->worker_creds[worker_id];
-  return worker->valid &&
-         worker->pid == peer->pid &&
-         worker->uid == peer->uid &&
-         worker->gid == peer->gid;
+  return qaffd_auth_same_peer(&state->worker_creds[worker_id], peer);
 }
 
 static int authorize_worker_mutation(const struct qaffd_state *state,
@@ -359,11 +322,8 @@ static int authorize_worker_mutation(const struct qaffd_state *state,
 
 static int authorize_daemon_mutation(const struct qaffd_state *state,
                                      const struct qaffd_peer_cred *peer) {
-  if (!state->allow_admin_uid_set && !state->allow_admin_gid_set) {
-    if (peer != NULL && peer->valid && peer->uid == (uint32_t)geteuid()) {
-      return 0;
-    }
-  } else if (peer_matches_configured_admin(state, peer)) {
+  struct qaffd_auth_rule rule = admin_auth_rule(state);
+  if (qaffd_auth_daemon_mutation(&rule, (uint32_t)geteuid(), peer) == 0) {
     return 0;
   }
   audit_event("daemon_mutation_denied", peer, "reason=unauthorized");
@@ -2295,7 +2255,7 @@ static void process_request(struct qaffd_state *state,
 
   switch (request->op) {
     case QAFF_CONTROL_REGISTER_WORKER:
-      if (get_peer_cred(client_fd, &peer_cred) != 0 ||
+      if (qaffd_get_peer_cred(client_fd, &peer_cred) != 0 ||
           handle_register_worker(state,
                                  request,
                                  *received_fd,
@@ -2307,7 +2267,7 @@ static void process_request(struct qaffd_state *state,
       }
       break;
     case QAFF_CONTROL_REGISTER_WORKER_LEASE:
-      if (get_peer_cred(client_fd, &peer_cred) != 0 ||
+      if (qaffd_get_peer_cred(client_fd, &peer_cred) != 0 ||
           handle_register_worker(state,
                                  request,
                                  *received_fd,
@@ -2320,31 +2280,31 @@ static void process_request(struct qaffd_state *state,
       }
       break;
     case QAFF_CONTROL_UNREGISTER_WORKER:
-      if (get_peer_cred(client_fd, &peer_cred) != 0 ||
+      if (qaffd_get_peer_cred(client_fd, &peer_cred) != 0 ||
           handle_unregister_worker(state, request, &peer_cred) != 0) {
         reply->status = errno ? errno : EIO;
       }
       break;
     case QAFF_CONTROL_REGISTER_CID:
-      if (get_peer_cred(client_fd, &peer_cred) != 0 ||
+      if (qaffd_get_peer_cred(client_fd, &peer_cred) != 0 ||
           handle_register_cid(state, request, &peer_cred) != 0) {
         reply->status = errno ? errno : EIO;
       }
       break;
     case QAFF_CONTROL_RETIRE_CID:
-      if (get_peer_cred(client_fd, &peer_cred) != 0 ||
+      if (qaffd_get_peer_cred(client_fd, &peer_cred) != 0 ||
           handle_retire_cid(state, request, &peer_cred) != 0) {
         reply->status = errno ? errno : EIO;
       }
       break;
     case QAFF_CONTROL_REGISTER_PASSIVE_CID:
-      if (get_peer_cred(client_fd, &peer_cred) != 0 ||
+      if (qaffd_get_peer_cred(client_fd, &peer_cred) != 0 ||
           handle_register_passive_cid(state, request, &peer_cred) != 0) {
         reply->status = errno ? errno : EIO;
       }
       break;
     case QAFF_CONTROL_RETIRE_PASSIVE_CID:
-      if (get_peer_cred(client_fd, &peer_cred) != 0 ||
+      if (qaffd_get_peer_cred(client_fd, &peer_cred) != 0 ||
           handle_retire_passive_cid(state, request, &peer_cred) != 0) {
         reply->status = errno ? errno : EIO;
       }
@@ -2376,7 +2336,7 @@ static void process_request(struct qaffd_state *state,
       fill_config_reply(state, reply);
       break;
     case QAFF_CONTROL_STOP:
-      if (get_peer_cred(client_fd, &peer_cred) != 0 ||
+      if (qaffd_get_peer_cred(client_fd, &peer_cred) != 0 ||
           authorize_daemon_mutation(state, &peer_cred) != 0) {
         reply->status = errno ? errno : EIO;
       } else {

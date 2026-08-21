@@ -66,11 +66,20 @@ if(QAFF_BUILD_TOOLS)
   target_compile_options(qaff-agent PRIVATE -Wall -Wextra -Wpedantic)
 endif()
 
+if(QAFF_BUILD_DAEMON OR BUILD_TESTING)
+  add_library(qaffd_authorization STATIC
+    qaffd/authorization.c)
+  target_include_directories(qaffd_authorization PUBLIC
+    ${CMAKE_CURRENT_SOURCE_DIR}/qaffd)
+  target_compile_options(qaffd_authorization PRIVATE
+    -Wall -Wextra -Wpedantic)
+endif()
+
 if(QAFF_BUILD_DAEMON)
   add_executable(qaffd
     qaffd/main.c)
 
-  target_link_libraries(qaffd PRIVATE qaffinity)
+  target_link_libraries(qaffd PRIVATE qaffinity qaffd_authorization)
   target_include_directories(qaffd PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/internal)
   target_compile_options(qaffd PRIVATE -Wall -Wextra -Wpedantic)
 endif()
@@ -231,6 +240,14 @@ if(BUILD_TESTING)
   target_compile_options(test_control_protocol PRIVATE
     -Wall -Wextra -Wpedantic)
   add_test(NAME control_protocol COMMAND $<TARGET_FILE:test_control_protocol>)
+
+  add_executable(test_qaffd_authorization
+    tests/test_qaffd_authorization.c)
+  target_link_libraries(test_qaffd_authorization PRIVATE qaffd_authorization)
+  target_compile_options(test_qaffd_authorization PRIVATE
+    -Wall -Wextra -Wpedantic)
+  add_test(NAME qaffd_authorization
+    COMMAND $<TARGET_FILE:test_qaffd_authorization>)
 
   if(QAFF_BUILD_BPF)
     add_executable(test_reuseport_smoke
