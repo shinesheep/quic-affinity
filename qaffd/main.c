@@ -4,6 +4,7 @@
 #include "quic_affinity/control.h"
 #include "control_protocol.h"
 #include "authorization.h"
+#include "cid_index.h"
 #include "state_store.h"
 #include "worker_registry.h"
 
@@ -75,11 +76,6 @@ struct qaffd_client {
   size_t reply_len;
 };
 
-struct qaffd_cid_entry {
-  struct qaff_cid_key key;
-  uint32_t worker_id;
-};
-
 struct qaffd_options {
   const char *socket_path;
   const char *bpf_object_path;
@@ -131,13 +127,7 @@ struct qaffd_state {
   uint32_t worker_target_pids[QAFFD_MAX_WORKERS];
   struct qaffd_peer_cred worker_creds[QAFFD_MAX_WORKERS];
   struct qaffd_worker_registry worker_registry;
-  struct qaffd_cid_entry *cid_entries;
-  size_t cid_entries_len;
-  size_t cid_entries_cap;
-  size_t *cid_index_slots;
-  size_t cid_index_cap;
-  size_t cid_index_used;
-  size_t cid_index_tombstones;
+  struct qaffd_cid_index cid_index;
   const char *pin_root;
   const char *state_path;
   uint8_t short_cid_len;
@@ -997,231 +987,10 @@ static void reply_init(struct qaff_control_msg *reply,
   reply->op = request->op;
 }
 
-static int cid_key_equal(const struct qaff_cid_key *a,
-                         const struct qaff_cid_key *b) {
-  return a->len == b->len &&
-         memcmp(a->bytes, b->bytes, sizeof(a->bytes)) == 0;
-}
-
-#define QAFFD_CID_INDEX_EMPTY 0u
-#define QAFFD_CID_INDEX_TOMBSTONE SIZE_MAX
-
-static uint64_t cid_key_hash(const struct qaff_cid_key *key) {
-  uint64_t hash = 1469598103934665603ULL;
-  hash ^= key->len;
-  hash *= 1099511628211ULL;
-  for (size_t i = 0; i < sizeof(key->bytes); i++) {
-    hash ^= key->bytes[i];
-    hash *= 1099511628211ULL;
-  }
-  return hash;
-}
-
-static size_t cid_index_slot_for(const struct qaffd_state *state,
-                                 const struct qaff_cid_key *key,
-                                 int *found) {
-  size_t mask = state->cid_index_cap - 1;
-  size_t slot = (size_t)cid_key_hash(key) & mask;
-  size_t first_tombstone = SIZE_MAX;
-
-  for (size_t probed = 0; probed < state->cid_index_cap; probed++) {
-    size_t value = state->cid_index_slots[slot];
-    if (value == QAFFD_CID_INDEX_EMPTY) {
-      *found = 0;
-      return first_tombstone != SIZE_MAX ? first_tombstone : slot;
-    }
-    if (value == QAFFD_CID_INDEX_TOMBSTONE) {
-      if (first_tombstone == SIZE_MAX) {
-        first_tombstone = slot;
-      }
-    } else {
-      size_t index = value - 1;
-      if (index < state->cid_entries_len &&
-          cid_key_equal(&state->cid_entries[index].key, key)) {
-        *found = 1;
-        return slot;
-      }
-    }
-    slot = (slot + 1) & mask;
-  }
-
-  *found = 0;
-  return first_tombstone;
-}
-
-static int cid_index_rehash(struct qaffd_state *state, size_t new_cap) {
-  size_t *old_slots = state->cid_index_slots;
-  size_t old_cap = state->cid_index_cap;
-  size_t old_used = state->cid_index_used;
-  size_t old_tombstones = state->cid_index_tombstones;
-
-  size_t *new_slots = calloc(new_cap, sizeof(*new_slots));
-  if (new_slots == NULL) {
-    return -1;
-  }
-
-  state->cid_index_slots = new_slots;
-  state->cid_index_cap = new_cap;
-  state->cid_index_used = 0;
-  state->cid_index_tombstones = 0;
-
-  for (size_t i = 0; i < state->cid_entries_len; i++) {
-    int found = 0;
-    size_t slot = cid_index_slot_for(state, &state->cid_entries[i].key, &found);
-    if (found || slot == SIZE_MAX) {
-      free(new_slots);
-      state->cid_index_slots = old_slots;
-      state->cid_index_cap = old_cap;
-      state->cid_index_used = old_used;
-      state->cid_index_tombstones = old_tombstones;
-      errno = EINVAL;
-      return -1;
-    }
-    state->cid_index_slots[slot] = i + 1;
-    state->cid_index_used++;
-  }
-
-  free(old_slots);
-  return 0;
-}
-
-static int cid_index_prepare_insert(struct qaffd_state *state) {
-  if (state->cid_index_cap == 0) {
-    return cid_index_rehash(state, 16);
-  }
-
-  size_t occupied = state->cid_index_used + state->cid_index_tombstones;
-  size_t threshold = state->cid_index_cap / 2 + state->cid_index_cap / 4;
-  if (occupied + 1 < threshold) {
-    return 0;
-  }
-
-  size_t next_cap = state->cid_index_cap;
-  if (state->cid_index_tombstones <= state->cid_index_used) {
-    if (next_cap > SIZE_MAX / 2) {
-      errno = ENOMEM;
-      return -1;
-    }
-    next_cap *= 2;
-  }
-  return cid_index_rehash(state, next_cap);
-}
-
-static ssize_t find_cid_entry(const struct qaffd_state *state,
-                              const struct qaff_cid_key *key) {
-  if (state->cid_index_cap == 0) {
-    return -1;
-  }
-  int found = 0;
-  size_t slot = cid_index_slot_for(state, key, &found);
-  if (!found || slot == SIZE_MAX) {
-    return -1;
-  }
-  return (ssize_t)(state->cid_index_slots[slot] - 1);
-}
-
-static int remember_cid(struct qaffd_state *state,
-                        const struct qaff_cid_key *key,
-                        uint32_t worker_id) {
-  ssize_t index = find_cid_entry(state, key);
-  if (index >= 0) {
-    state->cid_entries[index].worker_id = worker_id;
-    return 0;
-  }
-
-  if (cid_index_prepare_insert(state) != 0) {
-    return -1;
-  }
-
-  if (state->cid_entries_len == state->cid_entries_cap) {
-    const size_t max_cap = SIZE_MAX / sizeof(*state->cid_entries);
-    if (state->cid_entries_cap > max_cap / 2) {
-      errno = ENOMEM;
-      return -1;
-    }
-    size_t next_cap = state->cid_entries_cap == 0
-                        ? 1024
-                        : state->cid_entries_cap * 2;
-    struct qaffd_cid_entry *next =
-        realloc(state->cid_entries, next_cap * sizeof(*next));
-    if (next == NULL) {
-      return -1;
-    }
-    state->cid_entries = next;
-    state->cid_entries_cap = next_cap;
-  }
-
-  size_t new_index = state->cid_entries_len;
-  state->cid_entries[new_index].key = *key;
-  state->cid_entries[new_index].worker_id = worker_id;
-  state->cid_entries_len++;
-
-  int found = 0;
-  size_t slot = cid_index_slot_for(state, key, &found);
-  if (found || slot == SIZE_MAX) {
-    state->cid_entries_len--;
-    errno = EINVAL;
-    return -1;
-  }
-  if (state->cid_index_slots[slot] == QAFFD_CID_INDEX_TOMBSTONE) {
-    state->cid_index_tombstones--;
-  }
-  state->cid_index_slots[slot] = new_index + 1;
-  state->cid_index_used++;
-  return 0;
-}
-
-static int forget_cid_at(struct qaffd_state *state, size_t index) {
-  if (index >= state->cid_entries_len || state->cid_index_cap == 0) {
-    errno = EINVAL;
-    return -1;
-  }
-
-  int found = 0;
-  size_t removed_slot =
-      cid_index_slot_for(state, &state->cid_entries[index].key, &found);
-  if (!found || removed_slot == SIZE_MAX) {
-    errno = EIO;
-    return -1;
-  }
-
-  size_t last = state->cid_entries_len - 1;
-  size_t moved_slot = SIZE_MAX;
-  if (index != last) {
-    int moved_found = 0;
-    moved_slot =
-        cid_index_slot_for(state, &state->cid_entries[last].key, &moved_found);
-    if (!moved_found || moved_slot == SIZE_MAX) {
-      errno = EIO;
-      return -1;
-    }
-  }
-
-  state->cid_index_slots[removed_slot] = QAFFD_CID_INDEX_TOMBSTONE;
-  state->cid_index_used--;
-  state->cid_index_tombstones++;
-  if (index != last) {
-    state->cid_entries[index] = state->cid_entries[last];
-    state->cid_index_slots[moved_slot] = index + 1;
-  }
-  state->cid_entries_len--;
-  return 0;
-}
-
-static int forget_cid(struct qaffd_state *state,
-                      const struct qaff_cid_key *key) {
-  ssize_t index = find_cid_entry(state, key);
-  if (index < 0) {
-    errno = ENOENT;
-    return -1;
-  }
-  return forget_cid_at(state, (size_t)index);
-}
-
 static int read_cid_consistency(const struct qaffd_state *state,
                                 struct qaffd_cid_consistency *out) {
   memset(out, 0, sizeof(*out));
-  out->owner_count = state->cid_entries_len;
+  out->owner_count = qaffd_cid_index_size(&state->cid_index);
 
   int map_fd = qaff_get_cid_map_fd(state->ctx);
   if (map_fd < 0) {
@@ -1243,9 +1012,12 @@ static int read_cid_consistency(const struct qaffd_state *state,
       continue;
     }
 
-    ssize_t index = find_cid_entry(state, &next_key);
-    if (index < 0 ||
-        state->cid_entries[index].worker_id != worker_id) {
+    ptrdiff_t position = qaffd_cid_index_find(&state->cid_index, &next_key);
+    const struct qaffd_cid_entry *entry =
+        position < 0 ? NULL
+                     : qaffd_cid_index_entry(&state->cid_index,
+                                             (size_t)position);
+    if (entry == NULL || entry->worker_id != worker_id) {
       out->mismatch_count++;
     }
 
@@ -1257,12 +1029,13 @@ static int read_cid_consistency(const struct qaffd_state *state,
     return -1;
   }
 
-  for (size_t i = 0; i < state->cid_entries_len; i++) {
+  for (size_t i = 0; i < qaffd_cid_index_size(&state->cid_index); i++) {
+    const struct qaffd_cid_entry *entry =
+        qaffd_cid_index_entry(&state->cid_index, i);
     uint32_t worker_id = 0;
-    if (bpf_map_lookup_elem(map_fd,
-                            &state->cid_entries[i].key,
-                            &worker_id) != 0 ||
-        worker_id != state->cid_entries[i].worker_id) {
+    if (entry == NULL ||
+        bpf_map_lookup_elem(map_fd, &entry->key, &worker_id) != 0 ||
+        worker_id != entry->worker_id) {
       out->mismatch_count++;
     }
   }
@@ -1305,8 +1078,13 @@ static int read_passive_table_info(const struct qaffd_state *state,
 
 static int retire_worker_cids(struct qaffd_state *state, uint32_t worker_id) {
   size_t i = 0;
-  while (i < state->cid_entries_len) {
-    struct qaffd_cid_entry *entry = &state->cid_entries[i];
+  while (i < qaffd_cid_index_size(&state->cid_index)) {
+    struct qaffd_cid_entry *entry =
+        qaffd_cid_index_entry_mut(&state->cid_index, i);
+    if (entry == NULL) {
+      errno = EIO;
+      return -1;
+    }
     if (entry->worker_id != worker_id) {
       i++;
       continue;
@@ -1318,7 +1096,7 @@ static int retire_worker_cids(struct qaffd_state *state, uint32_t worker_id) {
         errno != ENOENT) {
       return -1;
     }
-    if (forget_cid_at(state, i) != 0) {
+    if (qaffd_cid_index_remove_at(&state->cid_index, i) != 0) {
       return -1;
     }
   }
@@ -1477,7 +1255,7 @@ static int recover_cids_from_map(struct qaffd_state *state) {
       errno = EINVAL;
       return -1;
     }
-    if (remember_cid(state, &next_key, worker_id) != 0) {
+    if (qaffd_cid_index_put(&state->cid_index, &next_key, worker_id) != 0) {
       return -1;
     }
     state->worker_registered[worker_id] = 1;
@@ -1787,7 +1565,7 @@ static int handle_register_cid(struct qaffd_state *state,
     return -1;
   }
 
-  if (remember_cid(state, &key, request->worker_id) != 0) {
+  if (qaffd_cid_index_put(&state->cid_index, &key, request->worker_id) != 0) {
     int saved_errno = errno ? errno : ENOMEM;
     qaff_retire_cid(state->ctx, request->cid, request->cid_len);
     errno = saved_errno;
@@ -1812,23 +1590,25 @@ static int handle_retire_cid(struct qaffd_state *state,
     return -1;
   }
 
-  ssize_t index = find_cid_entry(state, &key);
-  if (index < 0) {
+  ptrdiff_t position = qaffd_cid_index_find(&state->cid_index, &key);
+  const struct qaffd_cid_entry *entry =
+      position < 0
+          ? NULL
+          : qaffd_cid_index_entry(&state->cid_index, (size_t)position);
+  if (entry == NULL) {
     errno = ENOENT;
     return -1;
   }
-  if (authorize_worker_mutation(state,
-                                state->cid_entries[index].worker_id,
-                                peer) != 0) {
+  if (authorize_worker_mutation(state, entry->worker_id, peer) != 0) {
     return -1;
   }
-  uint32_t owner_worker_id = state->cid_entries[index].worker_id;
+  uint32_t owner_worker_id = entry->worker_id;
 
   if (qaff_retire_cid(state->ctx, request->cid, request->cid_len) != 0) {
     return -1;
   }
 
-  if (forget_cid(state, &key) != 0) {
+  if (qaffd_cid_index_remove(&state->cid_index, &key) != 0) {
     return -1;
   }
   audit_event("cid_retired",
@@ -2737,8 +2517,7 @@ int main(int argc, char **argv) {
     perror("load_state");
     qaff_bpf_object_close(state.bpf);
     qaff_close(state.ctx);
-    free(state.cid_entries);
-    free(state.cid_index_slots);
+    qaffd_cid_index_destroy(&state.cid_index);
     close(state.instance_lock_fd);
     return 1;
   }
@@ -2746,8 +2525,7 @@ int main(int argc, char **argv) {
     perror("recover_workers_from_generation_map");
     qaff_bpf_object_close(state.bpf);
     qaff_close(state.ctx);
-    free(state.cid_entries);
-    free(state.cid_index_slots);
+    qaffd_cid_index_destroy(&state.cid_index);
     close(state.instance_lock_fd);
     return 1;
   }
@@ -2755,8 +2533,7 @@ int main(int argc, char **argv) {
     perror("recover_cids_from_map");
     qaff_bpf_object_close(state.bpf);
     qaff_close(state.ctx);
-    free(state.cid_entries);
-    free(state.cid_index_slots);
+    qaffd_cid_index_destroy(&state.cid_index);
     close(state.instance_lock_fd);
     return 1;
   }
@@ -2766,8 +2543,7 @@ int main(int argc, char **argv) {
     perror("make_server_socket");
     qaff_bpf_object_close(state.bpf);
     qaff_close(state.ctx);
-    free(state.cid_entries);
-    free(state.cid_index_slots);
+    qaffd_cid_index_destroy(&state.cid_index);
     close(state.instance_lock_fd);
     return 1;
   }
@@ -2914,8 +2690,7 @@ int main(int argc, char **argv) {
       close(state.worker_pidfds[i]);
     }
   }
-  free(state.cid_entries);
-  free(state.cid_index_slots);
+  qaffd_cid_index_destroy(&state.cid_index);
   qaff_bpf_object_close(state.bpf);
   qaff_close(state.ctx);
   close(state.instance_lock_fd);

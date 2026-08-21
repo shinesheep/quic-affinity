@@ -37,7 +37,6 @@
 - Replace the private fixed-struct control transport with an explicitly encoded
   `SOCK_SEQPACKET` protocol. (Implemented.)
 - Split qaffd into independently testable protocol, authorization, state,
-  worker-registry, and CID-index modules. (Protocol, authorization, state store,
-  and worker-registry modules implemented.)
+  worker-registry, and CID-index modules. (Implemented.)
 - Add fuzzing, scale tests, fault injection, and arm64 build validation.
 - Add signed release artifacts, checksums, SBOM generation, and native packages.

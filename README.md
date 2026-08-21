@@ -214,6 +214,8 @@ The restart snapshot format and durability guarantees are documented in
 [`docs/state-store.md`](docs/state-store.md).
 Worker lifecycle and generation semantics are documented in
 [`docs/worker-registry.md`](docs/worker-registry.md).
+The daemon's in-memory CID ownership index and invariants are documented in
+[`docs/cid-index.md`](docs/cid-index.md).
 
 ## Quick Start With `qaffd`
 

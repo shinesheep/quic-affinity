@@ -33,6 +33,8 @@ test -f "$root/usr/include/quic_affinity/quic_affinity.h"
 test -f "$root/usr/include/quic_affinity/control.h"
 find "$root/usr" -path '*/share/doc/*/docs/control-protocol.md' \
   -type f | grep -q .
+find "$root/usr" -path '*/share/doc/*/docs/cid-index.md' \
+  -type f | grep -q .
 find "$root/usr" -path '*/share/doc/*/docs/state-store.md' \
   -type f | grep -q .
 find "$root/usr" -path '*/share/doc/*/docs/worker-registry.md' \

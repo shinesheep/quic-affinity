@@ -92,6 +92,15 @@ if(QAFF_BUILD_DAEMON OR BUILD_TESTING)
   target_link_libraries(qaffd_worker_registry PUBLIC qaffd_authorization)
   target_compile_options(qaffd_worker_registry PRIVATE
     -Wall -Wextra -Wpedantic)
+
+  add_library(qaffd_cid_index STATIC
+    qaffd/cid_index.c)
+  target_include_directories(qaffd_cid_index PUBLIC
+    ${CMAKE_CURRENT_SOURCE_DIR}/qaffd)
+  target_include_directories(qaffd_cid_index PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/include)
+  target_compile_options(qaffd_cid_index PRIVATE
+    -Wall -Wextra -Wpedantic)
 endif()
 
 if(QAFF_BUILD_DAEMON)
@@ -101,6 +110,7 @@ if(QAFF_BUILD_DAEMON)
   target_link_libraries(qaffd PRIVATE
     qaffinity
     qaffd_authorization
+    qaffd_cid_index
     qaffd_state_store
     qaffd_worker_registry)
   target_include_directories(qaffd PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/internal)
@@ -157,6 +167,7 @@ install(FILES LICENSE
 
 install(FILES
   docs/control-protocol.md
+  docs/cid-index.md
   docs/state-store.md
   docs/worker-registry.md
   DESTINATION ${CMAKE_INSTALL_DOCDIR}/docs)
@@ -295,6 +306,16 @@ if(BUILD_TESTING)
     -Wall -Wextra -Wpedantic)
   add_test(NAME qaffd_worker_registry
     COMMAND $<TARGET_FILE:test_qaffd_worker_registry>)
+
+  add_executable(test_qaffd_cid_index
+    tests/test_qaffd_cid_index.c)
+  target_link_libraries(test_qaffd_cid_index PRIVATE qaffd_cid_index)
+  target_include_directories(test_qaffd_cid_index PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/include)
+  target_compile_options(test_qaffd_cid_index PRIVATE
+    -Wall -Wextra -Wpedantic)
+  add_test(NAME qaffd_cid_index
+    COMMAND $<TARGET_FILE:test_qaffd_cid_index>)
 
   if(QAFF_BUILD_BPF)
     add_executable(test_reuseport_smoke
