@@ -8,6 +8,10 @@
 #include <string.h>
 #include <unistd.h>
 
+#ifndef QAFF_PROJECT_VERSION
+#define QAFF_PROJECT_VERSION "unknown"
+#endif
+
 static void usage(FILE *out) {
   fprintf(out,
           "Usage:\n"
@@ -526,7 +530,7 @@ int main(int argc, char **argv) {
   }
 
   if (strcmp(argv[1], "version") == 0) {
-    printf("qaffctl 0.1.0\n");
+    printf("qaffctl %s\n", QAFF_PROJECT_VERSION);
     return 0;
   }
 

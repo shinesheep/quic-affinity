@@ -1,0 +1,11 @@
+prefix=${pcfiledir}/@QAFF_PC_PREFIX_FROM_PKGCONFIG@
+exec_prefix=${prefix}
+libdir=${prefix}/@CMAKE_INSTALL_LIBDIR@
+includedir=${prefix}/@CMAKE_INSTALL_INCLUDEDIR@
+
+Name: quic-affinity
+Description: @PROJECT_DESCRIPTION@
+Version: @PROJECT_VERSION@
+Requires: libbpf
+Libs: -L${libdir} -lqaffinity
+Cflags: -I${includedir}

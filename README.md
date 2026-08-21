@@ -145,6 +145,23 @@ unusual toolchains can override it with `-DQAFF_BPF_CLANG_TARGET=bpfeb`.
 When `QAFF_BUILD_BPF=ON`, a missing clang BPF backend or missing `asm` headers is
 a configuration error rather than a silently incomplete build.
 
+For a library-only build that does not compile BPF, daemons, tools, examples,
+or tests:
+
+```sh
+cmake -B build-library -S . \
+  -DBUILD_TESTING=OFF \
+  -DQAFF_BUILD_BPF=OFF \
+  -DQAFF_BUILD_DAEMON=OFF \
+  -DQAFF_BUILD_TOOLS=OFF \
+  -DQAFF_BUILD_EXAMPLES=OFF
+cmake --build build-library
+```
+
+`BUILD_TESTING`, `QAFF_BUILD_BPF`, `QAFF_BUILD_DAEMON`, `QAFF_BUILD_TOOLS`,
+`QAFF_BUILD_EXAMPLES`, and `QAFF_BUILD_QUICHE_EXAMPLES` are independent build
+switches. BPF-dependent tests are not registered when BPF is disabled.
+
 Run tests:
 
 ```sh
@@ -181,6 +198,15 @@ Stage a package root:
 ```sh
 DESTDIR=/tmp/qaff-root cmake --install build --prefix /usr
 ```
+
+Installed CMake consumers can use:
+
+```cmake
+find_package(quic-affinity CONFIG REQUIRED)
+target_link_libraries(my_server PRIVATE quic-affinity::qaffinity)
+```
+
+The installation also provides `quic-affinity.pc` for pkg-config consumers.
 
 ## Quick Start With `qaffd`
 

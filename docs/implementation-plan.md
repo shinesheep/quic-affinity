@@ -10,7 +10,7 @@
 
 ## Phase 2: Attach and Smoke Test
 
-- Add a libbpf loader. (Initial API exists; needs socket smoke coverage.)
+- Add a libbpf loader. (Implemented with IPv4/IPv6 socket smoke coverage.)
 - Create a multi-worker UDP test server. (Implemented as `reuseport_smoke`.)
 - Attach the reuseport BPF program to the socket group. (Implemented; requires privileges to run.)
 - Register worker sockets in `BPF_MAP_TYPE_REUSEPORT_SOCKARRAY`. (Implemented.)
@@ -20,12 +20,23 @@
 ## Phase 3: Real QUIC Stack Integration
 
 - Pick one first integration target.
-- Add an example that registers server-issued CIDs. (Initial optional quiche FFI probe exists.)
-- Run a real QUIC connection migration/NAT rebinding test. (Initial quiche UDP source-port-change smoke exists.)
-- Define the control-plane split between embedded library mode and `qaffd`.
+- Add an example that registers server-issued CIDs. (Implemented with optional quiche FFI probes.)
+- Run a real QUIC connection migration/NAT rebinding test. (Implemented for quiche UDP source-port changes.)
+- Define the control-plane split between embedded library mode and `qaffd`. (Implemented.)
 
 ## Phase 4: Routable CID Profile
 
 - Define a BPF-friendly CID profile.
 - Add config IDs and rotation.
 - Add keyed tag verification outside the verifier-critical path if needed.
+
+## Pre-release Productionization
+
+- Export an installable CMake package and pkg-config metadata. (Implemented.)
+- Make tests, BPF, daemon, tools, and examples independently configurable. (Implemented.)
+- Replace the private fixed-struct control transport with an explicitly encoded
+  `SOCK_SEQPACKET` protocol.
+- Split qaffd into independently testable protocol, authorization, state,
+  worker-registry, and CID-index modules.
+- Add fuzzing, scale tests, fault injection, and arm64 build validation.
+- Add signed release artifacts, checksums, SBOM generation, and native packages.

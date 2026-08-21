@@ -15,6 +15,7 @@ env=$repo_root/packaging/systemd/qaffd.env.example
 agent_unit=$repo_root/packaging/systemd/qaff-agent@.service
 agent_env=$repo_root/packaging/systemd/qaff-agent.env.example
 tmpfiles=$repo_root/packaging/systemd/quic-affinity.tmpfiles
+consumer_source=$repo_root/tests/consumer
 
 cleanup() {
   rm -rf "$root"
@@ -30,6 +31,12 @@ test -x "$root/usr/sbin/qaffd"
 find "$root/usr" -name libqaffinity.a -type f | grep -q .
 test -f "$root/usr/include/quic_affinity/quic_affinity.h"
 test -f "$root/usr/include/quic_affinity/control.h"
+find "$root/usr" -path '*/cmake/quic-affinity/quic-affinityConfig.cmake' \
+  -type f | grep -q .
+find "$root/usr" -path '*/cmake/quic-affinity/quic-affinityTargets.cmake' \
+  -type f | grep -q .
+pc_file=$(find "$root/usr" -path '*/pkgconfig/quic-affinity.pc' -type f)
+test -n "$pc_file"
 test -f "$root/usr/libexec/quic-affinity/qaff_reuseport.bpf.o"
 test -f "$root/usr/lib/systemd/system/qaffd@.service"
 test -f "$root/usr/lib/systemd/system/qaff-agent@.service"
@@ -82,3 +89,15 @@ grep -q '^QAFF_LISTEN_PORT=4433$' "$agent_env"
 grep -q '^d /run/quic-affinity ' "$tmpfiles"
 grep -q '^d /var/lib/quic-affinity ' "$tmpfiles"
 grep -q '^d /sys/fs/bpf/quic-affinity ' "$tmpfiles"
+
+pc_dir=$(dirname "$pc_file")
+expected_version=$("$root/usr/bin/qaffctl" version)
+expected_version=${expected_version#qaffctl }
+PKG_CONFIG_PATH="$pc_dir" pkg-config \
+  --exact-version="$expected_version" quic-affinity
+PKG_CONFIG_PATH="$pc_dir" pkg-config --cflags --libs quic-affinity >/dev/null
+
+cmake -S "$consumer_source" -B "$root/consumer-build" \
+  -DCMAKE_PREFIX_PATH="$root/usr" >/dev/null
+cmake --build "$root/consumer-build" >/dev/null
+"$root/consumer-build/qaff_consumer_smoke"

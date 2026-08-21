@@ -47,6 +47,20 @@ jobs:
       - name: Test
         run: ctest --test-dir build-ci --output-on-failure
 
+      - name: Verify library-only configuration
+        run: >-
+          cmake -B build-library -S .
+          -DBUILD_TESTING=OFF
+          -DQAFF_BUILD_BPF=OFF
+          -DQAFF_BUILD_DAEMON=OFF
+          -DQAFF_BUILD_TOOLS=OFF
+          -DQAFF_BUILD_EXAMPLES=OFF
+          -DQAFF_BUILD_QUICHE_EXAMPLES=OFF
+          -DCMAKE_C_FLAGS=-Werror
+
+      - name: Build library-only configuration
+        run: cmake --build build-library --parallel 2
+
   sanitizers:
     name: ASan and UBSan
     runs-on: ubuntu-24.04
@@ -81,10 +95,8 @@ jobs:
       - name: Build
         run: cmake --build build-sanitize --parallel 2
 
-      - name: Run deterministic unit tests
+      - name: Run all configured tests
         env:
           ASAN_OPTIONS: detect_leaks=1:halt_on_error=1
           UBSAN_OPTIONS: halt_on_error=1:print_stacktrace=1
-        run: >-
-          ctest --test-dir build-sanitize --output-on-failure
-          -R '^(quic_parser|cid_profile)$'
+        run: ctest --test-dir build-sanitize --output-on-failure

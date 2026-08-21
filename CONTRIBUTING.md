@@ -33,6 +33,13 @@ Some integration tests need BPF-related kernel capabilities and a compatible
 Linux kernel. Their wrappers attempt to apply narrow file capabilities with
 passwordless `sudo`; unsupported environments report the test as skipped.
 Parser and CID-profile unit tests must pass in every environment.
+To exercise the unprivileged configuration explicitly, run:
+
+```sh
+cmake -B build-no-bpf -S . -DQAFF_BUILD_BPF=OFF
+cmake --build build-no-bpf
+ctest --test-dir build-no-bpf --output-on-failure
+```
 
 Before submitting, also run a strict release build:
 
@@ -51,8 +58,10 @@ ctest --test-dir build-release --output-on-failure
 - Add focused regression tests for bug fixes and boundary cases.
 - Document public API, command-line, privilege, protocol, and state-format
   changes in the same pull request.
-- Preserve control-protocol and pinned-state compatibility unless the change
-  includes an explicit migration plan.
+- Once a compatibility baseline is declared for a release, preserve public
+  protocol and state compatibility unless the change includes a migration
+  plan. Before that baseline, prefer a clean final design over compatibility
+  scaffolding.
 - Avoid unrelated formatting or refactoring in behavior changes.
 - Never commit private keys, production CIDs, packet captures, credentials, or
   host-specific bpffs state.
