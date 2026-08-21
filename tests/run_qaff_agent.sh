@@ -13,6 +13,7 @@ target_bin=$4
 bpf_obj=$5
 sock=/tmp/qaff-agent-$$.sock
 agent_log=/tmp/qaff-agent-$$.log
+rotate_log=/tmp/qaff-agent-rotate-$$.log
 config_out=/tmp/qaff-agent-$$.config
 port=$((20000 + ($$ % 20000)))
 caps=cap_bpf,cap_net_admin,cap_perfmon,cap_sys_resource+ep
@@ -26,7 +27,7 @@ cleanup() {
     kill "$daemon_pid" 2>/dev/null || true
     wait "$daemon_pid" 2>/dev/null || true
   fi
-  rm -f "$sock" "$agent_log" "$config_out"
+  rm -f "$sock" "$agent_log" "$rotate_log" "$config_out"
 }
 trap cleanup EXIT INT TERM
 
@@ -57,6 +58,7 @@ fi
 
 "$agent_bin" run --socket "$sock" --worker-id 0 \
   --address 127.0.0.1 --port "$port" --heartbeat-ms 50 \
+  --socket-check-ms 50 \
   --discovery-timeout-ms 3000 -- "$target_bin" listen "$port" \
   >"$agent_log" 2>&1 &
 agent_pid=$!
@@ -142,6 +144,103 @@ if [ "$unregistered" -ne 1 ]; then
 fi
 
 grep -q '^qaff-agent: registered worker_id=0 ' "$agent_log"
+
+# The target may close and replace its listening socket without exiting. The
+# agent must revoke the old lease, release its duplicate of the abandoned
+# socket, discover the replacement, and register a fresh lease.
+"$agent_bin" run --socket "$sock" --worker-id 0 \
+  --address 127.0.0.1 --port "$port" --heartbeat-ms 50 \
+  --socket-check-ms 50 \
+  --discovery-timeout-ms 3000 -- "$target_bin" rotate "$port" \
+  >"$rotate_log" 2>&1 &
+agent_pid=$!
+
+registered=0
+for _ in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30 31 32 33 34 35 36 37 38 39 40; do
+  if "$qaffctl_bin" config "$sock" >"$config_out" 2>/dev/null &&
+      grep -q '^worker_count=1$' "$config_out"; then
+    registered=1
+    break
+  fi
+  if ! kill -0 "$agent_pid" 2>/dev/null; then
+    cat "$rotate_log" >&2 || true
+    echo "qaff-agent exited before rotation test registration" >&2
+    exit 1
+  fi
+  sleep 0.05
+done
+if [ "$registered" -ne 1 ]; then
+  cat "$rotate_log" >&2 || true
+  echo "qaff-agent did not register rotation test socket" >&2
+  exit 1
+fi
+
+"$target_bin" send "$port"
+
+revoked=0
+for _ in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20; do
+  if grep -q '^qaff-agent: target socket changed; revoking worker_id=0 ' \
+       "$rotate_log" &&
+      "$qaffctl_bin" config "$sock" >"$config_out" 2>/dev/null &&
+      grep -q '^worker_count=0$' "$config_out"; then
+    revoked=1
+    break
+  fi
+  if ! kill -0 "$agent_pid" 2>/dev/null; then
+    cat "$rotate_log" >&2 || true
+    echo "qaff-agent exited before revoking stale socket" >&2
+    exit 1
+  fi
+  sleep 0.05
+done
+if [ "$revoked" -ne 1 ]; then
+  cat "$rotate_log" >&2 || true
+  echo "qaff-agent did not revoke stale socket before replacement" >&2
+  exit 1
+fi
+
+replaced=0
+for _ in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30 31 32 33 34 35 36 37 38 39 40 41 42 43 44 45 46 47 48 49 50 51 52 53 54 55 56 57 58 59 60; do
+  if grep -q '^qaff-agent: target socket changed; revoking worker_id=0 ' \
+       "$rotate_log" &&
+      grep -q '^qaff-agent: re-registered worker_id=0 ' "$rotate_log" &&
+      "$qaffctl_bin" config "$sock" >"$config_out" 2>/dev/null &&
+      grep -q '^worker_count=1$' "$config_out"; then
+    replaced=1
+    break
+  fi
+  if ! kill -0 "$agent_pid" 2>/dev/null; then
+    cat "$rotate_log" >&2 || true
+    echo "qaff-agent exited before registering replacement socket" >&2
+    exit 1
+  fi
+  sleep 0.05
+done
+if [ "$replaced" -ne 1 ]; then
+  cat "$rotate_log" >&2 || true
+  echo "qaff-agent did not replace the stale socket registration" >&2
+  exit 1
+fi
+
+"$target_bin" send "$port"
+wait "$agent_pid"
+agent_pid=
+
+unregistered=0
+for _ in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20; do
+  if "$qaffctl_bin" config "$sock" >"$config_out" 2>/dev/null &&
+      grep -q '^worker_count=0$' "$config_out"; then
+    unregistered=1
+    break
+  fi
+  sleep 0.05
+done
+if [ "$unregistered" -ne 1 ]; then
+  cat "$rotate_log" >&2 || true
+  echo "replacement socket lease outlived the target process" >&2
+  exit 1
+fi
+
 "$qaffctl_bin" stop "$sock"
 wait "$daemon_pid"
 daemon_pid=

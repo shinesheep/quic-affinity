@@ -292,10 +292,17 @@ build/qaff-agent run \
 Start one agent per worker with a unique worker ID. The agent waits for the
 target to bind, duplicates the matching socket with `pidfd_getfd`, registers a
 leased worker with qaffd, sends optional heartbeats, restores the registration
-after qaffd restarts, and removes the lease when the real target exits.
+after qaffd restarts, and removes the lease when the real target exits. It also
+checks the target's socket cookie periodically; if the application closes or
+replaces the listener, the agent revokes the old lease, releases its duplicate,
+and discovers and registers the replacement.
 File-descriptor aliases of one socket are deduplicated by socket cookie;
 multiple distinct matching sockets in one worker are rejected as ambiguous.
 `qaffctl workers` reports both the registering agent PID and its target PID.
+
+`--socket-check-ms` controls the identity-check interval and defaults to 250ms.
+A shorter interval reduces the maximum stale-routing window but scans the
+target's `/proc/<pid>/fd` directory more often.
 
 An already-running process can be onboarded with:
 

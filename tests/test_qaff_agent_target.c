@@ -9,6 +9,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/socket.h>
+#include <time.h>
 #include <unistd.h>
 
 #ifndef SO_REUSEPORT
@@ -26,7 +27,7 @@ static int parse_port(const char *text, uint16_t *out) {
   return 0;
 }
 
-static int listen_once(uint16_t port) {
+static int make_listener(uint16_t port) {
   int fd = socket(AF_INET, SOCK_DGRAM | SOCK_CLOEXEC, 0);
   if (fd < 0) {
     return -1;
@@ -46,6 +47,10 @@ static int listen_once(uint16_t port) {
     return -1;
   }
 
+  return fd;
+}
+
+static int receive_once(int fd) {
   struct pollfd pfd = {
     .fd = fd,
     .events = POLLIN,
@@ -58,16 +63,56 @@ static int listen_once(uint16_t port) {
     if (rc == 0) {
       errno = ETIMEDOUT;
     }
-    close(fd);
     return -1;
   }
 
   uint8_t packet[256];
   ssize_t got = recv(fd, packet, sizeof(packet), 0);
+  return got > 0 ? 0 : -1;
+}
+
+static int listen_once(uint16_t port) {
+  int fd = make_listener(port);
+  if (fd < 0) {
+    return -1;
+  }
+  int rc = receive_once(fd);
   int saved_errno = errno;
   close(fd);
   errno = saved_errno;
-  return got > 0 ? 0 : -1;
+  return rc;
+}
+
+static int rotate_listener(uint16_t port) {
+  int fd = make_listener(port);
+  if (fd < 0) {
+    return -1;
+  }
+  if (receive_once(fd) != 0) {
+    int saved_errno = errno;
+    close(fd);
+    errno = saved_errno;
+    return -1;
+  }
+  close(fd);
+
+  const struct timespec replacement_delay = {
+    .tv_sec = 0,
+    .tv_nsec = 500 * 1000 * 1000,
+  };
+  if (nanosleep(&replacement_delay, NULL) != 0) {
+    return -1;
+  }
+
+  fd = make_listener(port);
+  if (fd < 0) {
+    return -1;
+  }
+  int rc = receive_once(fd);
+  int saved_errno = errno;
+  close(fd);
+  errno = saved_errno;
+  return rc;
 }
 
 static int send_packet(uint16_t port) {
@@ -99,7 +144,7 @@ static int send_packet(uint16_t port) {
 
 int main(int argc, char **argv) {
   if (argc != 3) {
-    fprintf(stderr, "usage: %s listen|send PORT\n", argv[0]);
+    fprintf(stderr, "usage: %s listen|rotate|send PORT\n", argv[0]);
     return 2;
   }
   uint16_t port = 0;
@@ -111,6 +156,8 @@ int main(int argc, char **argv) {
   int rc;
   if (strcmp(argv[1], "listen") == 0) {
     rc = listen_once(port);
+  } else if (strcmp(argv[1], "rotate") == 0) {
+    rc = rotate_listener(port);
   } else if (strcmp(argv[1], "send") == 0) {
     rc = send_packet(port);
   } else {

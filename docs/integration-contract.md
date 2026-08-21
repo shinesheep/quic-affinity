@@ -271,7 +271,11 @@ An application that cannot pass its own socket can be started through
 `qaff-agent watch`. The agent matches one exact bound address/port, duplicates
 the UDP `SO_REUSEPORT` fd through pidfd, and owns the qaffd lease for the real
 worker lifetime. It also reconnects and restores registration after qaffd
-restarts. This changes no application source code.
+restarts. While the target remains alive, it periodically verifies the exact
+socket cookie and revokes and replaces the lease if the listener changes. The
+check interval is configured with `--socket-check-ms`; detection is polling, so
+it defines the maximum expected stale-registration window. This changes no
+application source code.
 
 ## IPv4 and IPv6
 

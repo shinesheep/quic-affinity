@@ -95,6 +95,7 @@ grep -q '^QAFF_TARGET_PID=' "$agent_env"
 grep -q '^QAFF_WORKER_ID=0$' "$agent_env"
 grep -q '^QAFF_LISTEN_ADDRESS=127.0.0.1$' "$agent_env"
 grep -q '^QAFF_LISTEN_PORT=4433$' "$agent_env"
+grep -q '^QAFF_SOCKET_CHECK_MS=250$' "$agent_env"
 
 grep -q '^d /run/quic-affinity ' "$tmpfiles"
 grep -q '^d /var/lib/quic-affinity ' "$tmpfiles"

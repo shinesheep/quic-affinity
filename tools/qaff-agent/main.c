@@ -52,6 +52,7 @@
 
 #define QAFF_AGENT_DISCOVERY_TIMEOUT_MS_DEFAULT 10000u
 #define QAFF_AGENT_HEARTBEAT_MS_DEFAULT 1000u
+#define QAFF_AGENT_SOCKET_CHECK_MS_DEFAULT 250u
 #define QAFF_AGENT_SCAN_INTERVAL_MS 50u
 #define QAFF_AGENT_RECONNECT_INTERVAL_MS 100u
 
@@ -72,6 +73,7 @@ struct agent_options {
   uint16_t port;
   uint64_t discovery_timeout_ms;
   uint64_t heartbeat_ms;
+  uint64_t socket_check_ms;
   char **command;
 };
 
@@ -107,7 +109,9 @@ static void usage(FILE *out) {
           "  --discovery-timeout-ms N  Socket discovery timeout "
           "(default 10000)\n"
           "  --heartbeat-ms N          Lease heartbeat interval; 0 disables "
-          "(default 1000)\n");
+          "(default 1000)\n"
+          "  --socket-check-ms N       Target socket identity check interval "
+          "(default 250)\n");
 }
 
 static int parse_u64(const char *text, uint64_t maximum, uint64_t *out) {
@@ -150,6 +154,7 @@ static int parse_args(int argc, char **argv, struct agent_options *options) {
   options->discovery_timeout_ms =
       QAFF_AGENT_DISCOVERY_TIMEOUT_MS_DEFAULT;
   options->heartbeat_ms = QAFF_AGENT_HEARTBEAT_MS_DEFAULT;
+  options->socket_check_ms = QAFF_AGENT_SOCKET_CHECK_MS_DEFAULT;
 
   if (argc < 2) {
     return -1;
@@ -206,6 +211,13 @@ static int parse_args(int argc, char **argv, struct agent_options *options) {
     } else if (strcmp(argv[i], "--heartbeat-ms") == 0 &&
                i + 1 < argc) {
       if (parse_u64(argv[++i], UINT32_MAX, &options->heartbeat_ms) != 0) {
+        return -1;
+      }
+    } else if (strcmp(argv[i], "--socket-check-ms") == 0 &&
+               i + 1 < argc) {
+      if (parse_u64(argv[++i], UINT32_MAX,
+                    &options->socket_check_ms) != 0 ||
+          options->socket_check_ms == 0) {
         return -1;
       }
     } else {
@@ -320,6 +332,20 @@ static int is_target_socket(int fd, const struct agent_options *options) {
   return sockaddr_matches(&actual, options);
 }
 
+static int read_socket_cookie(int fd, uint64_t *out) {
+  uint64_t cookie = 0;
+  socklen_t cookie_len = sizeof(cookie);
+  if (getsockopt(fd, SOL_SOCKET, SO_COOKIE, &cookie, &cookie_len) != 0) {
+    return -1;
+  }
+  if (cookie_len != sizeof(cookie) || cookie == 0) {
+    errno = EINVAL;
+    return -1;
+  }
+  *out = cookie;
+  return 0;
+}
+
 /*
  * Returns a duplicated listener fd, -1 on a hard error, or -2 when no
  * matching socket exists yet. More than one distinct matching socket is
@@ -371,14 +397,7 @@ static int scan_target_fds(int pidfd,
     }
 
     uint64_t cookie = 0;
-    socklen_t cookie_len = sizeof(cookie);
-    int this_cookie_valid =
-        getsockopt(candidate,
-                   SOL_SOCKET,
-                   SO_COOKIE,
-                   &cookie,
-                   &cookie_len) == 0 &&
-        cookie != 0;
+    int this_cookie_valid = read_socket_cookie(candidate, &cookie) == 0;
     if (selected < 0) {
       selected = candidate;
       selected_target_fd = (int)target_fd_long;
@@ -417,6 +436,48 @@ static int scan_target_fds(int pidfd,
   return selected;
 }
 
+static int target_has_exited(int pidfd);
+
+/* Returns 1 while the target still owns the socket, 0 after replacement. */
+static int validate_target_socket(int pidfd,
+                                  pid_t pid,
+                                  const struct agent_options *options,
+                                  uint64_t expected_cookie,
+                                  int *target_fd_number) {
+  int current_target_fd = -1;
+  int current =
+      scan_target_fds(pidfd, pid, options, &current_target_fd);
+  if (current == -2) {
+    errno = ESTALE;
+    return 0;
+  }
+  if (current < 0) {
+    if (errno == EEXIST) {
+      errno = ESTALE;
+      return 0;
+    }
+    if ((errno == ENOENT || errno == ESRCH) && target_has_exited(pidfd)) {
+      errno = ESRCH;
+    }
+    return -1;
+  }
+
+  uint64_t current_cookie = 0;
+  int cookie_rc = read_socket_cookie(current, &current_cookie);
+  int saved_errno = errno;
+  close(current);
+  if (cookie_rc != 0) {
+    errno = saved_errno;
+    return -1;
+  }
+  if (current_cookie != expected_cookie) {
+    errno = ESTALE;
+    return 0;
+  }
+  *target_fd_number = current_target_fd;
+  return 1;
+}
+
 static int target_has_exited(int pidfd) {
   struct pollfd pfd = {
     .fd = pidfd,
@@ -432,14 +493,15 @@ static int target_has_exited(int pidfd) {
 static int discover_socket(int pidfd,
                            pid_t pid,
                            const struct agent_options *options,
-                           int *target_fd_out) {
+                           int *target_fd_out,
+                           int retry_ambiguous) {
   uint64_t started = monotonic_ms();
   for (;;) {
     int fd = scan_target_fds(pidfd, pid, options, target_fd_out);
     if (fd >= 0) {
       return fd;
     }
-    if (fd == -1) {
+    if (fd == -1 && !(retry_ambiguous && errno == EEXIST)) {
       return -1;
     }
     if (g_signal) {
@@ -501,10 +563,23 @@ static int wait_for_reconnect_window(int pidfd) {
 
 static int reconnect_control(int pidfd,
                              int worker_fd,
-                             const struct agent_options *options) {
+                             const struct agent_options *options,
+                             uint64_t worker_cookie,
+                             int *target_fd_number) {
   int last_error = 0;
   int reported_error = 0;
   for (;;) {
+    int socket_status = validate_target_socket(pidfd,
+                                               options->target_pid,
+                                               options,
+                                               worker_cookie,
+                                               target_fd_number);
+    if (socket_status <= 0) {
+      if (socket_status == 0) {
+        errno = ESTALE;
+      }
+      return -1;
+    }
     int fd = qaff_control_connect(options->control_socket);
     if (fd >= 0) {
       if (qaff_control_register_worker_lease_for_pid(
@@ -540,7 +615,11 @@ static int reconnect_control(int pidfd,
 static int monitor_target(int pidfd,
                           int *control_fd,
                           int worker_fd,
+                          uint64_t worker_cookie,
+                          int *target_fd_number,
                           const struct agent_options *options) {
+  uint64_t last_socket_check_ms = monotonic_ms();
+  uint64_t last_heartbeat_ms = last_socket_check_ms;
   for (;;) {
     if (g_signal) {
       errno = EINTR;
@@ -556,11 +635,13 @@ static int monitor_target(int pidfd,
         .events = POLLIN,
       },
     };
-    int timeout = options->heartbeat_ms == 0
-                      ? -1
-                      : (options->heartbeat_ms > INT_MAX
-                             ? INT_MAX
-                             : (int)options->heartbeat_ms);
+    int timeout = options->socket_check_ms > INT_MAX
+                      ? INT_MAX
+                      : (int)options->socket_check_ms;
+    if (options->heartbeat_ms != 0 &&
+        options->heartbeat_ms < (uint64_t)timeout) {
+      timeout = (int)options->heartbeat_ms;
+    }
     int rc;
     do {
       rc = poll(fds, 2, timeout);
@@ -575,23 +656,69 @@ static int monitor_target(int pidfd,
     int disconnected =
         rc > 0 &&
         (fds[1].revents & (POLLIN | POLLHUP | POLLERR | POLLNVAL));
-    if (!disconnected &&
-        rc == 0 &&
-        qaff_control_worker_heartbeat(*control_fd, options->worker_id) != 0) {
-      disconnected = 1;
+    uint64_t now = monotonic_ms();
+    if (now == 0) {
+      return -1;
+    }
+    if (now - last_socket_check_ms >= options->socket_check_ms) {
+      int socket_status = validate_target_socket(pidfd,
+                                                 options->target_pid,
+                                                 options,
+                                                 worker_cookie,
+                                                 target_fd_number);
+      if (socket_status <= 0) {
+        if (socket_status == 0) {
+          errno = ESTALE;
+          return 1;
+        }
+        return -1;
+      }
+      last_socket_check_ms = now;
+    }
+    if (!disconnected && options->heartbeat_ms != 0 &&
+        now - last_heartbeat_ms >= options->heartbeat_ms) {
+      if (qaff_control_worker_heartbeat(*control_fd,
+                                        options->worker_id) != 0) {
+        disconnected = 1;
+      } else {
+        last_heartbeat_ms = now;
+      }
     }
     if (disconnected) {
       close(*control_fd);
       *control_fd =
-          reconnect_control(pidfd, worker_fd, options);
+          reconnect_control(pidfd,
+                            worker_fd,
+                            options,
+                            worker_cookie,
+                            target_fd_number);
       if (*control_fd < 0) {
         if (errno == ESRCH) {
           return 0;
         }
+        if (errno == ESTALE) {
+          return 1;
+        }
         return -1;
       }
+      last_heartbeat_ms = monotonic_ms();
     }
   }
+}
+
+static void revoke_worker_registration(const struct agent_options *options) {
+  int fd = qaff_control_connect(options->control_socket);
+  if (fd < 0) {
+    return;
+  }
+  if (qaff_control_unregister_worker(fd, options->worker_id) != 0 &&
+      errno != ENOENT) {
+    fprintf(stderr,
+            "qaff-agent: failed to revoke worker_id=%u registration: %s\n",
+            options->worker_id,
+            strerror(errno));
+  }
+  close(fd);
 }
 
 static pid_t spawn_target(char **command) {
@@ -658,63 +785,104 @@ int main(int argc, char **argv) {
   }
 
   int target_fd_number = -1;
-  int worker_fd =
-      discover_socket(pidfd, options.target_pid, &options, &target_fd_number);
-  if (worker_fd < 0) {
-    perror("qaff-agent: discover UDP SO_REUSEPORT socket");
-    close(pidfd);
-    if (spawned_pid > 0) {
-      int signo = g_signal ? g_signal : SIGTERM;
-      kill(spawned_pid, signo);
-      (void)reap_target(spawned_pid);
-    }
-    return 1;
-  }
+  int worker_fd = -1;
+  int control_fd = -1;
+  int monitor_rc = -1;
+  int monitor_errno = 0;
+  int registered_once = 0;
 
-  int control_fd = qaff_control_connect(options.control_socket);
-  if (control_fd < 0) {
-    perror("qaff-agent: qaff_control_connect");
-    close(worker_fd);
-    close(pidfd);
-    if (spawned_pid > 0) {
-      kill(spawned_pid, SIGTERM);
-      (void)reap_target(spawned_pid);
+  for (;;) {
+    worker_fd = discover_socket(pidfd,
+                                options.target_pid,
+                                &options,
+                                &target_fd_number,
+                                registered_once);
+    if (worker_fd < 0) {
+      monitor_errno = errno;
+      if (monitor_errno == ESRCH) {
+        monitor_rc = 0;
+      } else {
+        monitor_rc = -1;
+        perror("qaff-agent: discover UDP SO_REUSEPORT socket");
+      }
+      break;
     }
-    return 1;
-  }
-  if (qaff_control_register_worker_lease_for_pid(
-          control_fd,
-          options.worker_id,
-          worker_fd,
-          (uint32_t)options.target_pid) != 0) {
-    perror("qaff-agent: qaff_control_register_worker_lease");
-    close(control_fd);
-    close(worker_fd);
-    close(pidfd);
-    if (spawned_pid > 0) {
-      kill(spawned_pid, SIGTERM);
-      (void)reap_target(spawned_pid);
-    }
-    return 1;
-  }
-  fprintf(stderr,
-          "qaff-agent: registered worker_id=%u target_pid=%ld target_fd=%d "
-          "listen=%s:%u\n",
-          options.worker_id,
-          (long)options.target_pid,
-          target_fd_number,
-          options.address_text,
-          options.port);
 
-  int monitor_rc =
-      monitor_target(pidfd, &control_fd, worker_fd, &options);
-  int monitor_errno = errno;
+    uint64_t worker_cookie = 0;
+    if (read_socket_cookie(worker_fd, &worker_cookie) != 0) {
+      monitor_rc = -1;
+      monitor_errno = errno;
+      perror("qaff-agent: read target socket cookie");
+      break;
+    }
+
+    control_fd = qaff_control_connect(options.control_socket);
+    if (control_fd < 0) {
+      monitor_rc = -1;
+      monitor_errno = errno;
+      perror("qaff-agent: qaff_control_connect");
+      break;
+    }
+    if (qaff_control_register_worker_lease_for_pid(
+            control_fd,
+            options.worker_id,
+            worker_fd,
+            (uint32_t)options.target_pid) != 0) {
+      monitor_rc = -1;
+      monitor_errno = errno;
+      perror("qaff-agent: qaff_control_register_worker_lease");
+      break;
+    }
+    fprintf(stderr,
+            "qaff-agent: %s worker_id=%u target_pid=%ld target_fd=%d "
+            "listen=%s:%u\n",
+            registered_once ? "re-registered" : "registered",
+            options.worker_id,
+            (long)options.target_pid,
+            target_fd_number,
+            options.address_text,
+            options.port);
+    registered_once = 1;
+
+    monitor_rc = monitor_target(pidfd,
+                                &control_fd,
+                                worker_fd,
+                                worker_cookie,
+                                &target_fd_number,
+                                &options);
+    monitor_errno = errno;
+    if (monitor_rc != 1) {
+      break;
+    }
+
+    fprintf(stderr,
+            "qaff-agent: target socket changed; revoking worker_id=%u "
+            "target_pid=%ld\n",
+            options.worker_id,
+            (long)options.target_pid);
+    revoke_worker_registration(&options);
+    if (control_fd >= 0) {
+      close(control_fd);
+    }
+    control_fd = -1;
+    close(worker_fd);
+    worker_fd = -1;
+  }
   if (g_signal && spawned_pid > 0) {
     kill(spawned_pid, g_signal);
+  } else if (monitor_rc < 0 && spawned_pid > 0) {
+    kill(spawned_pid, SIGTERM);
   }
 
-  close(control_fd);
-  close(worker_fd);
+  if (monitor_rc < 0 && registered_once && !g_signal) {
+    revoke_worker_registration(&options);
+  }
+  if (control_fd >= 0) {
+    close(control_fd);
+  }
+  if (worker_fd >= 0) {
+    close(worker_fd);
+  }
   close(pidfd);
 
   if (spawned_pid > 0) {

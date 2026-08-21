@@ -40,7 +40,7 @@
 - Enforce one worker ID per socket cookie and complete passive-egress cookie
   registration in embedded mode. (Implemented.)
 - Detect target socket close/replacement continuously in `qaff-agent` and
-  re-register without keeping an abandoned listener alive.
+  re-register without keeping an abandoned listener alive. (Implemented.)
 - Add an application-readiness gate so passive egress learning is active before
   the first server response.
 - Require durable worker generations when CID profile v2 is enabled.
