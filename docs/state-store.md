@@ -3,6 +3,8 @@
 qaffd persists worker registration generations when `--state-path` is set.
 The snapshot is an internal restart mechanism, not a public interchange format.
 Before the first compatibility baseline, qaffd accepts only the current format.
+CID profile v2 requires `--state-path` together with `--pin-root`; qaffd rejects
+v2 at startup if either persistence component is absent.
 
 ## Format
 

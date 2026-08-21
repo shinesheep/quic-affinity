@@ -31,10 +31,12 @@
 
 static const uint8_t k_dcid[] = {
   0xde, 0xad, 0xbe, 0xef, 0xaa, 0xbb, 0xcc, 0xdd,
+  0x10, 0x20, 0x30, 0x40,
 };
 
 static const uint8_t k_passive_dcid[] = {
   0x70, 0x61, 0x73, 0x73, 0x0a, 0x0b, 0x0c, 0x0d,
+  0x50, 0x60, 0x70, 0x80,
 };
 
 static int set_nonblocking(int fd) {
@@ -103,7 +105,7 @@ static int make_sender_socket(void) {
 static int send_quic_like_packet(int fd, uint16_t port, const uint8_t *dcid) {
   uint8_t packet[] = {
     0x43,
-    0, 0, 0, 0, 0, 0, 0, 0,
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
     0x01, 0x02, 0x03, 0x04,
   };
   memcpy(packet + 1, dcid, sizeof(k_dcid));
@@ -179,7 +181,11 @@ static pid_t start_qaffd(const char *qaffd_path,
         "--bpf",
         bpf_path,
         "--short-cid-len",
-        "8",
+        "12",
+        "--cid-profile-v2-key",
+        "707172737475767778797a7b7c7d7e7f",
+        "--cid-profile-v2-config-id",
+        "7",
         "--passive-affinity",
         "--pin-root",
         pin_root,
@@ -318,6 +324,17 @@ static int control_cids(const char *socket_path,
   return rc;
 }
 
+static int control_config(const char *socket_path,
+                          struct qaff_control_config *config) {
+  int fd = qaff_control_connect(socket_path);
+  if (fd < 0) {
+    return -1;
+  }
+  int rc = qaff_control_config(fd, config);
+  close(fd);
+  return rc;
+}
+
 static int inject_stale_passive_cid(const char *pin_root,
                                     uint32_t worker_id,
                                     uint32_t worker_generation,
@@ -433,6 +450,17 @@ int main(int argc, char **argv) {
   ready = wait_ready_or_skip(socket_path, daemon_pid);
   if (ready != 0) {
     return ready == TEST_SKIP ? TEST_SKIP : 1;
+  }
+
+  struct qaff_control_config listener_config;
+  if (control_config(socket_path, &listener_config) != 0 ||
+      listener_config.short_cid_len != QAFF_CID_PROFILE_V2_LEN ||
+      !listener_config.cid_profile_v2_enabled ||
+      listener_config.cid_profile_v2_config_id != 7 ||
+      strcmp(listener_config.pin_root, pin_root) != 0 ||
+      strcmp(listener_config.state_path, state_path) != 0) {
+    fprintf(stderr, "profile v2 persistence config was not applied\n");
+    return 1;
   }
 
   int workers[WORKER_COUNT] = {-1, -1, -1};

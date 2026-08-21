@@ -11,6 +11,7 @@ qaffctl_bin=$2
 bpf_obj=$3
 sock=/tmp/qaffctl-control-$$.sock
 key_file=/tmp/qaffctl-control-$$.profile-key
+validation_log=/tmp/qaffctl-control-$$.validation
 caps=cap_bpf,cap_net_admin,cap_perfmon,cap_sys_resource+ep
 
 cleanup() {
@@ -18,7 +19,7 @@ cleanup() {
     kill "$daemon_pid" 2>/dev/null || true
     wait "$daemon_pid" 2>/dev/null || true
   fi
-  rm -f "$sock" "$key_file"
+  rm -f "$sock" "$key_file" "$validation_log"
 }
 trap cleanup EXIT INT TERM
 
@@ -28,11 +29,25 @@ fi
 
 printf '%s\n' 707172737475767778797a7b7c7d7e7f >"$key_file"
 chmod 600 "$key_file"
+
+set +e
 "$qaffd_bin" --socket "$sock" --bpf "$bpf_obj" --short-cid-len 12 \
+  --cid-profile-v2-key-file "$key_file" \
+  --cid-profile-v2-config-id 7 >"$validation_log" 2>&1
+validation_rc=$?
+set -e
+if [ "$validation_rc" -ne 2 ]; then
+  cat "$validation_log" >&2 || true
+  echo "qaffd accepted profile v2 without durable worker generations" >&2
+  exit 1
+fi
+grep -q '^qaffd: CID profile v2 requires --pin-root and --state-path$' \
+  "$validation_log"
+grep -q '^Usage: qaffd ' "$validation_log"
+
+"$qaffd_bin" --socket "$sock" --bpf "$bpf_obj" --short-cid-len 8 \
   --fallback-worker 1 \
   --fallback-mode kernel \
-  --cid-profile-v2-key-file "$key_file" \
-  --cid-profile-v2-config-id 7 \
   --passive-affinity \
   --passive-min-confidence 2 &
 daemon_pid=$!
@@ -69,10 +84,10 @@ grep -q '^passive_entry_capacity=1048576$' /tmp/qaffctl-control-$$.health
 grep -q '^passive_cleanup_error_count=0$' /tmp/qaffctl-control-$$.health
 
 "$qaffctl_bin" config "$sock" >/tmp/qaffctl-control-$$.config
-grep -q '^short_cid_len=12$' /tmp/qaffctl-control-$$.config
+grep -q '^short_cid_len=8$' /tmp/qaffctl-control-$$.config
 grep -q '^cid_profile_v1_enabled=0$' /tmp/qaffctl-control-$$.config
-grep -q '^cid_profile_v2_enabled=1$' /tmp/qaffctl-control-$$.config
-grep -q '^cid_profile_v2_config_id=7$' /tmp/qaffctl-control-$$.config
+grep -q '^cid_profile_v2_enabled=0$' /tmp/qaffctl-control-$$.config
+grep -q '^cid_profile_v2_config_id=0$' /tmp/qaffctl-control-$$.config
 grep -q '^passive_affinity_enabled=1$' /tmp/qaffctl-control-$$.config
 grep -q '^passive_min_confidence=2$' /tmp/qaffctl-control-$$.config
 grep -q '^egress_attached=0$' /tmp/qaffctl-control-$$.config

@@ -367,13 +367,17 @@ build/qaffd \
   --socket /tmp/qaffd.sock \
   --bpf build/qaff_reuseport.bpf.o \
   --short-cid-len 12 \
+  --pin-root /sys/fs/bpf/quic-affinity/listeners/example \
+  --state-path /var/lib/quic-affinity/example.state \
   --cid-profile-v2-key-file /etc/quic-affinity/profile-v2.key \
   --cid-profile-v2-config-id 7
 ```
 
 The exact CID map has priority. On a map miss, the BPF program validates the v2
 profile key tag, config ID, and worker generation. If all checks pass, it
-selects the embedded worker ID.
+selects the embedded worker ID. qaffd rejects profile v2 unless both the pinned
+map root and durable state snapshot are configured; otherwise a daemon restart
+could reuse a generation and reactivate a stale CID.
 
 ## Security Model
 

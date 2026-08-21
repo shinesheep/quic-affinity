@@ -112,9 +112,17 @@ group or other permissions:
 qaffd --socket /tmp/qaffd.sock \
       --bpf /usr/libexec/quic-affinity/qaff_reuseport.bpf.o \
       --short-cid-len 12 \
+      --pin-root /sys/fs/bpf/quic-affinity/listeners/example \
+      --state-path /var/lib/quic-affinity/example.state \
       --cid-profile-v2-key-file /etc/quic-affinity/profile-v2.key \
       --cid-profile-v2-config-id 7
 ```
+
+qaffd requires both `--pin-root` and `--state-path` when profile v2 is enabled.
+The snapshot preserves allocated generation tombstones across daemon and host
+restarts, while the pinned maps preserve live dataplane state across daemon
+restarts. Embedded integrations must provide equivalent durable generation
+allocation themselves before reusing a worker ID.
 
 `--cid-profile-v1-key HEX32` and `--cid-profile-v2-key HEX32` also exist for
 tests and local development, but

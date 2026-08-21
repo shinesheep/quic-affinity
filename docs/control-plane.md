@@ -203,6 +203,8 @@ On daemon restart:
 
 The state snapshot is atomically replaced and synced, but is not stored in bpffs. Use a normal persistent location such as `/var/lib/quic-affinity/<listener-id>.state`.
 If `--state-path` is configured, `--pin-root` must also be configured.
+If CID profile v2 is enabled, both options are mandatory; qaffd rejects an
+ephemeral generation configuration before opening BPF state.
 During pre-release development, qaffd accepts only the current snapshot format
 and rejects older or ambiguous records instead of attempting migration.
 

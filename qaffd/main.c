@@ -912,6 +912,12 @@ static int parse_args(int argc, char **argv, struct qaffd_options *options) {
     return -1;
   }
   if (options->cid_profile_v2_enabled &&
+      (options->pin_root == NULL || options->state_path == NULL)) {
+    fprintf(stderr,
+            "qaffd: CID profile v2 requires --pin-root and --state-path\n");
+    return -1;
+  }
+  if (options->cid_profile_v2_enabled &&
       options->short_cid_len != QAFF_CID_PROFILE_V2_LEN) {
     return -1;
   }

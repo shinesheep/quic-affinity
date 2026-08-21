@@ -59,7 +59,10 @@ For routable CID profile v2, set `short_cid_len` to
 `cid_profile_v2_config_id`, and copy the 16-byte listener key into
 `cid_profile_v1_key`. The dataplane checks the CID map first; on map miss, it
 validates the profile tag, config ID, and worker generation before routing to
-the embedded worker ID. Profile v1 remains available for compatibility.
+the embedded worker ID. qaffd requires both `--pin-root` and `--state-path`
+whenever profile v2 is enabled, so allocated generations and tombstones survive
+restart. Embedded users are responsible for an equivalent durable generation
+allocator. Profile v1 remains available for compatibility.
 
 Zero-length server CIDs are incompatible with CID-based worker affinity.
 
@@ -130,6 +133,8 @@ qaffd --pin-root /sys/fs/bpf/quic-affinity/listeners/<listener-id> \
 ```
 
 `--pin-root` must point to a writable bpffs directory. `--state-path` must point to a normal filesystem path, not bpffs. If `--state-path` is set, `--pin-root` is required.
+Profile v2 additionally requires both options and fails configuration parsing
+when either is absent.
 
 On restart, `qaffd` reloads worker IDs and generation tombstones from `--state-path`, reconciles pinned worker generations, and rebuilds CID ownership from the pinned `qaff_cids` map.
 
