@@ -18,6 +18,7 @@ option(QAFF_BUILD_DAEMON "Build and install qaffd" ON)
 option(QAFF_BUILD_TOOLS "Build and install qaffctl and qaff-agent" ON)
 option(QAFF_BUILD_EXAMPLES "Build example programs" ON)
 option(QAFF_BUILD_QUICHE_EXAMPLES "Build optional quiche integration examples" ON)
+option(QAFF_BUILD_FUZZERS "Build Clang libFuzzer targets" OFF)
 set(QAFF_BPF_TARGET_ARCH "" CACHE STRING
   "libbpf target architecture name (x86, arm64, arm, powerpc, s390, mips, riscv, or loongarch)")
 set(QAFF_BPF_CLANG_TARGET "" CACHE STRING
@@ -168,6 +169,7 @@ install(FILES LICENSE
 install(FILES
   docs/control-protocol.md
   docs/cid-index.md
+  docs/fuzzing.md
   docs/state-store.md
   docs/worker-registry.md
   DESTINATION ${CMAKE_INSTALL_DOCDIR}/docs)
@@ -254,6 +256,55 @@ if(QAFF_BUILD_EXAMPLES AND QAFF_BUILD_QUICHE_EXAMPLES AND
     -Wall -Wextra -Wpedantic)
 elseif(QAFF_BUILD_EXAMPLES AND QAFF_BUILD_QUICHE_EXAMPLES)
   message(STATUS "quiche integration example disabled; build quiche FFI under third_party/quiche to enable it")
+endif()
+
+if(QAFF_BUILD_FUZZERS)
+  if(NOT CMAKE_C_COMPILER_ID MATCHES "Clang")
+    message(FATAL_ERROR "QAFF_BUILD_FUZZERS requires Clang with libFuzzer support")
+  endif()
+
+  add_library(qaff_fuzz_support STATIC
+    src/cid_profile.c
+    src/control_protocol.c
+    src/quic_parser.c)
+  target_include_directories(qaff_fuzz_support PUBLIC
+    ${CMAKE_CURRENT_SOURCE_DIR}/include
+    ${CMAKE_CURRENT_SOURCE_DIR}/internal)
+  target_compile_options(qaff_fuzz_support PRIVATE
+    -Wall -Wextra -Wpedantic
+    -fno-omit-frame-pointer
+    -fsanitize=fuzzer-no-link,address,undefined)
+
+  function(qaff_add_fuzzer target source dictionary)
+    add_executable(${target} ${source})
+    target_link_libraries(${target} PRIVATE qaff_fuzz_support)
+    target_compile_options(${target} PRIVATE
+      -Wall -Wextra -Wpedantic
+      -fno-omit-frame-pointer
+      -fsanitize=fuzzer,address,undefined)
+    target_link_options(${target} PRIVATE
+      -fsanitize=fuzzer,address,undefined)
+    if(BUILD_TESTING)
+      add_test(NAME ${target}_smoke
+        COMMAND /bin/sh
+          ${CMAKE_CURRENT_SOURCE_DIR}/tests/run_fuzz_smoke.sh
+          $<TARGET_FILE:${target}>
+          ${CMAKE_CURRENT_SOURCE_DIR}/${dictionary})
+      set_tests_properties(${target}_smoke PROPERTIES
+        LABELS fuzz
+        TIMEOUT 120)
+    endif()
+  endfunction()
+
+  qaff_add_fuzzer(fuzz_quic_parser
+    tests/fuzz/fuzz_quic_parser.c
+    tests/fuzz/quic_parser.dict)
+  qaff_add_fuzzer(fuzz_cid_profile
+    tests/fuzz/fuzz_cid_profile.c
+    tests/fuzz/cid_profile.dict)
+  qaff_add_fuzzer(fuzz_control_protocol
+    tests/fuzz/fuzz_control_protocol.c
+    tests/fuzz/control_protocol.dict)
 endif()
 
 if(BUILD_TESTING)

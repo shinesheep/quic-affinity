@@ -53,6 +53,20 @@ cmake --build build-release
 ctest --test-dir build-release --output-on-failure
 ```
 
+Changes to packet parsing, CID profiles, or the control protocol should also
+run the Clang libFuzzer smoke suite:
+
+```sh
+CC=clang cmake -B build-fuzz -S . \
+  -DQAFF_BUILD_BPF=OFF \
+  -DQAFF_BUILD_DAEMON=OFF \
+  -DQAFF_BUILD_TOOLS=OFF \
+  -DQAFF_BUILD_EXAMPLES=OFF \
+  -DQAFF_BUILD_FUZZERS=ON
+cmake --build build-fuzz --parallel 2
+ctest --test-dir build-fuzz --output-on-failure -L fuzz
+```
+
 ## Change expectations
 
 - Follow the existing C11 style and keep compiler warnings enabled.

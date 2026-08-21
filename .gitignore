@@ -11,6 +11,8 @@ target/
 build/
 build-*/
 dist/
+fuzz-artifacts/
+fuzz-corpus/
 out/
 .cache/
 .tmp/

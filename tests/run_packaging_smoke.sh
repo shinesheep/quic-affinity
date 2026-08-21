@@ -35,6 +35,8 @@ find "$root/usr" -path '*/share/doc/*/docs/control-protocol.md' \
   -type f | grep -q .
 find "$root/usr" -path '*/share/doc/*/docs/cid-index.md' \
   -type f | grep -q .
+find "$root/usr" -path '*/share/doc/*/docs/fuzzing.md' \
+  -type f | grep -q .
 find "$root/usr" -path '*/share/doc/*/docs/state-store.md' \
   -type f | grep -q .
 find "$root/usr" -path '*/share/doc/*/docs/worker-registry.md' \

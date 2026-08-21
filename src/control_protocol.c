@@ -432,7 +432,8 @@ int qaff_control_decode_request(const uint8_t *packet, size_t packet_len,
   case QAFF_CONTROL_CIDS:
     break;
   default:
-    break;
+    errno = EPROTO;
+    return -1;
   }
   return finish_decode(&reader);
 }

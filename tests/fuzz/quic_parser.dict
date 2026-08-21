@@ -1,0 +1,7 @@
+long_header="\x80"
+initial_header="\xc0"
+version_one="\x00\x00\x00\x01"
+version_two="\x6b\x33\x43\xcf"
+zero_cid_length="\x00"
+common_cid_length="\x08"
+maximum_cid_length="\x20"

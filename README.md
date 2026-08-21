@@ -159,8 +159,10 @@ cmake --build build-library
 ```
 
 `BUILD_TESTING`, `QAFF_BUILD_BPF`, `QAFF_BUILD_DAEMON`, `QAFF_BUILD_TOOLS`,
-`QAFF_BUILD_EXAMPLES`, and `QAFF_BUILD_QUICHE_EXAMPLES` are independent build
-switches. BPF-dependent tests are not registered when BPF is disabled.
+`QAFF_BUILD_EXAMPLES`, `QAFF_BUILD_QUICHE_EXAMPLES`, and
+`QAFF_BUILD_FUZZERS` are independent build switches. Fuzzers are disabled by
+default and require Clang with libFuzzer support. BPF-dependent tests are not
+registered when BPF is disabled.
 
 Run tests:
 
@@ -216,6 +218,8 @@ Worker lifecycle and generation semantics are documented in
 [`docs/worker-registry.md`](docs/worker-registry.md).
 The daemon's in-memory CID ownership index and invariants are documented in
 [`docs/cid-index.md`](docs/cid-index.md).
+Maintainer fuzzing targets and corpus handling are documented in
+[`docs/fuzzing.md`](docs/fuzzing.md).
 
 ## Quick Start With `qaffd`
 

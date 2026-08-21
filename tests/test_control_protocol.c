@@ -200,6 +200,17 @@ static int test_malformed_packets(void) {
     return check(0, "false payload length is rejected");
   }
 
+  memcpy(changed, packet, QAFF_CONTROL_HEADER_SIZE);
+  changed[6] = 0x7f;
+  changed[7] = 0xff;
+  memset(changed + 8, 0, 8);
+  errno = 0;
+  if (qaff_control_decode_request(changed, QAFF_CONTROL_HEADER_SIZE, &output) ==
+          0 ||
+      errno != EPROTO) {
+    return check(0, "unknown request operation is rejected");
+  }
+
   memcpy(changed, packet, packet_len);
   changed[packet_len] = 0;
   if (qaff_control_decode_request(changed, packet_len + 1, &output) == 0) {
