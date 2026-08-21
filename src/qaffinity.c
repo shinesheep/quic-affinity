@@ -5,6 +5,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/socket.h>
 #include <sys/stat.h>
 #include <sys/types.h>
 #include <unistd.h>
@@ -14,6 +15,10 @@
 
 #ifndef PATH_MAX
 #define PATH_MAX 4096
+#endif
+
+#ifndef SO_COOKIE
+#define SO_COOKIE 57
 #endif
 
 struct qaff_context {
@@ -735,7 +740,8 @@ int qaff_register_worker_socket_generation(struct qaff_context *ctx,
                                            uint32_t worker_id,
                                            int socket_fd,
                                            uint32_t generation) {
-  if (ctx == NULL || ctx->worker_sock_map_fd < 0 || socket_fd < 0) {
+  if (ctx == NULL || ctx->worker_sock_map_fd < 0 ||
+      ctx->socket_worker_map_fd < 0 || socket_fd < 0) {
     errno = EINVAL;
     return -1;
   }
@@ -744,10 +750,50 @@ int qaff_register_worker_socket_generation(struct qaff_context *ctx,
     return -1;
   }
 
+  uint64_t socket_cookie = 0;
+  socklen_t cookie_len = sizeof(socket_cookie);
+  if (getsockopt(socket_fd,
+                 SOL_SOCKET,
+                 SO_COOKIE,
+                 &socket_cookie,
+                 &cookie_len) != 0) {
+    return -1;
+  }
+  if (cookie_len != sizeof(socket_cookie) || socket_cookie == 0) {
+    errno = EINVAL;
+    return -1;
+  }
+
+  int cookie_inserted = 0;
+  if (bpf_map_update_elem(ctx->socket_worker_map_fd,
+                          &socket_cookie,
+                          &worker_id,
+                          BPF_NOEXIST) == 0) {
+    cookie_inserted = 1;
+  } else if (errno == EEXIST) {
+    uint32_t existing_worker_id = 0;
+    if (bpf_map_lookup_elem(ctx->socket_worker_map_fd,
+                            &socket_cookie,
+                            &existing_worker_id) != 0) {
+      return -1;
+    }
+    if (existing_worker_id != worker_id) {
+      errno = EEXIST;
+      return -1;
+    }
+  } else {
+    return -1;
+  }
+
   if (bpf_map_update_elem(ctx->worker_sock_map_fd,
                           &worker_id,
                           &socket_fd,
                           BPF_ANY) != 0) {
+    int saved_errno = errno;
+    if (cookie_inserted) {
+      bpf_map_delete_elem(ctx->socket_worker_map_fd, &socket_cookie);
+    }
+    errno = saved_errno;
     return -1;
   }
 
@@ -758,6 +804,9 @@ int qaff_register_worker_socket_generation(struct qaff_context *ctx,
                           BPF_ANY) != 0) {
     int saved_errno = errno ? errno : EIO;
     bpf_map_delete_elem(ctx->worker_sock_map_fd, &worker_id);
+    if (cookie_inserted) {
+      bpf_map_delete_elem(ctx->socket_worker_map_fd, &socket_cookie);
+    }
     errno = saved_errno;
     return -1;
   }
@@ -767,18 +816,56 @@ int qaff_register_worker_socket_generation(struct qaff_context *ctx,
 
 int qaff_unregister_worker_socket(struct qaff_context *ctx,
                                   uint32_t worker_id) {
-  if (ctx == NULL || ctx->worker_sock_map_fd < 0) {
+  if (ctx == NULL || ctx->worker_sock_map_fd < 0 ||
+      ctx->socket_worker_map_fd < 0) {
     errno = EINVAL;
     return -1;
   }
 
   int rc = bpf_map_delete_elem(ctx->worker_sock_map_fd, &worker_id);
+  int saved_errno = errno;
+
+  uint64_t cookie = 0;
+  int next_rc =
+      bpf_map_get_next_key(ctx->socket_worker_map_fd, NULL, &cookie);
+  while (next_rc == 0) {
+    uint64_t next_cookie = 0;
+    next_rc = bpf_map_get_next_key(ctx->socket_worker_map_fd,
+                                   &cookie,
+                                   &next_cookie);
+    if (next_rc != 0 && errno != ENOENT) {
+      return -1;
+    }
+
+    uint32_t mapped_worker_id = UINT32_MAX;
+    if (bpf_map_lookup_elem(ctx->socket_worker_map_fd,
+                            &cookie,
+                            &mapped_worker_id) != 0) {
+      if (errno != ENOENT) {
+        return -1;
+      }
+    } else if (mapped_worker_id == worker_id &&
+               bpf_map_delete_elem(ctx->socket_worker_map_fd, &cookie) != 0 &&
+               errno != ENOENT) {
+      return -1;
+    }
+    if (next_rc != 0) {
+      break;
+    }
+    cookie = next_cookie;
+  }
+  if (next_rc != 0 && errno != ENOENT) {
+    return -1;
+  }
   if (ctx->worker_generation_map_fd >= 0) {
     uint32_t zero = 0;
     bpf_map_update_elem(ctx->worker_generation_map_fd,
                         &worker_id,
                         &zero,
                         BPF_ANY);
+  }
+  if (rc != 0) {
+    errno = saved_errno;
   }
   return rc;
 }

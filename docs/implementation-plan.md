@@ -38,7 +38,7 @@
 - Reject replacing an active worker socket while that worker owns exact CIDs;
   preserve daemon restart recovery. (Implemented.)
 - Enforce one worker ID per socket cookie and complete passive-egress cookie
-  registration in embedded mode.
+  registration in embedded mode. (Implemented.)
 - Detect target socket close/replacement continuously in `qaff-agent` and
   re-register without keeping an abandoned listener alive.
 - Add an application-readiness gate so passive egress learning is active before

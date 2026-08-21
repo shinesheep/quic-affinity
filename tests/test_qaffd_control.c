@@ -960,6 +960,15 @@ static int run_case(const char *qaffd_path,
     return 1;
   }
 
+  errno = 0;
+  if (control_call_register_worker(socket_path, 1, workers[0]) == 0 ||
+      errno != EEXIST) {
+    fprintf(stderr,
+            "%s: one socket was registered under worker IDs 0 and 1\n",
+            test->name);
+    return 1;
+  }
+
   if (child_attempt_register_worker(socket_path, TARGET_WORKER, workers[TARGET_WORKER]) != 10) {
     fprintf(stderr,
             "%s: child process unexpectedly replaced worker %d\n",

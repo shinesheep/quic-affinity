@@ -125,7 +125,9 @@ int qaff_retire_passive_cid(struct qaff_context *ctx,
  * Register a UDP worker socket with the default worker generation.
  *
  * The socket must be a member of the listener's SO_REUSEPORT group. The kernel
- * stores a reference to the socket in the REUSEPORT_SOCKARRAY map.
+ * stores a reference to the socket in the REUSEPORT_SOCKARRAY map. Registration
+ * also installs the socket-cookie mapping required by passive egress learning.
+ * A socket cannot belong to multiple worker IDs; conflicts fail with EEXIST.
  */
 int qaff_register_worker_socket(struct qaff_context *ctx,
                                 uint32_t worker_id,
@@ -136,7 +138,8 @@ int qaff_register_worker_socket(struct qaff_context *ctx,
  *
  * Use this when routable CID profile v2 is enabled. Incrementing generation on
  * worker-ID reuse prevents stale profile CIDs from selecting a replacement
- * worker.
+ * worker. The same socket-cookie ownership rules as the default-generation
+ * helper apply.
  *
  * Returns 0 on success or -1 with errno set.
  */
@@ -146,7 +149,7 @@ int qaff_register_worker_socket_generation(struct qaff_context *ctx,
                                            uint32_t generation);
 
 /**
- * Remove a worker socket and clear its generation entry.
+ * Remove a worker socket, its socket-cookie mapping, and its generation entry.
  *
  * CIDs that still point at worker_id should be retired before or immediately
  * after unregistering the worker.

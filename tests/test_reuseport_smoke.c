@@ -22,6 +22,10 @@
 #define SO_REUSEPORT 15
 #endif
 
+#ifndef SO_COOKIE
+#define SO_COOKIE 57
+#endif
+
 #define TEST_SKIP 77
 #define WORKER_COUNT 3
 #define FALLBACK_WORKER 0
@@ -467,6 +471,31 @@ static int run_case(const char *object_path, const struct test_case *test) {
     }
   }
 
+  uint64_t target_socket_cookie = 0;
+  socklen_t target_cookie_len = sizeof(target_socket_cookie);
+  uint32_t cookie_worker_id = UINT32_MAX;
+  if (getsockopt(workers[TARGET_WORKER],
+                 SOL_SOCKET,
+                 SO_COOKIE,
+                 &target_socket_cookie,
+                 &target_cookie_len) != 0 ||
+      target_cookie_len != sizeof(target_socket_cookie) ||
+      bpf_map_lookup_elem(qaff_get_socket_worker_map_fd(ctx),
+                          &target_socket_cookie,
+                          &cookie_worker_id) != 0 ||
+      cookie_worker_id != TARGET_WORKER) {
+    fprintf(stderr, "worker registration did not install socket-cookie map\n");
+    return 1;
+  }
+  errno = 0;
+  if (qaff_register_worker_socket(ctx,
+                                  FALLBACK_WORKER,
+                                  workers[TARGET_WORKER]) == 0 ||
+      errno != EEXIST) {
+    fprintf(stderr, "socket was registered under multiple worker IDs\n");
+    return 1;
+  }
+
   if (qaff_register_cid(ctx, k_dcid, sizeof(k_dcid), TARGET_WORKER) != 0) {
     perror("qaff_register_cid");
     return 1;
@@ -710,6 +739,18 @@ static int run_case(const char *object_path, const struct test_case *test) {
                         sizeof(k_dcid),
                         FALLBACK_WORKER) != 0) {
     perror("retire and reassign CID");
+    return 1;
+  }
+  if (qaff_unregister_worker_socket(ctx, TARGET_WORKER) != 0) {
+    perror("qaff_unregister_worker_socket");
+    return 1;
+  }
+  errno = 0;
+  if (bpf_map_lookup_elem(qaff_get_socket_worker_map_fd(ctx),
+                          &target_socket_cookie,
+                          &cookie_worker_id) == 0 ||
+      errno != ENOENT) {
+    fprintf(stderr, "worker unregister left a socket-cookie mapping\n");
     return 1;
   }
 

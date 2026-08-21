@@ -116,6 +116,8 @@ the black-box dataplane's reliable visibility.
 Passive mode still needs a way to map kernel-observed sockets to worker IDs.
 Acceptable options include:
 
+- An embedded integration calls `qaff_register_worker_socket()`, which updates
+  both the reuseport sockarray and the socket-cookie reverse map.
 - qaffd receives worker socket fds through the existing control API, but the
   application does not register CIDs.
 - `qaff-agent run` launches an existing application, discovers its socket, and

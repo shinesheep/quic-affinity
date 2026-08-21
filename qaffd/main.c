@@ -489,11 +489,22 @@ static int register_socket_cookie(struct qaffd_state *state,
   if (read_socket_cookie(socket_fd, &cookie) != 0) {
     return -1;
   }
-  if (bpf_map_update_elem(qaff_get_socket_worker_map_fd(state->ctx),
+  int map_fd = qaff_get_socket_worker_map_fd(state->ctx);
+  if (bpf_map_update_elem(map_fd,
                           &cookie,
                           &worker_id,
-                          BPF_ANY) != 0) {
-    return -1;
+                          BPF_NOEXIST) != 0) {
+    if (errno != EEXIST) {
+      return -1;
+    }
+    uint32_t existing_worker_id = UINT32_MAX;
+    if (bpf_map_lookup_elem(map_fd, &cookie, &existing_worker_id) != 0) {
+      return -1;
+    }
+    if (existing_worker_id != worker_id) {
+      errno = EEXIST;
+      return -1;
+    }
   }
   *out_cookie = cookie;
   return 0;

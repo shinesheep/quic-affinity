@@ -36,7 +36,7 @@ All worker sockets for one listener must:
 - use stable worker IDs for the lifetime of registered CIDs
 - use separate `qaffd` instances for IPv4 and IPv6 listeners; IPv6 worker sockets must set `IPV6_V6ONLY`
 
-The worker ID used in `qaff_register_worker_socket()` is also the key used by the eBPF program to select a socket from the reuseport sockarray.
+The worker ID used in `qaff_register_worker_socket()` is also the key used by the eBPF program to select a socket from the reuseport sockarray. Registration atomically claims the socket cookie for that worker so embedded passive-egress learning works without a daemon-side map update. The same socket cannot be registered under another worker ID until its current worker is unregistered; conflicts fail with `EEXIST`.
 
 When using `qaffd`, worker registration is validated at the fd boundary. The daemon rejects non-UDP sockets, sockets without `SO_REUSEPORT`, IPv6 sockets that are not `IPV6_V6ONLY`, and sockets whose local address or port does not match the first accepted worker for that listener. This keeps one `qaffd` process scoped to one UDP reuseport listener group.
 
@@ -78,6 +78,9 @@ The expected startup sequence is:
 9. Start accepting packets.
 
 The BPF program applies to the reuseport group after attachment.
+Worker registration populates both the reuseport sockarray and the
+socket-cookie reverse map. Call `qaff_unregister_worker_socket()` before
+reusing a socket under another worker ID.
 
 ## qaffd Startup Sequence
 
