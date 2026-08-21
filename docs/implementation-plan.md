@@ -47,6 +47,7 @@
 - Require durable worker generations when CID profile v2 is enabled.
   (Implemented: qaffd requires both pinned maps and a state snapshot.)
 - Make worker unregistration and its persisted snapshot transactional.
+  (Implemented with a tombstone commit point and startup reconciliation.)
 - Validate fixed fallback targets and reject conflicting pre-existing
   reuseport BPF programs.
 

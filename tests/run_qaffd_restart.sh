@@ -15,6 +15,8 @@ state_path=/tmp/qaffd-restart-$id.state
 caps=cap_bpf,cap_net_admin,cap_perfmon,cap_sys_resource+ep
 
 cleanup() {
+  rmdir "$state_path" 2>/dev/null || true
+  rm -f "$state_path.unregister-backup" 2>/dev/null || true
   rm -f "$state_path" 2>/dev/null || {
     if command -v sudo >/dev/null 2>&1; then
       sudo -n rm -f "$state_path" 2>/dev/null || true

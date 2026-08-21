@@ -429,6 +429,10 @@ snapshot preserves registered workers and generation tombstones so reusing a
 worker ID cannot reactivate a stale profile-v2 or passive CID. CID ownership is
 rebuilt from the pinned CID map into the daemon's hash index.
 
+Worker unregistration commits its generation tombstone before removing live
+routing. Snapshot failures leave the worker intact, while restart recovery
+uses a committed tombstone to finish any interrupted BPF cleanup.
+
 Pinned map schemas are validated strictly and incompatible maps fail startup.
 During pre-1.0 upgrades that add statistics slots, stop `qaffd`, unpin only the
 listener's `qaff_stats` map, and restart so it can be recreated. CID ownership,

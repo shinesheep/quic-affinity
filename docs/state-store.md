@@ -36,6 +36,17 @@ pre-commit error. qaffd keeps the new in-memory/BPF state, emits a
 that disagrees with the visible snapshot. Durability across a power loss is not
 guaranteed when this warning occurs.
 
+Worker unregistration uses the generation tombstone as its transaction commit
+point. qaffd writes the prospective tombstone before deleting exact CIDs,
+passive entries, socket-cookie ownership, or the worker socket. A pre-commit
+snapshot failure therefore leaves all live routing unchanged. Cleanup after a
+successful commit is idempotent; if qaffd stops during that phase, startup
+treats the durable tombstone as authoritative and removes residual pinned BPF
+state before accepting control connections.
+Pre-commit failures emit `worker_unregistration_commit_failed`; failures in
+the retryable post-commit cleanup emit `worker_unregistration_incomplete` with
+the failing stage.
+
 Loading uses `O_NOFOLLOW` and accepts only a private regular file owned by the
 daemon user, with no group/world permissions and exactly one hard link. Parsing
 is transactional: truncated lines,

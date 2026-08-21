@@ -182,6 +182,12 @@ Profile-v2 generations do not wrap: after generation 255, that worker ID is
 exhausted for the listener and registration fails instead of making generation
 1—and potentially stale CIDs—valid again.
 
+Unregistration commits the worker's durable generation tombstone before it
+mutates live CID and worker maps. If that commit fails, the registered worker
+and all routing entries remain intact. Post-commit cleanup is idempotent, and
+restart recovery honors the tombstone over residual pinned map entries left by
+an interruption.
+
 The current daemon maintains a daemon-side CID owner index for CIDs registered through the control API. This enables bulk CID cleanup during `UNREGISTER_WORKER`; across restarts, the index is rebuilt from the pinned `qaff_cids` map.
 
 ## Restart Recovery
@@ -192,7 +198,8 @@ On daemon restart:
 
 1. `qaffd` opens pinned maps from `--pin-root`.
 2. It reloads worker IDs and generation tombstones from `--state-path`, then
-   reconciles live generations from the pinned generation map.
+   reconciles live generations from the pinned generation map. Tombstones take
+   precedence and trigger cleanup of any interrupted-unregistration residue.
 3. It rebuilds CID ownership by iterating the pinned CID map into a hash index.
 4. Existing socket-group BPF attachment can continue using the pinned maps while worker sockets remain open.
 5. New control operations, including `UNREGISTER_WORKER`, operate on the recovered map and owner state.

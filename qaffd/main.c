@@ -337,6 +337,13 @@ static uint32_t worker_count(const struct qaffd_state *state) {
   return qaffd_worker_registry_count(&state->worker_registry);
 }
 
+static int worker_is_tombstoned(const struct qaffd_state *state,
+                                uint32_t worker_id) {
+  return worker_id < QAFFD_MAX_WORKERS &&
+         !state->worker_registered[worker_id] &&
+         state->worker_generations[worker_id] != 0;
+}
+
 static int next_worker_generation(uint32_t previous, uint32_t *next) {
   return qaffd_worker_registry_next_generation(previous, next);
 }
@@ -1094,6 +1101,7 @@ static int read_passive_table_info(const struct qaffd_state *state,
 }
 
 static int retire_worker_cids(struct qaffd_state *state, uint32_t worker_id) {
+  int retire_tombstones = worker_id == UINT32_MAX;
   size_t i = 0;
   while (i < qaffd_cid_index_size(&state->cid_index)) {
     struct qaffd_cid_entry *entry =
@@ -1102,7 +1110,10 @@ static int retire_worker_cids(struct qaffd_state *state, uint32_t worker_id) {
       errno = EIO;
       return -1;
     }
-    if (entry->worker_id != worker_id) {
+    int should_retire = retire_tombstones
+                            ? worker_is_tombstoned(state, entry->worker_id)
+                            : entry->worker_id == worker_id;
+    if (!should_retire) {
       i++;
       continue;
     }
@@ -1166,7 +1177,12 @@ static int cleanup_passive_cids(struct qaffd_state *state,
 
     struct qaff_passive_cid_value value;
     if (bpf_map_lookup_elem(map_fd, &current, &value) == 0) {
-      int should_delete = purge_worker && value.worker_id == worker_id;
+      int should_delete = 0;
+      if (purge_worker) {
+        should_delete = worker_id == UINT32_MAX
+                            ? worker_is_tombstoned(state, value.worker_id)
+                            : value.worker_id == worker_id;
+      }
       if (!purge_worker && value.expires_at_ns != 0 &&
           value.expires_at_ns <= monotonic_now_ns) {
         should_delete = 1;
@@ -1250,6 +1266,9 @@ static int recover_workers_from_generation_map(struct qaffd_state *state) {
       errno = EINVAL;
       return -1;
     }
+    if (worker_is_tombstoned(state, worker_id)) {
+      continue;
+    }
     state->worker_registered[worker_id] = 1;
     state->worker_generations[worker_id] = generation;
     if (state->worker_registered_at_ms[worker_id] == 0) {
@@ -1285,6 +1304,11 @@ static int recover_cids_from_map(struct qaffd_state *state) {
     if (qaffd_cid_index_put(&state->cid_index, &next_key, worker_id) != 0) {
       return -1;
     }
+    if (worker_is_tombstoned(state, worker_id)) {
+      key = next_key;
+      previous = &key;
+      continue;
+    }
     state->worker_registered[worker_id] = 1;
     if (state->worker_generations[worker_id] == 0) {
       state->worker_generations[worker_id] = QAFF_WORKER_GENERATION_DEFAULT;
@@ -1301,6 +1325,51 @@ static int recover_cids_from_map(struct qaffd_state *state) {
 
   if (errno != ENOENT) {
     return -1;
+  }
+  return 0;
+}
+
+static int reconcile_worker_tombstones(struct qaffd_state *state) {
+  int have_tombstones = 0;
+  for (uint32_t worker_id = 0; worker_id < QAFFD_MAX_WORKERS; worker_id++) {
+    if (worker_is_tombstoned(state, worker_id)) {
+      have_tombstones = 1;
+    }
+  }
+
+  if (!have_tombstones) {
+    return 0;
+  }
+  if (retire_worker_cids(state, UINT32_MAX) != 0) {
+    return -1;
+  }
+  if (cleanup_passive_cids(state, now_ns(), 1, UINT32_MAX) != 0) {
+    state->passive_cleanup_error_count++;
+    return -1;
+  }
+
+  int generation_map_fd = qaff_get_worker_generation_map_fd(state->ctx);
+  if (generation_map_fd < 0) {
+    errno = EINVAL;
+    return -1;
+  }
+  for (uint32_t worker_id = 0; worker_id < QAFFD_MAX_WORKERS; worker_id++) {
+    if (!worker_is_tombstoned(state, worker_id)) {
+      continue;
+    }
+    uint32_t generation = 0;
+    if (bpf_map_lookup_elem(generation_map_fd,
+                            &worker_id,
+                            &generation) != 0) {
+      return -1;
+    }
+    if (generation == 0) {
+      continue;
+    }
+    if (qaff_unregister_worker_socket(state->ctx, worker_id) != 0 &&
+        errno != ENOENT) {
+      return -1;
+    }
   }
   return 0;
 }
@@ -1534,16 +1603,51 @@ static int handle_register_worker(struct qaffd_state *state,
 static int unregister_worker_authorized(struct qaffd_state *state,
                                         uint32_t worker_id,
                                         const struct qaffd_peer_cred *peer) {
+  /*
+   * The durable tombstone is the transaction commit point. Temporarily expose
+   * the prospective registry state only to the synchronous snapshot writer;
+   * live in-memory and BPF routing remain unchanged if persistence fails.
+   */
+  int was_registered = state->worker_registered[worker_id];
+  state->worker_registered[worker_id] = 0;
+  int persist_rc = save_state(state);
+  int persist_errno = errno;
+  state->worker_registered[worker_id] = was_registered;
+  if (persist_rc != 0) {
+    audit_event("worker_unregistration_commit_failed",
+                peer,
+                "worker_id=%u stage=state_persist errno=%d",
+                worker_id,
+                persist_errno ? persist_errno : EIO);
+    errno = persist_errno ? persist_errno : EIO;
+    return -1;
+  }
+
   if (retire_worker_cids(state, worker_id) != 0) {
+    audit_event("worker_unregistration_incomplete",
+                peer,
+                "worker_id=%u stage=exact_cids errno=%d",
+                worker_id,
+                errno);
     return -1;
   }
   if (cleanup_passive_cids(state, now_ns(), 1, worker_id) != 0) {
     state->passive_cleanup_error_count++;
+    audit_event("worker_unregistration_incomplete",
+                peer,
+                "worker_id=%u stage=passive_cids errno=%d",
+                worker_id,
+                errno);
     return -1;
   }
 
   if (qaff_unregister_worker_socket(state->ctx, worker_id) != 0 &&
       errno != ENOENT) {
+    audit_event("worker_unregistration_incomplete",
+                peer,
+                "worker_id=%u stage=worker_maps errno=%d",
+                worker_id,
+                errno);
     return -1;
   }
 
@@ -1562,9 +1666,6 @@ static int unregister_worker_authorized(struct qaffd_state *state,
     state->attached = 0;
     state->listener_locked = 0;
     memset(&state->listener_addr, 0, sizeof(state->listener_addr));
-  }
-  if (save_state(state) != 0) {
-    return -1;
   }
   audit_event("worker_unregistered",
               peer,
@@ -2582,6 +2683,14 @@ int main(int argc, char **argv) {
   }
   if (recover_cids_from_map(&state) != 0) {
     perror("recover_cids_from_map");
+    qaff_bpf_object_close(state.bpf);
+    qaff_close(state.ctx);
+    qaffd_cid_index_destroy(&state.cid_index);
+    close(state.instance_lock_fd);
+    return 1;
+  }
+  if (reconcile_worker_tombstones(&state) != 0) {
+    perror("reconcile_worker_tombstones");
     qaff_bpf_object_close(state.bpf);
     qaff_close(state.ctx);
     qaffd_cid_index_destroy(&state.cid_index);

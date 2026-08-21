@@ -14,6 +14,7 @@
 #include <string.h>
 #include <time.h>
 #include <sys/socket.h>
+#include <sys/stat.h>
 #include <sys/types.h>
 #include <sys/wait.h>
 #include <unistd.h>
@@ -22,6 +23,9 @@
 
 #ifndef SO_REUSEPORT
 #define SO_REUSEPORT 15
+#endif
+#ifndef SO_COOKIE
+#define SO_COOKIE 57
 #endif
 
 #define TEST_SKIP 77
@@ -375,6 +379,101 @@ static int inject_stale_passive_cid(const char *pin_root,
   return rc;
 }
 
+static int open_pinned_map(const char *pin_root, const char *name) {
+  char map_path[4096];
+  int n = snprintf(map_path, sizeof(map_path), "%s/%s", pin_root, name);
+  if (n < 0 || (size_t)n >= sizeof(map_path)) {
+    errno = ENAMETOOLONG;
+    return -1;
+  }
+  return bpf_obj_get(map_path);
+}
+
+static int inject_interrupted_unregistration(const char *pin_root,
+                                             uint32_t worker_id,
+                                             int worker_fd,
+                                             const uint8_t *exact_cid,
+                                             size_t exact_cid_len,
+                                             const uint8_t *passive_cid,
+                                             size_t passive_cid_len) {
+  int exact_map_fd = -1;
+  int worker_map_fd = -1;
+  int generation_map_fd = -1;
+  int socket_worker_map_fd = -1;
+  int rc = -1;
+
+  struct qaff_cid_key key;
+  if (qaff_cid_key_from_bytes(exact_cid, exact_cid_len, &key) !=
+      QAFF_PARSE_OK) {
+    errno = EINVAL;
+    return -1;
+  }
+  if (inject_stale_passive_cid(pin_root,
+                               worker_id,
+                               QAFF_WORKER_GENERATION_DEFAULT,
+                               passive_cid,
+                               passive_cid_len) != 0) {
+    return -1;
+  }
+
+  exact_map_fd = open_pinned_map(pin_root, "qaff_cids");
+  worker_map_fd = open_pinned_map(pin_root, "qaff_workers");
+  generation_map_fd = open_pinned_map(pin_root, "qaff_worker_generations");
+  socket_worker_map_fd = open_pinned_map(pin_root, "qaff_socket_workers");
+  if (exact_map_fd < 0 || worker_map_fd < 0 || generation_map_fd < 0 ||
+      socket_worker_map_fd < 0) {
+    goto out;
+  }
+
+  uint32_t generation = QAFF_WORKER_GENERATION_DEFAULT;
+  uint64_t socket_cookie = 0;
+  socklen_t cookie_len = sizeof(socket_cookie);
+  if (getsockopt(worker_fd,
+                 SOL_SOCKET,
+                 SO_COOKIE,
+                 &socket_cookie,
+                 &cookie_len) != 0 ||
+      cookie_len != sizeof(socket_cookie) || socket_cookie == 0) {
+    goto out;
+  }
+
+  if (bpf_map_update_elem(exact_map_fd, &key, &worker_id, BPF_ANY) != 0 ||
+      bpf_map_update_elem(worker_map_fd,
+                          &worker_id,
+                          &worker_fd,
+                          BPF_ANY) != 0 ||
+      bpf_map_update_elem(generation_map_fd,
+                          &worker_id,
+                          &generation,
+                          BPF_ANY) != 0 ||
+      bpf_map_update_elem(socket_worker_map_fd,
+                          &socket_cookie,
+                          &worker_id,
+                          BPF_ANY) != 0) {
+    goto out;
+  }
+  rc = 0;
+
+out:
+  {
+    int saved_errno = errno;
+    if (exact_map_fd >= 0) {
+      close(exact_map_fd);
+    }
+    if (worker_map_fd >= 0) {
+      close(worker_map_fd);
+    }
+    if (generation_map_fd >= 0) {
+      close(generation_map_fd);
+    }
+    if (socket_worker_map_fd >= 0) {
+      close(socket_worker_map_fd);
+    }
+    errno = saved_errno;
+  }
+  return rc;
+}
+
 int main(int argc, char **argv) {
   if (argc != 5) {
     fprintf(stderr,
@@ -557,6 +656,46 @@ int main(int argc, char **argv) {
     return 1;
   }
 
+  char state_backup[4096];
+  int backup_len = snprintf(state_backup,
+                            sizeof(state_backup),
+                            "%s.unregister-backup",
+                            state_path);
+  if (backup_len < 0 || (size_t)backup_len >= sizeof(state_backup) ||
+      rename(state_path, state_backup) != 0 || mkdir(state_path, 0700) != 0) {
+    perror("block state snapshot replacement");
+    return 1;
+  }
+
+  if (control_unregister_worker(socket_path, TARGET_WORKER) == 0) {
+    fprintf(stderr, "worker unregister unexpectedly survived state failure\n");
+    return 1;
+  }
+  size_t failed_unregister_workers_len = 0;
+  if (control_workers_len(socket_path, &failed_unregister_workers_len) != 0 ||
+      failed_unregister_workers_len != WORKER_COUNT ||
+      control_cids(socket_path, &cid_config) != 0 ||
+      cid_config.cid_map_count != 1 ||
+      cid_config.cid_owner_count != 1 ||
+      cid_config.cid_index_mismatch != 0 ||
+      cid_config.passive_entry_count != 1 ||
+      cid_config.passive_worker_purged_count != 0) {
+    fprintf(stderr, "failed unregister changed live routing state\n");
+    return 1;
+  }
+  if (send_quic_like_packet(sender, port, k_dcid) != 0 ||
+      receive_worker(workers, WORKER_COUNT) != TARGET_WORKER ||
+      send_quic_like_packet(sender, port, k_passive_dcid) != 0 ||
+      receive_worker(workers, WORKER_COUNT) != TARGET_WORKER) {
+    fprintf(stderr, "failed unregister disrupted worker routing\n");
+    return 1;
+  }
+
+  if (rmdir(state_path) != 0 || rename(state_backup, state_path) != 0) {
+    perror("restore state snapshot path");
+    return 1;
+  }
+
   if (control_unregister_worker(socket_path, TARGET_WORKER) != 0) {
     perror("qaff_control_unregister_worker restart");
     return 1;
@@ -577,6 +716,16 @@ int main(int argc, char **argv) {
 
   if (stop_qaffd(socket_path, daemon_pid) != 0) {
     perror("stop_qaffd after worker cleanup");
+    return 1;
+  }
+  if (inject_interrupted_unregistration(pin_root,
+                                        TARGET_WORKER,
+                                        workers[TARGET_WORKER],
+                                        k_dcid,
+                                        sizeof(k_dcid),
+                                        k_passive_dcid,
+                                        sizeof(k_passive_dcid)) != 0) {
+    perror("inject interrupted worker unregistration");
     return 1;
   }
   daemon_pid = start_qaffd(qaffd_path,
@@ -603,6 +752,14 @@ int main(int argc, char **argv) {
             "expected %d workers after tombstone restart, got %zu\n",
             WORKER_COUNT - 1,
             restored_workers_len);
+    return 1;
+  }
+  if (control_cids(socket_path, &cid_config) != 0 ||
+      cid_config.cid_map_count != 0 ||
+      cid_config.cid_owner_count != 0 ||
+      cid_config.cid_index_mismatch != 0 ||
+      cid_config.passive_entry_count != 0) {
+    fprintf(stderr, "committed tombstone did not clean residual BPF state\n");
     return 1;
   }
 
@@ -652,12 +809,12 @@ int main(int argc, char **argv) {
     perror("qaff_control_read_stats");
     return 1;
   }
-  if (stats.values[QAFF_STAT_PACKETS] != 5 ||
-      stats.values[QAFF_STAT_CID_MAP_HIT] != 2 ||
+  if (stats.values[QAFF_STAT_PACKETS] != 7 ||
+      stats.values[QAFF_STAT_CID_MAP_HIT] != 3 ||
       stats.values[QAFF_STAT_FALLBACK] != 2 ||
       stats.values[QAFF_STAT_WORKER_MISSING] != 0 ||
-      stats.values[QAFF_STAT_IPV4] != 5 ||
-      stats.values[QAFF_STAT_PASSIVE_HIT] != 1 ||
+      stats.values[QAFF_STAT_IPV4] != 7 ||
+      stats.values[QAFF_STAT_PASSIVE_HIT] != 2 ||
       stats.values[QAFF_STAT_PASSIVE_MISS] != 1 ||
       stats.values[QAFF_STAT_PASSIVE_REJECT_GENERATION] != 1) {
     fprintf(stderr,

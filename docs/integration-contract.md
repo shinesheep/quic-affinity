@@ -137,6 +137,9 @@ Profile v2 additionally requires both options and fails configuration parsing
 when either is absent.
 
 On restart, `qaffd` reloads worker IDs and generation tombstones from `--state-path`, reconciles pinned worker generations, and rebuilds CID ownership from the pinned `qaff_cids` map.
+An unregistration tombstone is committed before live routing is removed. Failed
+snapshot commits leave routing unchanged; after a committed interruption,
+startup removes residual pinned entries before opening the control socket.
 
 Pinned map schema mismatches fail startup rather than silently reinterpreting
 data. For a pre-1.0 upgrade that only expands `QAFF_STAT_MAX`, stop qaffd and
