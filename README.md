@@ -136,11 +136,23 @@ cmake -B build -S .
 cmake --build build
 ```
 
+The BPF build derives the libbpf target name and architecture-specific system
+include directory from the CMake toolchain. Cross builds can override them with
+`-DQAFF_BPF_TARGET_ARCH=arm64` and
+`-DQAFF_BPF_SYSTEM_INCLUDE_DIR=/path/to/sysroot/usr/include/aarch64-linux-gnu`.
+The clang target is selected as `bpfel` or `bpfeb` from the target byte order;
+unusual toolchains can override it with `-DQAFF_BPF_CLANG_TARGET=bpfeb`.
+When `QAFF_BUILD_BPF=ON`, a missing clang BPF backend or missing `asm` headers is
+a configuration error rather than a silently incomplete build.
+
 Run tests:
 
 ```sh
 ctest --test-dir build --output-on-failure
 ```
+
+CI runs a warning-free release build, the full available test suite, and
+AddressSanitizer/UndefinedBehaviorSanitizer unit tests on Ubuntu 24.04.
 
 Some tests load and attach eBPF programs. They need the kernel capabilities
 required for BPF and may be skipped on hosts without writable bpffs or suitable
@@ -185,9 +197,15 @@ build/qaffd \
 Register workers and CIDs from a QUIC server through the control API:
 
 ```c
-int cfd = qaff_control_connect("/tmp/qaffd.sock");
-qaff_control_register_worker_lease(cfd, worker_id, udp_socket_fd);
-qaff_control_register_cid(cfd, worker_id, server_cid, server_cid_len);
+int lease_fd = qaff_control_connect("/tmp/qaffd.sock");
+qaff_control_register_worker_lease(lease_fd, worker_id, udp_socket_fd);
+
+int operation_fd = qaff_control_connect("/tmp/qaffd.sock");
+qaff_control_register_cid(operation_fd, worker_id,
+                          server_cid, server_cid_len);
+close(operation_fd);
+
+/* Keep lease_fd open; only send WORKER_HEARTBEAT on this connection. */
 ```
 
 Inspect the listener:
@@ -305,10 +323,17 @@ operations and exposes a narrow Unix-socket control API.
 Current hardening:
 
 - Control socket defaults to mode `0600`.
-- Group access is opt-in with `--socket-mode 0660 --socket-gid GID`.
+- Group access requires `--socket-mode 0660 --socket-gid GID` and an explicit
+  management identity with `--allow-admin-uid` and/or `--allow-admin-gid`.
 - World-accessible control sockets are rejected.
-- Worker mutation is authorized by recorded Unix peer credentials or an
-  explicit management UID/GID.
+- Worker admission (`--allow-worker-*`) and management authority
+  (`--allow-admin-*`) are configured independently.
+- Worker mutation is authorized by recorded Unix peer credentials or the
+  explicit management identity.
+- A per-socket-path lock prevents a second qaffd instance from displacing the
+  active control socket.
+- Incomplete control requests are handled non-blockingly and closed after a
+  one-second deadline; at most 128 incomplete clients are retained.
 - Leased workers are cleaned up on control-fd close; pidfd monitoring is used
   when the kernel supports it.
 - Optional worker heartbeat timeout can clean up stuck leased workers.
@@ -336,8 +361,9 @@ build/qaffd \
 ```
 
 Pinned maps allow the dataplane state to survive a `qaffd` restart. The state
-snapshot lets `qaffd` rebuild its user-space ownership index and worker
-generation metadata.
+snapshot preserves registered workers and generation tombstones so reusing a
+worker ID cannot reactivate a stale profile-v2 or passive CID. CID ownership is
+rebuilt from the pinned CID map into the daemon's hash index.
 
 Pinned map schemas are validated strictly and incompatible maps fail startup.
 During pre-1.0 upgrades that add statistics slots, stop `qaffd`, unpin only the
@@ -379,6 +405,9 @@ ctest --test-dir build --output-on-failure -R 'quiche_control_probe|quiche_udp_s
 - Control plane: [docs/control-plane.md](docs/control-plane.md)
 - CID profile: [docs/cid-profile.md](docs/cid-profile.md)
 - Implementation plan: [docs/implementation-plan.md](docs/implementation-plan.md)
+- Contributing: [CONTRIBUTING.md](CONTRIBUTING.md)
+- Security policy: [SECURITY.md](SECURITY.md)
+- Code of conduct: [CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md)
 
 ## Current Status
 

@@ -13,6 +13,12 @@ set(CMAKE_C_EXTENSIONS OFF)
 
 option(QAFF_BUILD_BPF "Build eBPF dataplane object" ON)
 option(QAFF_BUILD_QUICHE_EXAMPLES "Build optional quiche integration examples" ON)
+set(QAFF_BPF_TARGET_ARCH "" CACHE STRING
+  "libbpf target architecture name (x86, arm64, arm, powerpc, s390, mips, riscv, or loongarch)")
+set(QAFF_BPF_CLANG_TARGET "" CACHE STRING
+  "clang BPF target triple (bpfel or bpfeb); derived from the target byte order by default")
+set(QAFF_BPF_SYSTEM_INCLUDE_DIR "" CACHE PATH
+  "Directory containing architecture-specific asm headers for the BPF build")
 
 find_package(PkgConfig REQUIRED)
 pkg_check_modules(LIBBPF REQUIRED libbpf)
@@ -28,6 +34,7 @@ target_include_directories(qaffinity
   PUBLIC
     ${CMAKE_CURRENT_SOURCE_DIR}/include
   PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/internal
     ${LIBBPF_INCLUDE_DIRS})
 
 target_link_libraries(qaffinity
@@ -46,6 +53,7 @@ add_executable(qaffd
   qaffd/main.c)
 
 target_link_libraries(qaffd PRIVATE qaffinity)
+target_include_directories(qaffd PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/internal)
 target_compile_options(qaffd PRIVATE -Wall -Wextra -Wpedantic)
 
 add_executable(qaff-agent
@@ -308,39 +316,108 @@ if(TARGET qaff_quiche_udp_smoke)
 endif()
 
 if(QAFF_BUILD_BPF)
-  find_program(CLANG_EXECUTABLE clang)
-  if(CLANG_EXECUTABLE)
-    add_custom_command(
-      OUTPUT ${CMAKE_CURRENT_BINARY_DIR}/qaff_reuseport.bpf.o
-      COMMAND ${CLANG_EXECUTABLE}
-        -O2
-        -g
-        -target bpf
-        -D__TARGET_ARCH_x86
-        -DQAFF_BPF
-        -I${CMAKE_CURRENT_SOURCE_DIR}/bpf
-        -I${CMAKE_CURRENT_SOURCE_DIR}/include
-        -I/usr/include/x86_64-linux-gnu
-        -c ${CMAKE_CURRENT_SOURCE_DIR}/bpf/qaff_reuseport.bpf.c
-        -o ${CMAKE_CURRENT_BINARY_DIR}/qaff_reuseport.bpf.o
-      DEPENDS
-        ${CMAKE_CURRENT_SOURCE_DIR}/bpf/qaff_reuseport.bpf.c
-        ${CMAKE_CURRENT_SOURCE_DIR}/bpf/qaff_bpf.h
-        ${CMAKE_CURRENT_SOURCE_DIR}/include/quic_affinity/wire.h
-      VERBATIM)
-
-    add_custom_target(qaff_bpf ALL
-      DEPENDS ${CMAKE_CURRENT_BINARY_DIR}/qaff_reuseport.bpf.o)
-    install(FILES ${CMAKE_CURRENT_BINARY_DIR}/qaff_reuseport.bpf.o
-      DESTINATION ${CMAKE_INSTALL_LIBEXECDIR}/quic-affinity)
-    add_dependencies(test_reuseport_smoke qaff_bpf)
-    add_dependencies(qaffd qaff_bpf)
-    add_dependencies(test_qaffd_control qaff_bpf)
-    add_dependencies(test_qaffd_restart qaff_bpf)
-    add_dependencies(test_qaffd_egress qaff_bpf)
-  else()
-    message(WARNING "clang not found; eBPF object will not be built")
+  find_program(CLANG_EXECUTABLE clang REQUIRED)
+  execute_process(
+    COMMAND ${CLANG_EXECUTABLE} -print-targets
+    RESULT_VARIABLE QAFF_CLANG_TARGETS_RESULT
+    OUTPUT_VARIABLE QAFF_CLANG_TARGETS
+    ERROR_VARIABLE QAFF_CLANG_TARGETS_ERROR)
+  if(NOT QAFF_CLANG_TARGETS_RESULT EQUAL 0)
+    message(FATAL_ERROR
+      "Could not inspect targets provided by ${CLANG_EXECUTABLE}: ${QAFF_CLANG_TARGETS_ERROR}")
   endif()
+
+  if(NOT QAFF_BPF_CLANG_TARGET)
+    if(CMAKE_C_BYTE_ORDER STREQUAL "BIG_ENDIAN")
+      set(QAFF_BPF_CLANG_TARGET bpfeb)
+    elseif(CMAKE_C_BYTE_ORDER STREQUAL "LITTLE_ENDIAN")
+      set(QAFF_BPF_CLANG_TARGET bpfel)
+    else()
+      message(FATAL_ERROR
+        "Could not determine target byte order; set QAFF_BPF_CLANG_TARGET explicitly")
+    endif()
+  endif()
+  if(NOT QAFF_BPF_CLANG_TARGET MATCHES "^(bpfel|bpfeb)$")
+    message(FATAL_ERROR "QAFF_BPF_CLANG_TARGET must be bpfel or bpfeb")
+  endif()
+  if(NOT QAFF_CLANG_TARGETS MATCHES
+     "(^|\n)[ \t]*${QAFF_BPF_CLANG_TARGET}[ \t]")
+    message(FATAL_ERROR
+      "${CLANG_EXECUTABLE} does not provide the ${QAFF_BPF_CLANG_TARGET} target; install a clang build with BPF support or set QAFF_BUILD_BPF=OFF")
+  endif()
+
+  if(NOT QAFF_BPF_TARGET_ARCH)
+    string(TOLOWER "${CMAKE_SYSTEM_PROCESSOR}" QAFF_SYSTEM_PROCESSOR_LOWER)
+    if(QAFF_SYSTEM_PROCESSOR_LOWER MATCHES "^(x86_64|amd64|i[3-6]86)$")
+      set(QAFF_BPF_TARGET_ARCH x86)
+    elseif(QAFF_SYSTEM_PROCESSOR_LOWER MATCHES "^(aarch64|arm64)$")
+      set(QAFF_BPF_TARGET_ARCH arm64)
+    elseif(QAFF_SYSTEM_PROCESSOR_LOWER MATCHES "^arm")
+      set(QAFF_BPF_TARGET_ARCH arm)
+    elseif(QAFF_SYSTEM_PROCESSOR_LOWER MATCHES "^(ppc64|ppc64le|powerpc.*)$")
+      set(QAFF_BPF_TARGET_ARCH powerpc)
+    elseif(QAFF_SYSTEM_PROCESSOR_LOWER MATCHES "^s390")
+      set(QAFF_BPF_TARGET_ARCH s390)
+    elseif(QAFF_SYSTEM_PROCESSOR_LOWER MATCHES "^mips")
+      set(QAFF_BPF_TARGET_ARCH mips)
+    elseif(QAFF_SYSTEM_PROCESSOR_LOWER MATCHES "^riscv")
+      set(QAFF_BPF_TARGET_ARCH riscv)
+    elseif(QAFF_SYSTEM_PROCESSOR_LOWER MATCHES "^loongarch")
+      set(QAFF_BPF_TARGET_ARCH loongarch)
+    else()
+      message(FATAL_ERROR
+        "Unsupported BPF target architecture '${CMAKE_SYSTEM_PROCESSOR}'; set QAFF_BPF_TARGET_ARCH explicitly")
+    endif()
+  endif()
+  if(NOT QAFF_BPF_TARGET_ARCH MATCHES
+     "^(x86|arm64|arm|powerpc|s390|mips|riscv|loongarch)$")
+    message(FATAL_ERROR "Invalid QAFF_BPF_TARGET_ARCH '${QAFF_BPF_TARGET_ARCH}'")
+  endif()
+
+  if(NOT QAFF_BPF_SYSTEM_INCLUDE_DIR)
+    foreach(QAFF_INCLUDE_CANDIDATE IN LISTS CMAKE_C_IMPLICIT_INCLUDE_DIRECTORIES)
+      if(EXISTS "${QAFF_INCLUDE_CANDIDATE}/asm/types.h")
+        set(QAFF_BPF_SYSTEM_INCLUDE_DIR "${QAFF_INCLUDE_CANDIDATE}")
+        break()
+      endif()
+    endforeach()
+  endif()
+  if(NOT QAFF_BPF_SYSTEM_INCLUDE_DIR OR
+     NOT EXISTS "${QAFF_BPF_SYSTEM_INCLUDE_DIR}/asm/types.h")
+    message(FATAL_ERROR
+      "Could not find architecture-specific asm/types.h; set QAFF_BPF_SYSTEM_INCLUDE_DIR")
+  endif()
+
+  message(STATUS
+    "BPF clang target: ${QAFF_BPF_CLANG_TARGET}; architecture: ${QAFF_BPF_TARGET_ARCH}; system headers: ${QAFF_BPF_SYSTEM_INCLUDE_DIR}")
+  add_custom_command(
+    OUTPUT ${CMAKE_CURRENT_BINARY_DIR}/qaff_reuseport.bpf.o
+    COMMAND ${CLANG_EXECUTABLE}
+      -O2
+      -g
+      -target ${QAFF_BPF_CLANG_TARGET}
+      -D__TARGET_ARCH_${QAFF_BPF_TARGET_ARCH}
+      -DQAFF_BPF
+      -I${CMAKE_CURRENT_SOURCE_DIR}/bpf
+      -I${CMAKE_CURRENT_SOURCE_DIR}/include
+      -I${QAFF_BPF_SYSTEM_INCLUDE_DIR}
+      -c ${CMAKE_CURRENT_SOURCE_DIR}/bpf/qaff_reuseport.bpf.c
+      -o ${CMAKE_CURRENT_BINARY_DIR}/qaff_reuseport.bpf.o
+    DEPENDS
+      ${CMAKE_CURRENT_SOURCE_DIR}/bpf/qaff_reuseport.bpf.c
+      ${CMAKE_CURRENT_SOURCE_DIR}/bpf/qaff_bpf.h
+      ${CMAKE_CURRENT_SOURCE_DIR}/include/quic_affinity/wire.h
+    VERBATIM)
+
+  add_custom_target(qaff_bpf ALL
+    DEPENDS ${CMAKE_CURRENT_BINARY_DIR}/qaff_reuseport.bpf.o)
+  install(FILES ${CMAKE_CURRENT_BINARY_DIR}/qaff_reuseport.bpf.o
+    DESTINATION ${CMAKE_INSTALL_LIBEXECDIR}/quic-affinity)
+  add_dependencies(test_reuseport_smoke qaff_bpf)
+  add_dependencies(qaffd qaff_bpf)
+  add_dependencies(test_qaffd_control qaff_bpf)
+  add_dependencies(test_qaffd_restart qaff_bpf)
+  add_dependencies(test_qaffd_egress qaff_bpf)
 endif()
 
 if(TARGET qaff_bpf)

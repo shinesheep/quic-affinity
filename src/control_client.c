@@ -1,4 +1,5 @@
 #include "quic_affinity/control.h"
+#include "control_protocol.h"
 
 #include <errno.h>
 #include <string.h>
@@ -37,34 +38,43 @@ static int qaff_read_all(int fd, void *buf, size_t len) {
 static int qaff_send_msg_with_fd(int fd,
                                  const struct qaff_control_msg *msg,
                                  int pass_fd) {
-  struct iovec iov;
-  iov.iov_base = (void *)msg;
-  iov.iov_len = sizeof(*msg);
+  size_t sent = 0;
+  int rights_sent = 0;
+  while (sent < sizeof(*msg)) {
+    struct iovec iov = {
+      .iov_base = (char *)msg + sent,
+      .iov_len = sizeof(*msg) - sent,
+    };
+    char control[CMSG_SPACE(sizeof(int))];
+    memset(control, 0, sizeof(control));
+    struct msghdr hdr;
+    memset(&hdr, 0, sizeof(hdr));
+    hdr.msg_iov = &iov;
+    hdr.msg_iovlen = 1;
 
-  char control[CMSG_SPACE(sizeof(int))];
-  memset(control, 0, sizeof(control));
-
-  struct msghdr hdr;
-  memset(&hdr, 0, sizeof(hdr));
-  hdr.msg_iov = &iov;
-  hdr.msg_iovlen = 1;
-
-  if (pass_fd >= 0) {
-    hdr.msg_control = control;
-    hdr.msg_controllen = sizeof(control);
-
-    struct cmsghdr *cmsg = CMSG_FIRSTHDR(&hdr);
-    cmsg->cmsg_level = SOL_SOCKET;
-    cmsg->cmsg_type = SCM_RIGHTS;
-    cmsg->cmsg_len = CMSG_LEN(sizeof(int));
-    memcpy(CMSG_DATA(cmsg), &pass_fd, sizeof(pass_fd));
-  }
-
-  while (sendmsg(fd, &hdr, 0) < 0) {
-    if (errno == EINTR) {
-      continue;
+    if (pass_fd >= 0 && !rights_sent) {
+      hdr.msg_control = control;
+      hdr.msg_controllen = sizeof(control);
+      struct cmsghdr *cmsg = CMSG_FIRSTHDR(&hdr);
+      cmsg->cmsg_level = SOL_SOCKET;
+      cmsg->cmsg_type = SCM_RIGHTS;
+      cmsg->cmsg_len = CMSG_LEN(sizeof(int));
+      memcpy(CMSG_DATA(cmsg), &pass_fd, sizeof(pass_fd));
     }
-    return -1;
+
+    ssize_t written = sendmsg(fd, &hdr, MSG_NOSIGNAL);
+    if (written < 0) {
+      if (errno == EINTR) {
+        continue;
+      }
+      return -1;
+    }
+    if (written == 0) {
+      errno = EPIPE;
+      return -1;
+    }
+    sent += (size_t)written;
+    rights_sent = 1;
   }
   return 0;
 }
@@ -293,6 +303,69 @@ int qaff_control_cids(int control_fd, struct qaff_control_config *out) {
   return 0;
 }
 
+static int qaff_control_list_workers(
+    int control_fd,
+    uint32_t *worker_ids,
+    struct qaff_control_worker_info *worker_infos,
+    size_t workers_cap,
+    size_t *workers_len) {
+  uint32_t cursor = 0;
+  size_t copied = 0;
+  size_t total = 0;
+
+  for (;;) {
+    struct qaff_control_msg msg;
+    struct qaff_control_msg reply;
+    qaff_control_msg_init(&msg, QAFF_CONTROL_WORKERS);
+    msg.worker_id = cursor;
+    if (qaff_round_trip(control_fd, &msg, -1, &reply) != 0) {
+      return -1;
+    }
+    if (reply.workers_len > QAFF_CONTROL_PAGE_WORKERS ||
+        reply.config.worker_count > QAFF_CONTROL_WORKER_CAPACITY) {
+      errno = EPROTO;
+      return -1;
+    }
+    if (cursor == 0) {
+      total = reply.config.worker_count;
+    }
+
+    uint32_t previous = cursor;
+    for (size_t i = 0; i < reply.workers_len; i++) {
+      uint32_t worker_id = reply.workers[i];
+      if (worker_id < cursor || (i > 0 && worker_id <= previous) ||
+          worker_id != reply.worker_infos[i].worker_id ||
+          worker_id >= QAFF_CONTROL_WORKER_CAPACITY) {
+        errno = EPROTO;
+        return -1;
+      }
+      previous = worker_id;
+      if (copied < workers_cap) {
+        if (worker_ids != NULL) {
+          worker_ids[copied] = worker_id;
+        }
+        if (worker_infos != NULL) {
+          worker_infos[copied] = reply.worker_infos[i];
+        }
+        copied++;
+      }
+    }
+
+    if (copied == workers_cap || reply.worker_id == UINT32_MAX) {
+      break;
+    }
+    if (reply.workers_len == 0 || reply.worker_id <= cursor ||
+        reply.worker_id >= QAFF_CONTROL_WORKER_CAPACITY) {
+      errno = EPROTO;
+      return -1;
+    }
+    cursor = reply.worker_id;
+  }
+
+  *workers_len = total;
+  return 0;
+}
+
 int qaff_control_workers(int control_fd,
                          uint32_t *workers,
                          size_t workers_cap,
@@ -301,24 +374,11 @@ int qaff_control_workers(int control_fd,
     errno = EINVAL;
     return -1;
   }
-
-  struct qaff_control_msg msg;
-  struct qaff_control_msg reply;
-  qaff_control_msg_init(&msg, QAFF_CONTROL_WORKERS);
-  if (qaff_round_trip(control_fd, &msg, -1, &reply) != 0) {
-    return -1;
-  }
-
-  *workers_len = reply.workers_len;
-  size_t ncopy = reply.workers_len;
-  if (ncopy > workers_cap) {
-    ncopy = workers_cap;
-  }
-  for (size_t i = 0; i < ncopy; i++) {
-    workers[i] = reply.workers[i];
-  }
-
-  return 0;
+  return qaff_control_list_workers(control_fd,
+                                   workers,
+                                   NULL,
+                                   workers_cap,
+                                   workers_len);
 }
 
 int qaff_control_workers_info(int control_fd,
@@ -330,23 +390,11 @@ int qaff_control_workers_info(int control_fd,
     return -1;
   }
 
-  struct qaff_control_msg msg;
-  struct qaff_control_msg reply;
-  qaff_control_msg_init(&msg, QAFF_CONTROL_WORKERS);
-  if (qaff_round_trip(control_fd, &msg, -1, &reply) != 0) {
-    return -1;
-  }
-
-  *workers_len = reply.workers_len;
-  size_t ncopy = reply.workers_len;
-  if (ncopy > workers_cap) {
-    ncopy = workers_cap;
-  }
-  for (size_t i = 0; i < ncopy; i++) {
-    workers[i] = reply.worker_infos[i];
-  }
-
-  return 0;
+  return qaff_control_list_workers(control_fd,
+                                   NULL,
+                                   workers,
+                                   workers_cap,
+                                   workers_len);
 }
 
 int qaff_control_stop(int control_fd) {

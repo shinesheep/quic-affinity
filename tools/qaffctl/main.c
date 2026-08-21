@@ -309,11 +309,11 @@ static int cmd_workers(int argc, char **argv) {
     return 1;
   }
 
-  struct qaff_control_worker_info workers[QAFF_CONTROL_MAX_WORKERS];
+  struct qaff_control_worker_info workers[QAFF_CONTROL_WORKER_CAPACITY];
   size_t workers_len = 0;
   if (qaff_control_workers_info(fd,
                                 workers,
-                                QAFF_CONTROL_MAX_WORKERS,
+                                QAFF_CONTROL_WORKER_CAPACITY,
                                 &workers_len) != 0) {
     perror("qaff_control_workers_info");
     close(fd);
@@ -321,7 +321,9 @@ static int cmd_workers(int argc, char **argv) {
   }
 
   printf("workers_len=%zu\n", workers_len);
-  for (size_t i = 0; i < workers_len && i < QAFF_CONTROL_MAX_WORKERS; i++) {
+  for (size_t i = 0;
+       i < workers_len && i < QAFF_CONTROL_WORKER_CAPACITY;
+       i++) {
     printf("worker=%u leased=%u has_cred=%u pidfd=%u pid=%u target_pid=%u "
            "uid=%u gid=%u registered_ms_ago=%llu last_seen_ms_ago=%llu\n",
            workers[i].worker_id,

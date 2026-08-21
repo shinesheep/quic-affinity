@@ -14,6 +14,7 @@
 #include <string.h>
 #include <time.h>
 #include <sys/socket.h>
+#include <sys/time.h>
 #include <sys/types.h>
 #include <sys/wait.h>
 #include <unistd.h>
@@ -26,6 +27,8 @@
 #define WORKER_COUNT 3
 #define FALLBACK_WORKER 0
 #define TARGET_WORKER 2
+#define CID_INDEX_STRESS_COUNT 32
+#define PAGINATION_WORKER_COUNT 70
 
 struct test_case {
   int family;
@@ -302,6 +305,8 @@ static uint64_t monotonic_now_ns(void) {
 static pid_t start_qaffd(const char *qaffd_path,
                          const char *socket_path,
                          const char *bpf_path) {
+  char uid_arg[32];
+  snprintf(uid_arg, sizeof(uid_arg), "%u", (unsigned int)getuid());
   pid_t pid = fork();
   if (pid != 0) {
     return pid;
@@ -322,6 +327,8 @@ static pid_t start_qaffd(const char *qaffd_path,
         "20",
         "--worker-heartbeat-timeout-ms",
         "500",
+        "--allow-worker-uid",
+        uid_arg,
         (char *)NULL);
   perror("execl qaffd");
   _exit(127);
@@ -567,11 +574,11 @@ static int expect_registered_workers(const char *socket_path,
                                      const char *case_name,
                                      const uint32_t *expected,
                                      size_t expected_len) {
-  uint32_t registered_workers[QAFF_CONTROL_MAX_WORKERS];
+  uint32_t registered_workers[QAFF_CONTROL_WORKER_CAPACITY];
   size_t registered_workers_len = 0;
   if (control_call_workers(socket_path,
                            registered_workers,
-                           QAFF_CONTROL_MAX_WORKERS,
+                           QAFF_CONTROL_WORKER_CAPACITY,
                            &registered_workers_len) != 0) {
     perror("qaff_control_workers");
     return -1;
@@ -606,11 +613,11 @@ static int wait_registered_workers_len(const char *socket_path,
   };
 
   for (int attempt = 0; attempt < 100; attempt++) {
-    uint32_t workers[QAFF_CONTROL_MAX_WORKERS];
+    uint32_t workers[QAFF_CONTROL_WORKER_CAPACITY];
     size_t workers_len = 0;
     if (control_call_workers(socket_path,
                              workers,
-                             QAFF_CONTROL_MAX_WORKERS,
+                             QAFF_CONTROL_WORKER_CAPACITY,
                              &workers_len) == 0 &&
         workers_len == expected_len) {
       return 0;
@@ -618,6 +625,25 @@ static int wait_registered_workers_len(const char *socket_path,
     nanosleep(&delay, NULL);
   }
 
+  errno = ETIMEDOUT;
+  return -1;
+}
+
+static int wait_child_exit(pid_t pid, int *status) {
+  const struct timespec delay = {
+    .tv_sec = 0,
+    .tv_nsec = 20 * 1000 * 1000,
+  };
+  for (int attempt = 0; attempt < 100; attempt++) {
+    pid_t rc = waitpid(pid, status, WNOHANG);
+    if (rc == pid) {
+      return 0;
+    }
+    if (rc < 0) {
+      return -1;
+    }
+    nanosleep(&delay, NULL);
+  }
   errno = ETIMEDOUT;
   return -1;
 }
@@ -631,7 +657,11 @@ static int run_case(const char *qaffd_path,
            (long)getpid(),
            test->name);
 
+  char lock_path[sizeof(socket_path) + sizeof(".lock")];
+  snprintf(lock_path, sizeof(lock_path), "%s.lock", socket_path);
+
   unlink(socket_path);
+  unlink(lock_path);
   pid_t daemon_pid = start_qaffd(qaffd_path, socket_path, bpf_path);
   if (daemon_pid < 0) {
     perror("fork qaffd");
@@ -651,6 +681,73 @@ static int run_case(const char *qaffd_path,
     return 1;
   }
   close(ready_fd);
+
+  pid_t duplicate_pid = start_qaffd(qaffd_path, socket_path, bpf_path);
+  if (duplicate_pid < 0) {
+    perror("fork duplicate qaffd");
+    return 1;
+  }
+  int duplicate_status = 0;
+  if (wait_child_exit(duplicate_pid, &duplicate_status) != 0) {
+    kill(duplicate_pid, SIGTERM);
+    waitpid(duplicate_pid, NULL, 0);
+    fprintf(stderr, "%s: duplicate qaffd did not exit\n", test->name);
+    return 1;
+  }
+  if (!WIFEXITED(duplicate_status) || WEXITSTATUS(duplicate_status) == 0) {
+    fprintf(stderr, "%s: duplicate qaffd unexpectedly succeeded\n", test->name);
+    return 1;
+  }
+  struct qaff_control_config first_daemon_config;
+  int first_daemon_fd = qaff_control_connect(socket_path);
+  if (first_daemon_fd < 0 ||
+      qaff_control_config(first_daemon_fd, &first_daemon_config) != 0) {
+    if (first_daemon_fd >= 0) {
+      close(first_daemon_fd);
+    }
+    fprintf(stderr, "%s: first qaffd was displaced by duplicate\n", test->name);
+    return 1;
+  }
+  close(first_daemon_fd);
+
+  int slow_fd = qaff_control_connect(socket_path);
+  if (slow_fd < 0 || send(slow_fd, "\0", 1, 0) != 1) {
+    perror("start slow control client");
+    return 1;
+  }
+  int probe_fd = qaff_control_connect(socket_path);
+  struct timeval probe_timeout = {
+    .tv_sec = 0,
+    .tv_usec = 500 * 1000,
+  };
+  if (probe_fd < 0 ||
+      setsockopt(probe_fd,
+                 SOL_SOCKET,
+                 SO_RCVTIMEO,
+                 &probe_timeout,
+                 sizeof(probe_timeout)) != 0 ||
+      qaff_control_config(probe_fd, &first_daemon_config) != 0) {
+    if (probe_fd >= 0) {
+      close(probe_fd);
+    }
+    close(slow_fd);
+    fprintf(stderr, "%s: slow client blocked control plane\n", test->name);
+    return 1;
+  }
+  close(probe_fd);
+
+  struct pollfd slow_poll = {
+    .fd = slow_fd,
+    .events = POLLIN | POLLHUP,
+  };
+  char discarded;
+  if (poll(&slow_poll, 1, 2000) <= 0 ||
+      recv(slow_fd, &discarded, sizeof(discarded), 0) != 0) {
+    close(slow_fd);
+    fprintf(stderr, "%s: slow client deadline was not enforced\n", test->name);
+    return 1;
+  }
+  close(slow_fd);
 
   int lease_fd = -1;
   int leased_worker = -1;
@@ -680,11 +777,12 @@ static int run_case(const char *qaffd_path,
     return 1;
   }
 
-  struct qaff_control_worker_info worker_infos[QAFF_CONTROL_MAX_WORKERS];
+  struct qaff_control_worker_info
+      worker_infos[QAFF_CONTROL_WORKER_CAPACITY];
   size_t worker_infos_len = 0;
   if (control_call_workers_info(socket_path,
                                 worker_infos,
-                                QAFF_CONTROL_MAX_WORKERS,
+                                QAFF_CONTROL_WORKER_CAPACITY,
                                 &worker_infos_len) != 0) {
     perror("qaff_control_workers_info");
     return 1;
@@ -873,6 +971,25 @@ static int run_case(const char *qaffd_path,
   if (control_call_register_cid(socket_path, TARGET_WORKER, k_second_dcid) != 0) {
     perror("qaff_control_register_cid second");
     return 1;
+  }
+
+  for (uint32_t i = 0; i < CID_INDEX_STRESS_COUNT; i++) {
+    uint8_t cid[sizeof(k_dcid)] = {
+      0x80, 0x73, 0x74, 0x72, 0x65, 0x73, 0x73, (uint8_t)i,
+    };
+    if (control_call_register_cid(socket_path, TARGET_WORKER, cid) != 0) {
+      perror("qaff_control_register_cid index stress");
+      return 1;
+    }
+  }
+  for (uint32_t i = 0; i < CID_INDEX_STRESS_COUNT; i++) {
+    uint8_t cid[sizeof(k_dcid)] = {
+      0x80, 0x73, 0x74, 0x72, 0x65, 0x73, 0x73, (uint8_t)i,
+    };
+    if (control_call_retire_cid(socket_path, cid) != 0) {
+      perror("qaff_control_retire_cid index stress");
+      return 1;
+    }
   }
 
   if (child_attempt_register_cid(socket_path, TARGET_WORKER, k_unknown_dcid) != 10) {
@@ -1143,6 +1260,68 @@ static int run_case(const char *qaffd_path,
     return 1;
   }
 
+  int pagination_workers[PAGINATION_WORKER_COUNT];
+  for (size_t i = 0; i < PAGINATION_WORKER_COUNT; i++) {
+    pagination_workers[i] = make_worker_socket(test->family, &port);
+    if (pagination_workers[i] < 0) {
+      perror("make_worker_socket pagination");
+      return 1;
+    }
+    if (control_call_register_worker(socket_path,
+                                     100u + (uint32_t)i,
+                                     pagination_workers[i]) != 0) {
+      perror("qaff_control_register_worker pagination");
+      return 1;
+    }
+  }
+
+  int list_fd = qaff_control_connect(socket_path);
+  struct qaff_control_worker_info
+      paginated_infos[QAFF_CONTROL_WORKER_CAPACITY];
+  size_t paginated_len = 0;
+  if (list_fd < 0 ||
+      qaff_control_workers_info(list_fd,
+                                paginated_infos,
+                                QAFF_CONTROL_WORKER_CAPACITY,
+                                &paginated_len) != 0) {
+    perror("qaff_control_workers_info pagination");
+    return 1;
+  }
+  if (paginated_len != PAGINATION_WORKER_COUNT + 1 ||
+      paginated_infos[0].worker_id != 0) {
+    fprintf(stderr, "%s: unexpected paginated worker count\n", test->name);
+    return 1;
+  }
+  for (size_t i = 0; i < PAGINATION_WORKER_COUNT; i++) {
+    if (paginated_infos[i + 1].worker_id != 100u + (uint32_t)i) {
+      fprintf(stderr,
+              "%s: unexpected worker in page at index %zu\n",
+              test->name,
+              i + 1);
+      return 1;
+    }
+  }
+
+  struct qaff_control_config reused_connection_config;
+  if (qaff_control_config(list_fd, &reused_connection_config) != 0 ||
+      reused_connection_config.worker_count != PAGINATION_WORKER_COUNT + 1) {
+    perror("qaff_control_config reused connection");
+    return 1;
+  }
+  close(list_fd);
+
+  uint32_t worker_prefix[2];
+  size_t worker_prefix_total = 0;
+  if (control_call_workers(socket_path,
+                           worker_prefix,
+                           sizeof(worker_prefix) / sizeof(worker_prefix[0]),
+                           &worker_prefix_total) != 0 ||
+      worker_prefix_total != PAGINATION_WORKER_COUNT + 1 ||
+      worker_prefix[0] != 0 || worker_prefix[1] != 100) {
+    fprintf(stderr, "%s: bounded worker listing failed\n", test->name);
+    return 1;
+  }
+
   if (stop_qaffd(socket_path, daemon_pid) != 0) {
     perror("stop_qaffd");
     return 1;
@@ -1151,9 +1330,13 @@ static int run_case(const char *qaffd_path,
   for (size_t i = 0; i < WORKER_COUNT; i++) {
     close(workers[i]);
   }
+  for (size_t i = 0; i < PAGINATION_WORKER_COUNT; i++) {
+    close(pagination_workers[i]);
+  }
   close(senders[0].fd);
   close(senders[1].fd);
   unlink(socket_path);
+  unlink(lock_path);
   return 0;
 }
 

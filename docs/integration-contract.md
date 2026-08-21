@@ -94,7 +94,7 @@ When using `qaffd`, the privileged daemon owns BPF setup:
 
 If the leased control connection closes unexpectedly, `qaffd` treats the worker as dead, unregisters it, closes qaffd's duplicated worker socket fd, and bulk-retires that worker's CIDs. `--worker-heartbeat-timeout-ms` also lets `qaffd` remove leased workers that keep the connection open but stop sending `WORKER_HEARTBEAT` messages; `0` disables heartbeat timeouts. The older one-shot `REGISTER_WORKER` operation remains available for compatibility, but it cannot detect worker process death on its own because fd passing gives `qaffd` a separate reference to the UDP socket.
 
-`qaffd` records the registering process' Unix peer credentials and exposes them through `qaffctl workers`. For leased workers it also opens a pidfd when supported; pidfd readability is treated as worker death and triggers the same unregister cleanup as lease close. Existing worker IDs, worker CID registration, CID retirement, and worker unregistration can be mutated only by the original worker process or by the configured management identity. Deployments can use `--allow-worker-uid` and `--allow-worker-gid` to define that management identity and reject worker registration from unexpected local users or groups.
+`qaffd` records the registering process' Unix peer credentials and exposes them through `qaffctl workers`. For leased workers it also opens a pidfd when supported; pidfd readability is treated as worker death and triggers the same unregister cleanup as lease close. Existing worker IDs, worker CID registration, CID retirement, and worker unregistration can be mutated only by the original worker process or by the configured management identity. Deployments use `--allow-worker-uid` and `--allow-worker-gid` to restrict worker admission, and the independent `--allow-admin-uid` and `--allow-admin-gid` options to grant management authority. Group-accessible control sockets require an explicit management identity.
 
 The current MVP supports one listener per `qaffd` process.
 
@@ -128,7 +128,7 @@ qaffd --pin-root /sys/fs/bpf/quic-affinity/listeners/<listener-id> \
 
 `--pin-root` must point to a writable bpffs directory. `--state-path` must point to a normal filesystem path, not bpffs. If `--state-path` is set, `--pin-root` is required.
 
-On restart, `qaffd` reloads worker IDs from `--state-path` and rebuilds CID ownership from the pinned `qaff_cids` map.
+On restart, `qaffd` reloads worker IDs and generation tombstones from `--state-path`, reconciles pinned worker generations, and rebuilds CID ownership from the pinned `qaff_cids` map.
 
 Pinned map schema mismatches fail startup rather than silently reinterpreting
 data. For a pre-1.0 upgrade that only expands `QAFF_STAT_MAX`, stop qaffd and

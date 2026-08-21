@@ -11,14 +11,8 @@
 extern "C" {
 #endif
 
-/** Magic value used on the qaffd Unix-socket control protocol. */
-#define QAFF_CONTROL_MAGIC 0x51414646u
-
-/** Current qaffd control protocol version. */
-#define QAFF_CONTROL_VERSION 3u
-
-/** Maximum workers returned by one control-plane list request. */
-#define QAFF_CONTROL_MAX_WORKERS 64u
+/** Maximum number of worker IDs supported by one qaffd listener. */
+#define QAFF_CONTROL_WORKER_CAPACITY 4096u
 
 /** Maximum path bytes carried in control-plane config replies. */
 #define QAFF_CONTROL_MAX_PATH 256u
@@ -31,24 +25,6 @@ extern "C" {
 
 /** qaffd is monitoring the registering process with pidfd. */
 #define QAFF_CONTROL_WORKER_FLAG_PIDFD 0x4u
-
-/** Control operations accepted by qaffd. */
-enum qaff_control_op {
-  QAFF_CONTROL_REGISTER_WORKER = 1,
-  QAFF_CONTROL_REGISTER_CID = 2,
-  QAFF_CONTROL_RETIRE_CID = 3,
-  QAFF_CONTROL_READ_STATS = 4,
-  QAFF_CONTROL_STOP = 5,
-  QAFF_CONTROL_HEALTH = 6,
-  QAFF_CONTROL_CONFIG = 7,
-  QAFF_CONTROL_WORKERS = 8,
-  QAFF_CONTROL_UNREGISTER_WORKER = 9,
-  QAFF_CONTROL_CIDS = 10,
-  QAFF_CONTROL_REGISTER_WORKER_LEASE = 11,
-  QAFF_CONTROL_WORKER_HEARTBEAT = 12,
-  QAFF_CONTROL_REGISTER_PASSIVE_CID = 13,
-  QAFF_CONTROL_RETIRE_PASSIVE_CID = 14,
-};
 
 /** qaffd listener configuration and CID-index health summary. */
 struct qaff_control_config {
@@ -122,35 +98,11 @@ struct qaff_control_worker_info {
 };
 
 /**
- * Wire message used by the qaffd control protocol.
- *
- * Applications normally call the helper functions below instead of sending this
- * structure directly. The layout is intentionally fixed-size to keep the
- * initial protocol simple.
- */
-struct qaff_control_msg {
-  uint32_t magic;
-  uint16_t version;
-  uint16_t op;
-  int32_t status;
-  uint32_t worker_id;
-  /** Optional real worker PID when a supervisor owns the control lease. */
-  uint32_t target_pid;
-  uint32_t cid_len;
-  uint8_t cid[QAFF_MAX_CID_LEN];
-  struct qaff_passive_cid_value passive_value;
-  struct qaff_stats stats;
-  struct qaff_control_config config;
-  uint32_t workers[QAFF_CONTROL_MAX_WORKERS];
-  struct qaff_control_worker_info worker_infos[QAFF_CONTROL_MAX_WORKERS];
-  uint32_t workers_len;
-};
-
-/**
  * Connect to a qaffd Unix domain control socket.
  *
  * Returns a connected fd on success or -1 with errno set. The caller owns the
- * returned fd.
+ * returned fd. Use the helpers in this header for all traffic on that fd; the
+ * daemon transport format is a private implementation detail.
  */
 int qaff_control_connect(const char *socket_path);
 
@@ -231,7 +183,8 @@ int qaff_control_cids(int control_fd, struct qaff_control_config *out);
  * List registered worker IDs.
  *
  * workers_len receives the total number of workers known to qaffd, even if
- * workers_cap is smaller and only a prefix was copied.
+ * workers_cap is smaller and only a prefix was copied. The helper transparently
+ * fetches multiple protocol pages when needed.
  */
 int qaff_control_workers(int control_fd,
                          uint32_t *workers,
@@ -242,7 +195,8 @@ int qaff_control_workers(int control_fd,
  * List registered workers with lifecycle metadata.
  *
  * workers_len receives the total number of workers known to qaffd, even if
- * workers_cap is smaller and only a prefix was copied.
+ * workers_cap is smaller and only a prefix was copied. The helper transparently
+ * fetches multiple protocol pages when needed.
  */
 int qaff_control_workers_info(int control_fd,
                               struct qaff_control_worker_info *workers,

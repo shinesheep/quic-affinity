@@ -15,12 +15,24 @@ state_path=/tmp/qaffd-restart-$id.state
 caps=cap_bpf,cap_net_admin,cap_perfmon,cap_sys_resource+ep
 
 cleanup() {
-  rm -f "$state_path"
-  rm -f "$pin_root/qaff_cids" "$pin_root/qaff_passive_cids" \
-    "$pin_root/qaff_workers" "$pin_root/qaff_socket_workers" \
-    "$pin_root/qaff_worker_generations" "$pin_root/qaff_stats" \
-    "$pin_root/qaff_config" 2>/dev/null || true
-  rmdir "$pin_root" 2>/dev/null || true
+  rm -f "$state_path" 2>/dev/null || {
+    if command -v sudo >/dev/null 2>&1; then
+      sudo -n rm -f "$state_path" 2>/dev/null || true
+    fi
+  }
+  if [ -x "$pin_root" ]; then
+    rm -f "$pin_root/qaff_cids" "$pin_root/qaff_passive_cids" \
+      "$pin_root/qaff_workers" "$pin_root/qaff_socket_workers" \
+      "$pin_root/qaff_worker_generations" "$pin_root/qaff_stats" \
+      "$pin_root/qaff_config" 2>/dev/null || true
+    rmdir "$pin_root" 2>/dev/null || true
+  elif command -v sudo >/dev/null 2>&1; then
+    sudo -n rm -f "$pin_root/qaff_cids" "$pin_root/qaff_passive_cids" \
+      "$pin_root/qaff_workers" "$pin_root/qaff_socket_workers" \
+      "$pin_root/qaff_worker_generations" "$pin_root/qaff_stats" \
+      "$pin_root/qaff_config" 2>/dev/null || true
+    sudo -n rmdir "$pin_root" 2>/dev/null || true
+  fi
 }
 trap cleanup EXIT INT TERM
 
@@ -46,4 +58,11 @@ mkdir "$pin_root" 2>/dev/null || {
   fi
 }
 
-"$test_bin" "$qaffd_bin" "$bpf_obj" "$pin_root" "$state_path"
+if [ -x "$pin_root" ]; then
+  "$test_bin" "$qaffd_bin" "$bpf_obj" "$pin_root" "$state_path"
+elif command -v sudo >/dev/null 2>&1 && sudo -n true 2>/dev/null; then
+  sudo -n "$test_bin" "$qaffd_bin" "$bpf_obj" "$pin_root" "$state_path"
+else
+  echo "skipping: bpffs pin root is not searchable" >&2
+  exit 77
+fi

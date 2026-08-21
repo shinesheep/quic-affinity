@@ -189,6 +189,10 @@ static pid_t start_qaffd(const char *qaffd_path,
         uid_arg,
         "--allow-worker-gid",
         gid_arg,
+        "--allow-admin-uid",
+        uid_arg,
+        "--allow-admin-gid",
+        gid_arg,
         (char *)NULL);
   perror("execl qaffd");
   _exit(127);
@@ -284,10 +288,10 @@ static int control_workers_len(const char *socket_path, size_t *workers_len) {
   if (fd < 0) {
     return -1;
   }
-  uint32_t workers[QAFF_CONTROL_MAX_WORKERS];
+  uint32_t workers[QAFF_CONTROL_WORKER_CAPACITY];
   int rc = qaff_control_workers(fd,
                                 workers,
-                                QAFF_CONTROL_MAX_WORKERS,
+                                QAFF_CONTROL_WORKER_CAPACITY,
                                 workers_len);
   close(fd);
   return rc;
@@ -371,7 +375,50 @@ int main(int argc, char **argv) {
   snprintf(socket_path, sizeof(socket_path),
            "/tmp/qaffd-restart-%ld.sock",
            (long)getpid());
+  char lock_path[sizeof(socket_path) + sizeof(".lock")];
+  snprintf(lock_path, sizeof(lock_path), "%s.lock", socket_path);
   unlink(socket_path);
+  unlink(lock_path);
+
+  char unwritable_state_path[128];
+  snprintf(unwritable_state_path,
+           sizeof(unwritable_state_path),
+           "/proc/qaffd-restart-%ld.state",
+           (long)getpid());
+  pid_t rollback_daemon_pid = start_qaffd(qaffd_path,
+                                          socket_path,
+                                          bpf_path,
+                                          pin_root,
+                                          unwritable_state_path);
+  if (rollback_daemon_pid < 0) {
+    perror("fork qaffd rollback test");
+    return 1;
+  }
+  int ready = wait_ready_or_skip(socket_path, rollback_daemon_pid);
+  if (ready != 0) {
+    return ready == TEST_SKIP ? TEST_SKIP : 1;
+  }
+  uint16_t rollback_port = 0;
+  int rollback_worker = make_worker_socket(&rollback_port);
+  if (rollback_worker < 0) {
+    perror("make rollback worker socket");
+    return 1;
+  }
+  if (control_register_worker(socket_path, 0, rollback_worker) == 0) {
+    fprintf(stderr, "worker registration unexpectedly survived state failure\n");
+    return 1;
+  }
+  size_t rollback_workers_len = 0;
+  if (control_workers_len(socket_path, &rollback_workers_len) != 0 ||
+      rollback_workers_len != 0) {
+    fprintf(stderr, "worker registration state was not rolled back\n");
+    return 1;
+  }
+  close(rollback_worker);
+  if (stop_qaffd(socket_path, rollback_daemon_pid) != 0) {
+    perror("stop_qaffd rollback test");
+    return 1;
+  }
 
   pid_t daemon_pid = start_qaffd(qaffd_path,
                                  socket_path,
@@ -383,7 +430,7 @@ int main(int argc, char **argv) {
     return 1;
   }
 
-  int ready = wait_ready_or_skip(socket_path, daemon_pid);
+  ready = wait_ready_or_skip(socket_path, daemon_pid);
   if (ready != 0) {
     return ready == TEST_SKIP ? TEST_SKIP : 1;
   }
@@ -500,6 +547,37 @@ int main(int argc, char **argv) {
     return 1;
   }
 
+  if (stop_qaffd(socket_path, daemon_pid) != 0) {
+    perror("stop_qaffd after worker cleanup");
+    return 1;
+  }
+  daemon_pid = start_qaffd(qaffd_path,
+                           socket_path,
+                           bpf_path,
+                           pin_root,
+                           state_path);
+  if (daemon_pid < 0) {
+    perror("fork qaffd tombstone restart");
+    return 1;
+  }
+  ready = wait_ready_or_skip(socket_path, daemon_pid);
+  if (ready != 0) {
+    return ready == TEST_SKIP ? TEST_SKIP : 1;
+  }
+
+  restored_workers_len = 0;
+  if (control_workers_len(socket_path, &restored_workers_len) != 0) {
+    perror("qaff_control_workers tombstone restart");
+    return 1;
+  }
+  if (restored_workers_len != WORKER_COUNT - 1) {
+    fprintf(stderr,
+            "expected %d workers after tombstone restart, got %zu\n",
+            WORKER_COUNT - 1,
+            restored_workers_len);
+    return 1;
+  }
+
   close(workers[TARGET_WORKER]);
   workers[TARGET_WORKER] = make_worker_socket(&port);
   if (workers[TARGET_WORKER] < 0) {
@@ -575,10 +653,39 @@ int main(int argc, char **argv) {
     return 1;
   }
 
+  FILE *obsolete_state = fopen(state_path, "w");
+  if (obsolete_state == NULL) {
+    perror("open obsolete state");
+    return 1;
+  }
+  int obsolete_write_rc =
+      fputs("qaffd-state-v3\nworker 0 1\n", obsolete_state);
+  int obsolete_close_rc = fclose(obsolete_state);
+  if (obsolete_write_rc == EOF || obsolete_close_rc != 0) {
+    perror("write obsolete state");
+    return 1;
+  }
+  daemon_pid = start_qaffd(qaffd_path,
+                           socket_path,
+                           bpf_path,
+                           pin_root,
+                           state_path);
+  if (daemon_pid < 0) {
+    perror("fork qaffd obsolete state");
+    return 1;
+  }
+  int obsolete_status = 0;
+  if (waitpid(daemon_pid, &obsolete_status, 0) < 0 ||
+      !WIFEXITED(obsolete_status) || WEXITSTATUS(obsolete_status) == 0) {
+    fprintf(stderr, "qaffd unexpectedly accepted an obsolete state format\n");
+    return 1;
+  }
+
   for (size_t i = 0; i < WORKER_COUNT; i++) {
     close(workers[i]);
   }
   close(sender);
   unlink(socket_path);
+  unlink(lock_path);
   return 0;
 }
