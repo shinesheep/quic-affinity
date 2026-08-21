@@ -212,6 +212,8 @@ Maintainers can find the private daemon transport design in
 [`docs/control-protocol.md`](docs/control-protocol.md).
 The restart snapshot format and durability guarantees are documented in
 [`docs/state-store.md`](docs/state-store.md).
+Worker lifecycle and generation semantics are documented in
+[`docs/worker-registry.md`](docs/worker-registry.md).
 
 ## Quick Start With `qaffd`
 

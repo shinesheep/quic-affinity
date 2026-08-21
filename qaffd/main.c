@@ -5,6 +5,7 @@
 #include "control_protocol.h"
 #include "authorization.h"
 #include "state_store.h"
+#include "worker_registry.h"
 
 #include <ctype.h>
 #include <errno.h>
@@ -110,15 +111,7 @@ struct qaffd_options {
 };
 
 struct qaffd_worker_snapshot {
-  int worker_fd;
-  int pidfd;
-  uint64_t socket_cookie;
-  int registered;
-  uint64_t registered_at_ms;
-  uint64_t last_seen_ms;
-  uint32_t generation;
-  uint32_t target_pid;
-  struct qaffd_peer_cred cred;
+  struct qaffd_worker_record worker;
   int listener_locked;
   struct sockaddr_storage listener_addr;
 };
@@ -137,6 +130,7 @@ struct qaffd_state {
   uint32_t worker_generations[QAFFD_MAX_WORKERS];
   uint32_t worker_target_pids[QAFFD_MAX_WORKERS];
   struct qaffd_peer_cred worker_creds[QAFFD_MAX_WORKERS];
+  struct qaffd_worker_registry worker_registry;
   struct qaffd_cid_entry *cid_entries;
   size_t cid_entries_len;
   size_t cid_entries_cap;
@@ -350,30 +344,11 @@ static int open_pidfd_for_peer(const struct qaffd_peer_cred *peer) {
 }
 
 static uint32_t worker_count(const struct qaffd_state *state) {
-  uint32_t count = 0;
-  for (size_t i = 0; i < QAFFD_MAX_WORKERS; i++) {
-    if (state->worker_registered[i]) {
-      count++;
-    }
-  }
-  return count;
+  return qaffd_worker_registry_count(&state->worker_registry);
 }
 
 static int next_worker_generation(uint32_t previous, uint32_t *next) {
-  if (next == NULL) {
-    errno = EINVAL;
-    return -1;
-  }
-  if (previous == 0) {
-    *next = QAFF_WORKER_GENERATION_DEFAULT;
-    return 0;
-  }
-  if (previous >= QAFF_WORKER_GENERATION_MAX) {
-    errno = EOVERFLOW;
-    return -1;
-  }
-  *next = previous + 1;
-  return 0;
+  return qaffd_worker_registry_next_generation(previous, next);
 }
 
 static int copy_config_path(char *dst, size_t dst_len, const char *src) {
@@ -1528,15 +1503,9 @@ static int recover_cids_from_map(struct qaffd_state *state) {
 static void snapshot_worker(const struct qaffd_state *state,
                             uint32_t worker_id,
                             struct qaffd_worker_snapshot *snapshot) {
-  snapshot->worker_fd = state->worker_fds[worker_id];
-  snapshot->pidfd = state->worker_pidfds[worker_id];
-  snapshot->socket_cookie = state->worker_socket_cookies[worker_id];
-  snapshot->registered = state->worker_registered[worker_id];
-  snapshot->registered_at_ms = state->worker_registered_at_ms[worker_id];
-  snapshot->last_seen_ms = state->worker_last_seen_ms[worker_id];
-  snapshot->generation = state->worker_generations[worker_id];
-  snapshot->target_pid = state->worker_target_pids[worker_id];
-  snapshot->cred = state->worker_creds[worker_id];
+  qaffd_worker_registry_snapshot(&state->worker_registry,
+                                 worker_id,
+                                 &snapshot->worker);
   snapshot->listener_locked = state->listener_locked;
   snapshot->listener_addr = state->listener_addr;
 }
@@ -1544,15 +1513,9 @@ static void snapshot_worker(const struct qaffd_state *state,
 static void restore_worker(struct qaffd_state *state,
                            uint32_t worker_id,
                            const struct qaffd_worker_snapshot *snapshot) {
-  state->worker_fds[worker_id] = snapshot->worker_fd;
-  state->worker_pidfds[worker_id] = snapshot->pidfd;
-  state->worker_socket_cookies[worker_id] = snapshot->socket_cookie;
-  state->worker_registered[worker_id] = snapshot->registered;
-  state->worker_registered_at_ms[worker_id] = snapshot->registered_at_ms;
-  state->worker_last_seen_ms[worker_id] = snapshot->last_seen_ms;
-  state->worker_generations[worker_id] = snapshot->generation;
-  state->worker_target_pids[worker_id] = snapshot->target_pid;
-  state->worker_creds[worker_id] = snapshot->cred;
+  qaffd_worker_registry_restore(&state->worker_registry,
+                                worker_id,
+                                &snapshot->worker);
   state->listener_locked = snapshot->listener_locked;
   state->listener_addr = snapshot->listener_addr;
 }
@@ -1564,22 +1527,22 @@ static int rollback_worker_maps(
     uint64_t new_socket_cookie,
     int same_socket) {
   if (new_socket_cookie != 0 &&
-      new_socket_cookie != snapshot->socket_cookie) {
+      new_socket_cookie != snapshot->worker.socket_cookie) {
     unregister_socket_cookie(state, new_socket_cookie);
   }
 
-  if (!snapshot->registered) {
+  if (!snapshot->worker.registered) {
     if (qaff_unregister_worker_socket(state->ctx, worker_id) != 0 &&
         errno != ENOENT) {
       return -1;
     }
     return 0;
   }
-  if (snapshot->worker_fd >= 0) {
+  if (snapshot->worker.worker_fd >= 0) {
     return qaff_register_worker_socket_generation(state->ctx,
                                                   worker_id,
-                                                  snapshot->worker_fd,
-                                                  snapshot->generation);
+                                                  snapshot->worker.worker_fd,
+                                                  snapshot->worker.generation);
   }
   if (same_socket) {
     return 0;
@@ -1673,18 +1636,17 @@ static int handle_register_worker(struct qaffd_state *state,
     return -1;
   }
 
-  state->worker_fds[request->worker_id] = socket_fd;
-  state->worker_pidfds[request->worker_id] = -1;
-  state->worker_socket_cookies[request->worker_id] = socket_cookie;
-  state->worker_registered[request->worker_id] = 1;
-  state->worker_generations[request->worker_id] = generation;
-  state->worker_target_pids[request->worker_id] =
-      enable_pidfd ? request->target_pid : 0;
   uint64_t now = now_ms();
-  state->worker_registered_at_ms[request->worker_id] = now;
-  state->worker_last_seen_ms[request->worker_id] = now;
-  state->worker_creds[request->worker_id] =
-      peer != NULL ? *peer : (struct qaffd_peer_cred){0};
+  if (qaffd_worker_registry_register(&state->worker_registry,
+                                     request->worker_id,
+                                     socket_fd,
+                                     socket_cookie,
+                                     generation,
+                                     enable_pidfd ? request->target_pid : 0,
+                                     now,
+                                     peer) != 0) {
+    return -1;
+  }
   if (enable_pidfd) {
     int pidfd = open_pidfd_for_peer(peer);
     if (pidfd >= 0) {
@@ -1726,15 +1688,16 @@ static int handle_register_worker(struct qaffd_state *state,
     return -1;
   }
 
-  if (snapshot.worker_fd >= 0 && snapshot.worker_fd != socket_fd) {
-    close(snapshot.worker_fd);
+  if (snapshot.worker.worker_fd >= 0 &&
+      snapshot.worker.worker_fd != socket_fd) {
+    close(snapshot.worker.worker_fd);
   }
-  if (snapshot.pidfd >= 0 &&
-      snapshot.pidfd != state->worker_pidfds[request->worker_id]) {
-    close(snapshot.pidfd);
+  if (snapshot.worker.pidfd >= 0 &&
+      snapshot.worker.pidfd != state->worker_pidfds[request->worker_id]) {
+    close(snapshot.worker.pidfd);
   }
-  if (snapshot.socket_cookie != socket_cookie) {
-    unregister_socket_cookie(state, snapshot.socket_cookie);
+  if (snapshot.worker.socket_cookie != socket_cookie) {
+    unregister_socket_cookie(state, snapshot.worker.socket_cookie);
   }
   if (!enable_pidfd && state->worker_lease_fds[request->worker_id] >= 0) {
     close(state->worker_lease_fds[request->worker_id]);
@@ -1770,25 +1733,15 @@ static int unregister_worker_authorized(struct qaffd_state *state,
 
   if (state->worker_fds[worker_id] >= 0) {
     close(state->worker_fds[worker_id]);
-    state->worker_fds[worker_id] = -1;
   }
   unregister_socket_cookie(state, state->worker_socket_cookies[worker_id]);
-  state->worker_socket_cookies[worker_id] = 0;
   if (state->worker_lease_fds[worker_id] >= 0) {
     close(state->worker_lease_fds[worker_id]);
-    state->worker_lease_fds[worker_id] = -1;
   }
   if (state->worker_pidfds[worker_id] >= 0) {
     close(state->worker_pidfds[worker_id]);
-    state->worker_pidfds[worker_id] = -1;
   }
-  state->worker_registered[worker_id] = 0;
-  state->worker_registered_at_ms[worker_id] = 0;
-  state->worker_last_seen_ms[worker_id] = 0;
-  state->worker_target_pids[worker_id] = 0;
-  memset(&state->worker_creds[worker_id],
-         0,
-         sizeof(state->worker_creds[worker_id]));
+  qaffd_worker_registry_clear(&state->worker_registry, worker_id);
   if (worker_count(state) == 0) {
     state->attached = 0;
     state->listener_locked = 0;
@@ -2032,7 +1985,9 @@ static int handle_worker_lease_event(struct qaffd_state *state,
       state->worker_lease_fds[worker_id] != lease_fd) {
     reply.status = EPROTO;
   } else {
-    state->worker_last_seen_ms[worker_id] = now_ms();
+    qaffd_worker_registry_heartbeat(&state->worker_registry,
+                                    worker_id,
+                                    now_ms());
   }
 
   uint8_t reply_packet[QAFF_CONTROL_MAX_MESSAGE_SIZE];
@@ -2713,10 +2668,22 @@ int main(int argc, char **argv) {
   state.socket_gid_set = daemon_options.socket_gid_set;
   state.socket_gid = daemon_options.socket_gid;
   state.socket_mode = daemon_options.socket_mode;
-  for (size_t i = 0; i < QAFFD_MAX_WORKERS; i++) {
-    state.worker_fds[i] = -1;
-    state.worker_lease_fds[i] = -1;
-    state.worker_pidfds[i] = -1;
+  state.worker_registry = (struct qaffd_worker_registry){
+    .capacity = QAFFD_MAX_WORKERS,
+    .worker_fds = state.worker_fds,
+    .lease_fds = state.worker_lease_fds,
+    .pidfds = state.worker_pidfds,
+    .socket_cookies = state.worker_socket_cookies,
+    .registered = state.worker_registered,
+    .registered_at_ms = state.worker_registered_at_ms,
+    .last_seen_ms = state.worker_last_seen_ms,
+    .generations = state.worker_generations,
+    .target_pids = state.worker_target_pids,
+    .creds = state.worker_creds,
+  };
+  if (qaffd_worker_registry_init(&state.worker_registry) != 0) {
+    perror("qaffd_worker_registry_init");
+    return 1;
   }
 
   state.instance_lock_fd = acquire_instance_lock(daemon_options.socket_path);

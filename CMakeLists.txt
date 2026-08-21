@@ -82,6 +82,16 @@ if(QAFF_BUILD_DAEMON OR BUILD_TESTING)
     ${CMAKE_CURRENT_SOURCE_DIR}/include)
   target_compile_options(qaffd_state_store PRIVATE
     -Wall -Wextra -Wpedantic)
+
+  add_library(qaffd_worker_registry STATIC
+    qaffd/worker_registry.c)
+  target_include_directories(qaffd_worker_registry PUBLIC
+    ${CMAKE_CURRENT_SOURCE_DIR}/qaffd)
+  target_include_directories(qaffd_worker_registry PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/include)
+  target_link_libraries(qaffd_worker_registry PUBLIC qaffd_authorization)
+  target_compile_options(qaffd_worker_registry PRIVATE
+    -Wall -Wextra -Wpedantic)
 endif()
 
 if(QAFF_BUILD_DAEMON)
@@ -91,7 +101,8 @@ if(QAFF_BUILD_DAEMON)
   target_link_libraries(qaffd PRIVATE
     qaffinity
     qaffd_authorization
-    qaffd_state_store)
+    qaffd_state_store
+    qaffd_worker_registry)
   target_include_directories(qaffd PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/internal)
   target_compile_options(qaffd PRIVATE -Wall -Wextra -Wpedantic)
 endif()
@@ -147,6 +158,7 @@ install(FILES LICENSE
 install(FILES
   docs/control-protocol.md
   docs/state-store.md
+  docs/worker-registry.md
   DESTINATION ${CMAKE_INSTALL_DOCDIR}/docs)
 
 configure_package_config_file(
@@ -272,6 +284,17 @@ if(BUILD_TESTING)
     -Wall -Wextra -Wpedantic)
   add_test(NAME qaffd_state_store
     COMMAND $<TARGET_FILE:test_qaffd_state_store>)
+
+  add_executable(test_qaffd_worker_registry
+    tests/test_qaffd_worker_registry.c)
+  target_link_libraries(test_qaffd_worker_registry PRIVATE
+    qaffd_worker_registry)
+  target_include_directories(test_qaffd_worker_registry PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/include)
+  target_compile_options(test_qaffd_worker_registry PRIVATE
+    -Wall -Wextra -Wpedantic)
+  add_test(NAME qaffd_worker_registry
+    COMMAND $<TARGET_FILE:test_qaffd_worker_registry>)
 
   if(QAFF_BUILD_BPF)
     add_executable(test_reuseport_smoke

@@ -35,6 +35,8 @@ find "$root/usr" -path '*/share/doc/*/docs/control-protocol.md' \
   -type f | grep -q .
 find "$root/usr" -path '*/share/doc/*/docs/state-store.md' \
   -type f | grep -q .
+find "$root/usr" -path '*/share/doc/*/docs/worker-registry.md' \
+  -type f | grep -q .
 find "$root/usr" -path '*/cmake/quic-affinity/quic-affinityConfig.cmake' \
   -type f | grep -q .
 find "$root/usr" -path '*/cmake/quic-affinity/quic-affinityTargets.cmake' \
