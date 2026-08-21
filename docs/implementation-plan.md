@@ -35,7 +35,7 @@
 - Export an installable CMake package and pkg-config metadata. (Implemented.)
 - Make tests, BPF, daemon, tools, and examples independently configurable. (Implemented.)
 - Replace the private fixed-struct control transport with an explicitly encoded
-  `SOCK_SEQPACKET` protocol.
+  `SOCK_SEQPACKET` protocol. (Implemented.)
 - Split qaffd into independently testable protocol, authorization, state,
   worker-registry, and CID-index modules.
 - Add fuzzing, scale tests, fault injection, and arm64 build validation.

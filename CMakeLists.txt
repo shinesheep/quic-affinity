@@ -31,6 +31,7 @@ pkg_check_modules(LIBBPF REQUIRED IMPORTED_TARGET libbpf)
 add_library(qaffinity
   src/cid_profile.c
   src/control_client.c
+  src/control_protocol.c
   src/bpf_loader.c
   src/qaffinity.c
   src/quic_parser.c)
@@ -121,6 +122,9 @@ install(FILES README.md
 
 install(FILES LICENSE
   DESTINATION ${CMAKE_INSTALL_DOCDIR})
+
+install(FILES docs/control-protocol.md
+  DESTINATION ${CMAKE_INSTALL_DOCDIR}/docs)
 
 configure_package_config_file(
   cmake/quic-affinityConfig.cmake.in
@@ -218,6 +222,15 @@ if(BUILD_TESTING)
   target_link_libraries(test_cid_profile PRIVATE qaffinity)
   target_compile_options(test_cid_profile PRIVATE -Wall -Wextra -Wpedantic)
   add_test(NAME cid_profile COMMAND $<TARGET_FILE:test_cid_profile>)
+
+  add_executable(test_control_protocol
+    tests/test_control_protocol.c)
+  target_link_libraries(test_control_protocol PRIVATE qaffinity)
+  target_include_directories(test_control_protocol PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/internal)
+  target_compile_options(test_control_protocol PRIVATE
+    -Wall -Wextra -Wpedantic)
+  add_test(NAME control_protocol COMMAND $<TARGET_FILE:test_control_protocol>)
 
   if(QAFF_BUILD_BPF)
     add_executable(test_reuseport_smoke

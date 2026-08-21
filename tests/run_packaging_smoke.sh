@@ -31,6 +31,8 @@ test -x "$root/usr/sbin/qaffd"
 find "$root/usr" -name libqaffinity.a -type f | grep -q .
 test -f "$root/usr/include/quic_affinity/quic_affinity.h"
 test -f "$root/usr/include/quic_affinity/control.h"
+find "$root/usr" -path '*/share/doc/*/docs/control-protocol.md' \
+  -type f | grep -q .
 find "$root/usr" -path '*/cmake/quic-affinity/quic-affinityConfig.cmake' \
   -type f | grep -q .
 find "$root/usr" -path '*/cmake/quic-affinity/quic-affinityTargets.cmake' \

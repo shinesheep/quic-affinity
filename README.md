@@ -208,6 +208,9 @@ target_link_libraries(my_server PRIVATE quic-affinity::qaffinity)
 
 The installation also provides `quic-affinity.pc` for pkg-config consumers.
 
+Maintainers can find the private daemon transport design in
+[`docs/control-protocol.md`](docs/control-protocol.md).
+
 ## Quick Start With `qaffd`
 
 Start a daemon for one listener:

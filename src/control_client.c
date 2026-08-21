@@ -10,73 +10,83 @@
 static void qaff_control_msg_init(struct qaff_control_msg *msg,
                                   enum qaff_control_op op) {
   memset(msg, 0, sizeof(*msg));
-  msg->magic = QAFF_CONTROL_MAGIC;
-  msg->version = QAFF_CONTROL_VERSION;
   msg->op = (uint16_t)op;
-}
-
-static int qaff_read_all(int fd, void *buf, size_t len) {
-  char *p = buf;
-  while (len > 0) {
-    ssize_t got = read(fd, p, len);
-    if (got < 0) {
-      if (errno == EINTR) {
-        continue;
-      }
-      return -1;
-    }
-    if (got == 0) {
-      errno = ECONNRESET;
-      return -1;
-    }
-    p += got;
-    len -= (size_t)got;
-  }
-  return 0;
 }
 
 static int qaff_send_msg_with_fd(int fd,
                                  const struct qaff_control_msg *msg,
                                  int pass_fd) {
-  size_t sent = 0;
-  int rights_sent = 0;
-  while (sent < sizeof(*msg)) {
-    struct iovec iov = {
-      .iov_base = (char *)msg + sent,
-      .iov_len = sizeof(*msg) - sent,
-    };
-    char control[CMSG_SPACE(sizeof(int))];
-    memset(control, 0, sizeof(control));
-    struct msghdr hdr;
-    memset(&hdr, 0, sizeof(hdr));
-    hdr.msg_iov = &iov;
-    hdr.msg_iovlen = 1;
+  uint8_t packet[QAFF_CONTROL_MAX_MESSAGE_SIZE];
+  size_t packet_len;
+  if (qaff_control_encode_request(msg,
+                                  packet,
+                                  sizeof(packet),
+                                  &packet_len) != 0) {
+    return -1;
+  }
 
-    if (pass_fd >= 0 && !rights_sent) {
-      hdr.msg_control = control;
-      hdr.msg_controllen = sizeof(control);
-      struct cmsghdr *cmsg = CMSG_FIRSTHDR(&hdr);
-      cmsg->cmsg_level = SOL_SOCKET;
-      cmsg->cmsg_type = SCM_RIGHTS;
-      cmsg->cmsg_len = CMSG_LEN(sizeof(int));
-      memcpy(CMSG_DATA(cmsg), &pass_fd, sizeof(pass_fd));
-    }
+  struct iovec iov = {
+    .iov_base = packet,
+    .iov_len = packet_len,
+  };
+  char control[CMSG_SPACE(sizeof(int))];
+  memset(control, 0, sizeof(control));
+  struct msghdr hdr;
+  memset(&hdr, 0, sizeof(hdr));
+  hdr.msg_iov = &iov;
+  hdr.msg_iovlen = 1;
 
-    ssize_t written = sendmsg(fd, &hdr, MSG_NOSIGNAL);
-    if (written < 0) {
-      if (errno == EINTR) {
-        continue;
-      }
-      return -1;
-    }
-    if (written == 0) {
-      errno = EPIPE;
-      return -1;
-    }
-    sent += (size_t)written;
-    rights_sent = 1;
+  if (pass_fd >= 0) {
+    hdr.msg_control = control;
+    hdr.msg_controllen = sizeof(control);
+    struct cmsghdr *cmsg = CMSG_FIRSTHDR(&hdr);
+    cmsg->cmsg_level = SOL_SOCKET;
+    cmsg->cmsg_type = SCM_RIGHTS;
+    cmsg->cmsg_len = CMSG_LEN(sizeof(int));
+    memcpy(CMSG_DATA(cmsg), &pass_fd, sizeof(pass_fd));
+  }
+
+  ssize_t written;
+  do {
+    written = sendmsg(fd, &hdr, MSG_NOSIGNAL);
+  } while (written < 0 && errno == EINTR);
+  if (written < 0) {
+    return -1;
+  }
+  if ((size_t)written != packet_len) {
+    errno = EIO;
+    return -1;
   }
   return 0;
+}
+
+static int qaff_receive_reply(int fd, struct qaff_control_msg *reply) {
+  uint8_t packet[QAFF_CONTROL_MAX_MESSAGE_SIZE];
+  struct iovec iov = {
+    .iov_base = packet,
+    .iov_len = sizeof(packet),
+  };
+  struct msghdr hdr;
+  memset(&hdr, 0, sizeof(hdr));
+  hdr.msg_iov = &iov;
+  hdr.msg_iovlen = 1;
+
+  ssize_t got;
+  do {
+    got = recvmsg(fd, &hdr, 0);
+  } while (got < 0 && errno == EINTR);
+  if (got < 0) {
+    return -1;
+  }
+  if (got == 0) {
+    errno = ECONNRESET;
+    return -1;
+  }
+  if ((hdr.msg_flags & (MSG_TRUNC | MSG_CTRUNC)) != 0) {
+    errno = EPROTO;
+    return -1;
+  }
+  return qaff_control_decode_reply(packet, (size_t)got, reply);
 }
 
 static int qaff_round_trip(int fd,
@@ -86,12 +96,10 @@ static int qaff_round_trip(int fd,
   if (qaff_send_msg_with_fd(fd, msg, pass_fd) != 0) {
     return -1;
   }
-  if (qaff_read_all(fd, reply, sizeof(*reply)) != 0) {
+  if (qaff_receive_reply(fd, reply) != 0) {
     return -1;
   }
-  if (reply->magic != QAFF_CONTROL_MAGIC ||
-      reply->version != QAFF_CONTROL_VERSION ||
-      reply->op != msg->op) {
+  if (reply->op != msg->op) {
     errno = EPROTO;
     return -1;
   }
@@ -108,7 +116,7 @@ int qaff_control_connect(const char *socket_path) {
     return -1;
   }
 
-  int fd = socket(AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC, 0);
+  int fd = socket(AF_UNIX, SOCK_SEQPACKET | SOCK_CLOEXEC, 0);
   if (fd < 0) {
     return -1;
   }

@@ -32,7 +32,8 @@ name and point `QAFF_BPF_SYSTEM_INCLUDE_DIR` at the target directory containing
 Some integration tests need BPF-related kernel capabilities and a compatible
 Linux kernel. Their wrappers attempt to apply narrow file capabilities with
 passwordless `sudo`; unsupported environments report the test as skipped.
-Parser and CID-profile unit tests must pass in every environment.
+Parser, CID-profile, and control-protocol unit tests must pass in every
+environment.
 To exercise the unprivileged configuration explicitly, run:
 
 ```sh

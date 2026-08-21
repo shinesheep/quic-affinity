@@ -66,10 +66,10 @@ struct qaffd_client {
   int lease_worker_id;
   enum qaffd_client_stage stage;
   uint64_t deadline_ms;
-  size_t request_bytes;
-  size_t reply_bytes;
   struct qaff_control_msg request;
   struct qaff_control_msg reply;
+  uint8_t reply_packet[QAFF_CONTROL_MAX_MESSAGE_SIZE];
+  size_t reply_len;
 };
 
 struct qaffd_cid_entry {
@@ -993,50 +993,16 @@ static int parse_args(int argc, char **argv, struct qaffd_options *options) {
   return 0;
 }
 
-static int read_exact(int fd, void *buf, size_t len) {
-  char *p = buf;
-  while (len > 0) {
-    ssize_t got = read(fd, p, len);
-    if (got < 0) {
-      if (errno == EINTR) {
-        continue;
-      }
-      return -1;
-    }
-    if (got == 0) {
-      errno = ECONNRESET;
-      return -1;
-    }
-    p += got;
-    len -= (size_t)got;
-  }
-  return 0;
-}
-
-static int write_exact(int fd, const void *buf, size_t len) {
-  const char *p = buf;
-  while (len > 0) {
-    ssize_t written = write(fd, p, len);
-    if (written < 0) {
-      if (errno == EINTR) {
-        continue;
-      }
-      return -1;
-    }
-    p += written;
-    len -= (size_t)written;
-  }
-  return 0;
-}
-
 static int recv_request(int fd, struct qaff_control_msg *msg, int *received_fd) {
   *received_fd = -1;
 
+  uint8_t packet[QAFF_CONTROL_MAX_MESSAGE_SIZE];
   struct iovec iov;
-  iov.iov_base = msg;
-  iov.iov_len = sizeof(*msg);
+  iov.iov_base = packet;
+  iov.iov_len = sizeof(packet);
 
-  char control[CMSG_SPACE(sizeof(int))];
+  int rights[4];
+  char control[CMSG_SPACE(sizeof(rights))];
   memset(control, 0, sizeof(control));
 
   struct msghdr hdr;
@@ -1058,31 +1024,40 @@ static int recv_request(int fd, struct qaff_control_msg *msg, int *received_fd) 
     errno = ECONNRESET;
     return -1;
   }
-  if ((size_t)got != sizeof(*msg)) {
-    if (read_exact(fd, (char *)msg + got, sizeof(*msg) - (size_t)got) != 0) {
-      return -1;
-    }
-  }
-
+  int invalid_rights = 0;
   for (struct cmsghdr *cmsg = CMSG_FIRSTHDR(&hdr);
        cmsg != NULL;
        cmsg = CMSG_NXTHDR(&hdr, cmsg)) {
     if (cmsg->cmsg_level == SOL_SOCKET &&
         cmsg->cmsg_type == SCM_RIGHTS &&
         cmsg->cmsg_len >= CMSG_LEN(sizeof(int))) {
-      memcpy(received_fd, CMSG_DATA(cmsg), sizeof(int));
-      break;
+      size_t rights_len = cmsg->cmsg_len - CMSG_LEN(0);
+      size_t rights_count = rights_len / sizeof(int);
+      const int *received = (const int *)CMSG_DATA(cmsg);
+      for (size_t i = 0; i < rights_count; i++) {
+        if (*received_fd < 0 && !invalid_rights) {
+          *received_fd = received[i];
+        } else {
+          close(received[i]);
+          invalid_rights = 1;
+        }
+      }
     }
   }
-
-  return 0;
+  if ((hdr.msg_flags & (MSG_CTRUNC | MSG_TRUNC)) != 0 || invalid_rights) {
+    if (*received_fd >= 0) {
+      close(*received_fd);
+      *received_fd = -1;
+    }
+    errno = EPROTO;
+    return -1;
+  }
+  return qaff_control_decode_request(packet, (size_t)got, msg);
 }
 
 static void reply_init(struct qaff_control_msg *reply,
                        const struct qaff_control_msg *request) {
   memset(reply, 0, sizeof(*reply));
-  reply->magic = QAFF_CONTROL_MAGIC;
-  reply->version = QAFF_CONTROL_VERSION;
   reply->op = request->op;
 }
 
@@ -2266,9 +2241,7 @@ static int handle_worker_lease_event(struct qaffd_state *state,
 
   struct qaff_control_msg reply;
   reply_init(&reply, &request);
-  if (request.magic != QAFF_CONTROL_MAGIC ||
-      request.version != QAFF_CONTROL_VERSION ||
-      request.op != QAFF_CONTROL_WORKER_HEARTBEAT ||
+  if (request.op != QAFF_CONTROL_WORKER_HEARTBEAT ||
       request.worker_id != worker_id ||
       !state->worker_registered[worker_id] ||
       state->worker_lease_fds[worker_id] != lease_fd) {
@@ -2277,7 +2250,19 @@ static int handle_worker_lease_event(struct qaffd_state *state,
     state->worker_last_seen_ms[worker_id] = now_ms();
   }
 
-  if (write_exact(lease_fd, &reply, sizeof(reply)) != 0) {
+  uint8_t reply_packet[QAFF_CONTROL_MAX_MESSAGE_SIZE];
+  size_t reply_len;
+  if (qaff_control_encode_reply(&reply,
+                                reply_packet,
+                                sizeof(reply_packet),
+                                &reply_len) != 0) {
+    return unregister_worker_id(state, worker_id);
+  }
+  ssize_t written;
+  do {
+    written = send(lease_fd, reply_packet, reply_len, MSG_NOSIGNAL);
+  } while (written < 0 && errno == EINTR);
+  if (written < 0 || (size_t)written != reply_len) {
     return unregister_worker_id(state, worker_id);
   }
   if (reply.status != 0) {
@@ -2301,11 +2286,14 @@ static void process_request(struct qaffd_state *state,
   *lease_worker_id = -1;
   reply_init(reply, request);
 
-  if (request->magic != QAFF_CONTROL_MAGIC ||
-      request->version != QAFF_CONTROL_VERSION) {
+  int requires_fd = request->op == QAFF_CONTROL_REGISTER_WORKER ||
+                    request->op == QAFF_CONTROL_REGISTER_WORKER_LEASE;
+  if (requires_fd != (*received_fd >= 0)) {
     reply->status = EPROTO;
-  } else {
-    switch (request->op) {
+    return;
+  }
+
+  switch (request->op) {
     case QAFF_CONTROL_REGISTER_WORKER:
       if (get_peer_cred(client_fd, &peer_cred) != 0 ||
           handle_register_worker(state,
@@ -2395,10 +2383,9 @@ static void process_request(struct qaffd_state *state,
         state->stop = 1;
       }
       break;
-    default:
-      reply->status = ENOSYS;
-      break;
-    }
+  default:
+    reply->status = ENOSYS;
+    break;
   }
 }
 
@@ -2429,86 +2416,85 @@ static void drop_client(struct qaffd_state *state,
 }
 
 static int receive_client_request(struct qaffd_client *client) {
-  while (client->request_bytes < sizeof(client->request)) {
-    struct iovec iov = {
-      .iov_base = (char *)&client->request + client->request_bytes,
-      .iov_len = sizeof(client->request) - client->request_bytes,
-    };
-    int rights[4];
-    char control[CMSG_SPACE(sizeof(rights))];
-    memset(control, 0, sizeof(control));
-    struct msghdr hdr;
-    memset(&hdr, 0, sizeof(hdr));
-    hdr.msg_iov = &iov;
-    hdr.msg_iovlen = 1;
-    hdr.msg_control = control;
-    hdr.msg_controllen = sizeof(control);
+  uint8_t packet[QAFF_CONTROL_MAX_MESSAGE_SIZE];
+  struct iovec iov = {
+    .iov_base = packet,
+    .iov_len = sizeof(packet),
+  };
+  int rights[4];
+  char control[CMSG_SPACE(sizeof(rights))];
+  memset(control, 0, sizeof(control));
+  struct msghdr hdr;
+  memset(&hdr, 0, sizeof(hdr));
+  hdr.msg_iov = &iov;
+  hdr.msg_iovlen = 1;
+  hdr.msg_control = control;
+  hdr.msg_controllen = sizeof(control);
 
-    ssize_t got = recvmsg(client->fd, &hdr, MSG_DONTWAIT);
-    if (got < 0) {
-      if (errno == EINTR) {
-        continue;
-      }
-      if (errno == EAGAIN || errno == EWOULDBLOCK) {
-        return 0;
-      }
-      return -1;
+  ssize_t got;
+  do {
+    got = recvmsg(client->fd, &hdr, MSG_DONTWAIT);
+  } while (got < 0 && errno == EINTR);
+  if (got < 0) {
+    if (errno == EAGAIN || errno == EWOULDBLOCK) {
+      return 0;
     }
-    if (got == 0) {
-      errno = ECONNRESET;
-      return -1;
-    }
+    return -1;
+  }
+  if (got == 0) {
+    errno = ECONNRESET;
+    return -1;
+  }
 
-    int invalid_rights = 0;
-    for (struct cmsghdr *cmsg = CMSG_FIRSTHDR(&hdr);
-         cmsg != NULL;
-         cmsg = CMSG_NXTHDR(&hdr, cmsg)) {
-      if (cmsg->cmsg_level != SOL_SOCKET || cmsg->cmsg_type != SCM_RIGHTS ||
-          cmsg->cmsg_len < CMSG_LEN(sizeof(int))) {
-        continue;
-      }
-      size_t rights_len = cmsg->cmsg_len - CMSG_LEN(0);
-      size_t rights_count = rights_len / sizeof(int);
-      const int *received = (const int *)CMSG_DATA(cmsg);
-      for (size_t i = 0; i < rights_count; i++) {
-        if (client->received_fd < 0 && !invalid_rights) {
-          client->received_fd = received[i];
-        } else {
-          close(received[i]);
-          invalid_rights = 1;
-        }
+  int invalid_rights = 0;
+  for (struct cmsghdr *cmsg = CMSG_FIRSTHDR(&hdr);
+       cmsg != NULL;
+       cmsg = CMSG_NXTHDR(&hdr, cmsg)) {
+    if (cmsg->cmsg_level != SOL_SOCKET || cmsg->cmsg_type != SCM_RIGHTS ||
+        cmsg->cmsg_len < CMSG_LEN(sizeof(int))) {
+      continue;
+    }
+    size_t rights_len = cmsg->cmsg_len - CMSG_LEN(0);
+    size_t rights_count = rights_len / sizeof(int);
+    const int *received = (const int *)CMSG_DATA(cmsg);
+    for (size_t i = 0; i < rights_count; i++) {
+      if (client->received_fd < 0 && !invalid_rights) {
+        client->received_fd = received[i];
+      } else {
+        close(received[i]);
+        invalid_rights = 1;
       }
     }
-    if ((hdr.msg_flags & (MSG_CTRUNC | MSG_TRUNC)) != 0 || invalid_rights) {
-      errno = EPROTO;
-      return -1;
-    }
-
-    client->request_bytes += (size_t)got;
+  }
+  if ((hdr.msg_flags & (MSG_CTRUNC | MSG_TRUNC)) != 0 || invalid_rights) {
+    errno = EPROTO;
+    return -1;
+  }
+  if (qaff_control_decode_request(packet,
+                                  (size_t)got,
+                                  &client->request) != 0) {
+    return -1;
   }
   return 1;
 }
 
 static int write_client_reply(struct qaffd_client *client) {
-  while (client->reply_bytes < sizeof(client->reply)) {
-    ssize_t written = send(client->fd,
-                           (const char *)&client->reply + client->reply_bytes,
-                           sizeof(client->reply) - client->reply_bytes,
-                           MSG_DONTWAIT | MSG_NOSIGNAL);
-    if (written < 0) {
-      if (errno == EINTR) {
-        continue;
-      }
-      if (errno == EAGAIN || errno == EWOULDBLOCK) {
-        return 0;
-      }
-      return -1;
+  ssize_t written;
+  do {
+    written = send(client->fd,
+                   client->reply_packet,
+                   client->reply_len,
+                   MSG_DONTWAIT | MSG_NOSIGNAL);
+  } while (written < 0 && errno == EINTR);
+  if (written < 0) {
+    if (errno == EAGAIN || errno == EWOULDBLOCK) {
+      return 0;
     }
-    if (written == 0) {
-      errno = EPIPE;
-      return -1;
-    }
-    client->reply_bytes += (size_t)written;
+    return -1;
+  }
+  if ((size_t)written != client->reply_len) {
+    errno = EIO;
+    return -1;
   }
   return 1;
 }
@@ -2530,6 +2516,12 @@ static int service_client(struct qaffd_state *state,
       close(client->received_fd);
       client->received_fd = -1;
     }
+    if (qaff_control_encode_reply(&client->reply,
+                                  client->reply_packet,
+                                  sizeof(client->reply_packet),
+                                  &client->reply_len) != 0) {
+      return -1;
+    }
     client->stage = QAFFD_CLIENT_WRITING;
   }
   return write_client_reply(client);
@@ -2549,8 +2541,7 @@ static void complete_client(struct qaffd_state *state,
 
   memset(&client->request, 0, sizeof(client->request));
   memset(&client->reply, 0, sizeof(client->reply));
-  client->request_bytes = 0;
-  client->reply_bytes = 0;
+  client->reply_len = 0;
   client->stage = QAFFD_CLIENT_READING;
   client->deadline_ms = now_ms() + QAFFD_CONTROL_DEADLINE_MS;
 }
@@ -2558,7 +2549,7 @@ static void complete_client(struct qaffd_state *state,
 static int make_server_socket(const struct qaffd_state *state,
                               const char *path) {
   int fd = socket(AF_UNIX,
-                  SOCK_STREAM | SOCK_CLOEXEC | SOCK_NONBLOCK,
+                  SOCK_SEQPACKET | SOCK_CLOEXEC | SOCK_NONBLOCK,
                   0);
   if (fd < 0) {
     return -1;

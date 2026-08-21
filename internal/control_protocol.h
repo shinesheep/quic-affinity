@@ -1,12 +1,14 @@
 #ifndef QAFF_CONTROL_PROTOCOL_H
 #define QAFF_CONTROL_PROTOCOL_H
 
+#include <stddef.h>
 #include <stdint.h>
 
 #include "quic_affinity/control.h"
 
 #define QAFF_CONTROL_MAGIC 0x51414646u
-#define QAFF_CONTROL_VERSION 3u
+#define QAFF_CONTROL_VERSION 1u
+#define QAFF_CONTROL_HEADER_SIZE 16u
 #define QAFF_CONTROL_PAGE_WORKERS 64u
 #define QAFF_CONTROL_MAX_MESSAGE_SIZE 8192u
 
@@ -28,13 +30,10 @@ enum qaff_control_op {
 };
 
 /*
- * Private local transport message shared by qaffd and libqaffinity. This is
- * intentionally not installed as public API. External integrations must use
- * the helpers in quic_affinity/control.h instead of depending on C ABI layout.
+ * Decoded, process-local representation. Its layout is deliberately unrelated
+ * to the wire format: control_protocol.c explicitly encodes every field.
  */
 struct qaff_control_msg {
-  uint32_t magic;
-  uint16_t version;
   uint16_t op;
   int32_t status;
   uint32_t worker_id;
@@ -49,7 +48,15 @@ struct qaff_control_msg {
   uint32_t workers_len;
 };
 
-_Static_assert(sizeof(struct qaff_control_msg) <= QAFF_CONTROL_MAX_MESSAGE_SIZE,
-               "control message exceeds daemon pending-client budget");
+int qaff_control_encode_request(const struct qaff_control_msg *msg,
+                                uint8_t *packet, size_t packet_cap,
+                                size_t *packet_len);
+int qaff_control_decode_request(const uint8_t *packet, size_t packet_len,
+                                struct qaff_control_msg *msg);
+int qaff_control_encode_reply(const struct qaff_control_msg *msg,
+                              uint8_t *packet, size_t packet_cap,
+                              size_t *packet_len);
+int qaff_control_decode_reply(const uint8_t *packet, size_t packet_len,
+                              struct qaff_control_msg *msg);
 
 #endif
