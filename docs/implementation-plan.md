@@ -40,5 +40,5 @@
   worker-registry, and CID-index modules. (Implemented.)
 - Add fuzzing, scale tests, fault injection, and arm64 build validation.
   (Parser/profile/control-protocol fuzzing and CID-index scale coverage
-  implemented.)
+  implemented; state-store write/sync/rename fault injection implemented.)
 - Add signed release artifacts, checksums, SBOM generation, and native packages.

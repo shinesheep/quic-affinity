@@ -32,7 +32,52 @@ static int validate_state(const int *worker_registered,
   return 0;
 }
 
-static int fsync_parent_directory(const char *path) {
+static ssize_t system_write(void *context, int fd, const void *data,
+                            size_t len) {
+  (void)context;
+  return write(fd, data, len);
+}
+
+static int system_fsync(void *context, int fd) {
+  (void)context;
+  return fsync(fd);
+}
+
+static int system_rename(void *context, const char *old_path,
+                         const char *new_path) {
+  (void)context;
+  return rename(old_path, new_path);
+}
+
+static const struct qaffd_state_store_io system_io = {
+    .write_fn = system_write,
+    .fsync_fn = system_fsync,
+    .rename_fn = system_rename,
+};
+
+static int write_all(const struct qaffd_state_store_io *io, int fd,
+                     const void *data, size_t len) {
+  const uint8_t *cursor = data;
+  while (len > 0) {
+    ssize_t written = io->write_fn(io->context, fd, cursor, len);
+    if (written < 0) {
+      if (errno == EINTR) {
+        continue;
+      }
+      return -1;
+    }
+    if (written == 0 || (size_t)written > len) {
+      errno = EIO;
+      return -1;
+    }
+    cursor += written;
+    len -= (size_t)written;
+  }
+  return 0;
+}
+
+static int fsync_parent_directory(const char *path,
+                                  const struct qaffd_state_store_io *io) {
   char parent[PATH_MAX];
   size_t len = strlen(path);
   if (len == 0 || len >= sizeof(parent)) {
@@ -54,7 +99,7 @@ static int fsync_parent_directory(const char *path) {
   if (fd < 0) {
     return -1;
   }
-  int rc = fsync(fd);
+  int rc = io->fsync_fn(io->context, fd);
   int saved_errno = errno;
   close(fd);
   errno = saved_errno;
@@ -64,10 +109,20 @@ static int fsync_parent_directory(const char *path) {
 int qaffd_state_store_save(const char *path, const int *worker_registered,
                            const uint32_t *worker_generations,
                            size_t worker_capacity) {
+  return qaffd_state_store_save_with_io(
+      path, worker_registered, worker_generations, worker_capacity, &system_io);
+}
+
+int qaffd_state_store_save_with_io(const char *path,
+                                   const int *worker_registered,
+                                   const uint32_t *worker_generations,
+                                   size_t worker_capacity,
+                                   const struct qaffd_state_store_io *io) {
   if (path == NULL) {
     return 0;
   }
-  if (path[0] == '\0') {
+  if (path[0] == '\0' || io == NULL || io->write_fn == NULL ||
+      io->fsync_fn == NULL || io->rename_fn == NULL) {
     errno = EINVAL;
     return -1;
   }
@@ -97,34 +152,33 @@ int qaffd_state_store_save(const char *path, const int *worker_registered,
     return -1;
   }
 
-  FILE *out = fdopen(fd, "w");
-  if (out == NULL) {
-    int saved_errno = errno;
-    close(fd);
-    unlink(tmp_path);
-    errno = saved_errno;
-    return -1;
-  }
-
-  int rc = fprintf(out, "qaffd-state\n") < 0 ? -1 : 0;
+  static const char header[] = "qaffd-state\n";
+  int rc = write_all(io, fd, header, sizeof(header) - 1);
   for (uint32_t i = 0; rc == 0 && i < worker_capacity; i++) {
+    char line[64];
+    int line_len = 0;
     if (worker_registered[i]) {
-      rc =
-          fprintf(out, "worker %u %u\n", i, worker_generations[i]) < 0 ? -1 : 0;
+      line_len = snprintf(line, sizeof(line), "worker %u %u\n", i,
+                          worker_generations[i]);
     } else if (worker_generations[i] != 0) {
-      rc = fprintf(out, "generation %u %u\n", i, worker_generations[i]) < 0 ? -1
-                                                                            : 0;
+      line_len = snprintf(line, sizeof(line), "generation %u %u\n", i,
+                          worker_generations[i]);
+    } else {
+      continue;
+    }
+    if (line_len < 0 || (size_t)line_len >= sizeof(line)) {
+      errno = EOVERFLOW;
+      rc = -1;
+    } else {
+      rc = write_all(io, fd, line, (size_t)line_len);
     }
   }
 
-  if (rc == 0 && fflush(out) != 0) {
-    rc = -1;
-  }
-  if (rc == 0 && fsync(fd) != 0) {
+  if (rc == 0 && io->fsync_fn(io->context, fd) != 0) {
     rc = -1;
   }
   int saved_errno = errno;
-  if (fclose(out) != 0 && rc == 0) {
+  if (close(fd) != 0 && rc == 0) {
     rc = -1;
     saved_errno = errno;
   }
@@ -133,13 +187,16 @@ int qaffd_state_store_save(const char *path, const int *worker_registered,
     errno = saved_errno ? saved_errno : EIO;
     return -1;
   }
-  if (rename(tmp_path, path) != 0) {
+  if (io->rename_fn(io->context, tmp_path, path) != 0) {
     saved_errno = errno;
     unlink(tmp_path);
     errno = saved_errno;
     return -1;
   }
-  return fsync_parent_directory(path);
+  if (fsync_parent_directory(path, io) != 0) {
+    return QAFFD_STATE_STORE_SAVE_COMMITTED_UNSYNCED;
+  }
+  return QAFFD_STATE_STORE_SAVE_OK;
 }
 
 static int parse_u32(const char **cursor, uint32_t *value) {

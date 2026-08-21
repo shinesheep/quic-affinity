@@ -62,6 +62,236 @@ static int load_fixture(const char *path, int registered[TEST_WORKERS],
                                 generations, TEST_WORKERS, 1234);
 }
 
+struct fault_context {
+  size_t max_write;
+  size_t fail_after;
+  size_t written;
+  int inject_eintr;
+  int inject_zero_write;
+  int fsync_failure_call;
+  int fsync_calls;
+  int rename_failure;
+};
+
+static ssize_t fault_write(void *opaque, int fd, const void *data, size_t len) {
+  struct fault_context *context = opaque;
+  if (context->inject_eintr) {
+    context->inject_eintr = 0;
+    errno = EINTR;
+    return -1;
+  }
+  if (context->inject_zero_write) {
+    context->inject_zero_write = 0;
+    return 0;
+  }
+  if (context->written >= context->fail_after) {
+    errno = ENOSPC;
+    return -1;
+  }
+  size_t allowed = len;
+  if (context->max_write > 0 && allowed > context->max_write) {
+    allowed = context->max_write;
+  }
+  size_t remaining = context->fail_after - context->written;
+  if (allowed > remaining) {
+    allowed = remaining;
+  }
+  ssize_t result = write(fd, data, allowed);
+  if (result > 0) {
+    context->written += (size_t)result;
+  }
+  return result;
+}
+
+static int fault_fsync(void *opaque, int fd) {
+  struct fault_context *context = opaque;
+  context->fsync_calls++;
+  if (context->fsync_calls == context->fsync_failure_call) {
+    errno = EIO;
+    return -1;
+  }
+  return fsync(fd);
+}
+
+static int fault_rename(void *opaque, const char *old_path,
+                        const char *new_path) {
+  struct fault_context *context = opaque;
+  if (context->rename_failure) {
+    errno = EXDEV;
+    return -1;
+  }
+  return rename(old_path, new_path);
+}
+
+static struct qaffd_state_store_io
+make_fault_io(struct fault_context *context) {
+  return (struct qaffd_state_store_io){
+      .context = context,
+      .write_fn = fault_write,
+      .fsync_fn = fault_fsync,
+      .rename_fn = fault_rename,
+  };
+}
+
+static int save_snapshot(const char *path, uint32_t worker_id,
+                         uint32_t generation,
+                         const struct qaffd_state_store_io *io) {
+  int registered[TEST_WORKERS] = {0};
+  uint32_t generations[TEST_WORKERS] = {0};
+  registered[worker_id] = 1;
+  generations[worker_id] = generation;
+  return io == NULL ? qaffd_state_store_save(path, registered, generations,
+                                             TEST_WORKERS)
+                    : qaffd_state_store_save_with_io(
+                          path, registered, generations, TEST_WORKERS, io);
+}
+
+static int expect_snapshot(const char *path, uint32_t worker_id,
+                           uint32_t generation, const char *message) {
+  int registered[TEST_WORKERS] = {0};
+  uint64_t registered_at[TEST_WORKERS] = {0};
+  uint64_t last_seen[TEST_WORKERS] = {0};
+  uint32_t generations[TEST_WORKERS] = {0};
+  if (load_fixture(path, registered, registered_at, last_seen, generations) !=
+      0) {
+    return -1;
+  }
+  for (size_t i = 0; i < TEST_WORKERS; i++) {
+    int expected_registered = i == worker_id;
+    uint32_t expected_generation = i == worker_id ? generation : 0;
+    uint64_t expected_time = i == worker_id ? 1234 : 0;
+    if (registered[i] != expected_registered ||
+        generations[i] != expected_generation ||
+        registered_at[i] != expected_time || last_seen[i] != expected_time) {
+      return expect(0, message);
+    }
+  }
+  return 0;
+}
+
+static int count_temporary_files(const char *directory) {
+  DIR *dir = opendir(directory);
+  if (dir == NULL) {
+    return -1;
+  }
+  int count = 0;
+  errno = 0;
+  struct dirent *entry;
+  while ((entry = readdir(dir)) != NULL) {
+    if (strncmp(entry->d_name, "state.tmp.", 10) == 0) {
+      count++;
+    }
+  }
+  int saved_errno = errno;
+  if (closedir(dir) != 0) {
+    return -1;
+  }
+  errno = saved_errno;
+  return saved_errno == 0 ? count : -1;
+}
+
+static int expect_injected_save(const char *directory, const char *path,
+                                struct fault_context *context,
+                                int expected_result, int expected_errno,
+                                int expect_new_snapshot, const char *message) {
+  if (save_snapshot(path, 1, 3, NULL) != 0) {
+    return -1;
+  }
+  struct qaffd_state_store_io io = make_fault_io(context);
+  errno = 0;
+  int rc = save_snapshot(path, 6, 8, &io);
+  int saved_errno = errno;
+  if (expect(rc == expected_result && saved_errno == expected_errno, message) !=
+          0 ||
+      expect_snapshot(path, expect_new_snapshot ? 6 : 1,
+                      expect_new_snapshot ? 8 : 3, message) != 0 ||
+      expect(count_temporary_files(directory) == 0,
+             "save leaves no temporary file") != 0) {
+    return -1;
+  }
+  return 0;
+}
+
+static int test_save_faults(const char *directory, const char *path) {
+  struct fault_context short_write = {
+      .max_write = 2,
+      .fail_after = SIZE_MAX,
+      .inject_eintr = 1,
+  };
+  struct qaffd_state_store_io short_write_io = make_fault_io(&short_write);
+  if (save_snapshot(path, 6, 8, &short_write_io) != 0 ||
+      expect(short_write.written > 2 && short_write.fsync_calls == 2,
+             "short writes and EINTR are retried") != 0 ||
+      expect_snapshot(path, 6, 8, "short-write snapshot is complete") != 0 ||
+      expect(count_temporary_files(directory) == 0,
+             "successful save leaves no temporary file") != 0) {
+    return -1;
+  }
+
+  const struct qaffd_state_store_io incomplete_io = {0};
+  errno = 0;
+  int incomplete_rc = save_snapshot(path, 1, 3, &incomplete_io);
+  int incomplete_errno = errno;
+  if (expect(incomplete_rc == QAFFD_STATE_STORE_SAVE_ERROR &&
+                 incomplete_errno == EINVAL,
+             "incomplete filesystem callbacks are rejected") != 0 ||
+      expect_snapshot(path, 6, 8,
+                      "invalid callbacks preserve the old snapshot") != 0 ||
+      expect(count_temporary_files(directory) == 0,
+             "invalid callbacks create no temporary file") != 0) {
+    return -1;
+  }
+
+  struct fault_context zero_write = {
+      .fail_after = SIZE_MAX,
+      .inject_zero_write = 1,
+  };
+  if (expect_injected_save(directory, path, &zero_write,
+                           QAFFD_STATE_STORE_SAVE_ERROR, EIO, 0,
+                           "zero-length write is rejected") != 0) {
+    return -1;
+  }
+
+  struct fault_context write_failure = {
+      .max_write = 3,
+      .fail_after = 5,
+  };
+  if (expect_injected_save(directory, path, &write_failure,
+                           QAFFD_STATE_STORE_SAVE_ERROR, ENOSPC, 0,
+                           "partial write preserves the old snapshot") != 0) {
+    return -1;
+  }
+
+  struct fault_context file_fsync_failure = {
+      .fail_after = SIZE_MAX,
+      .fsync_failure_call = 1,
+  };
+  if (expect_injected_save(
+          directory, path, &file_fsync_failure, QAFFD_STATE_STORE_SAVE_ERROR,
+          EIO, 0, "file fsync failure preserves the old snapshot") != 0) {
+    return -1;
+  }
+
+  struct fault_context rename_failure = {
+      .fail_after = SIZE_MAX,
+      .rename_failure = 1,
+  };
+  if (expect_injected_save(directory, path, &rename_failure,
+                           QAFFD_STATE_STORE_SAVE_ERROR, EXDEV, 0,
+                           "rename failure preserves the old snapshot") != 0) {
+    return -1;
+  }
+
+  struct fault_context directory_fsync_failure = {
+      .fail_after = SIZE_MAX,
+      .fsync_failure_call = 2,
+  };
+  return expect_injected_save(
+      directory, path, &directory_fsync_failure,
+      QAFFD_STATE_STORE_SAVE_COMMITTED_UNSYNCED, EIO, 1,
+      "directory fsync failure reports uncertain durability after commit");
+}
+
 static int test_round_trip(const char *path) {
   int registered[TEST_WORKERS] = {0};
   uint32_t generations[TEST_WORKERS] = {0};
@@ -282,7 +512,9 @@ int main(void) {
     return 1;
   }
 
-  int rc = test_round_trip(path) != 0 || test_invalid_inputs(path) != 0 ||
+  int rc = test_round_trip(path) != 0 ||
+           test_save_faults(directory, path) != 0 ||
+           test_invalid_inputs(path) != 0 ||
            test_file_security(directory, path, symlink_path) != 0;
   unlink(symlink_path);
   unlink(path);

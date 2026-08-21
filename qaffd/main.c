@@ -1187,10 +1187,20 @@ static int cleanup_passive_cids(struct qaffd_state *state,
 }
 
 static int save_state(const struct qaffd_state *state) {
-  return qaffd_state_store_save(state->state_path,
-                                state->worker_registered,
-                                state->worker_generations,
-                                QAFFD_MAX_WORKERS);
+  int result = qaffd_state_store_save(state->state_path,
+                                      state->worker_registered,
+                                      state->worker_generations,
+                                      QAFFD_MAX_WORKERS);
+  if (result == QAFFD_STATE_STORE_SAVE_COMMITTED_UNSYNCED) {
+    int saved_errno = errno ? errno : EIO;
+    audit_event("state_persistence_degraded",
+                NULL,
+                "stage=parent_directory_sync errno=%d",
+                saved_errno);
+    errno = saved_errno;
+    return 0;
+  }
+  return result;
 }
 
 static int load_state(struct qaffd_state *state) {
