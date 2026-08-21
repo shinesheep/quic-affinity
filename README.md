@@ -304,6 +304,17 @@ multiple distinct matching sockets in one worker are rejected as ambiguous.
 A shorter interval reduces the maximum stale-routing window but scans the
 target's `/proc/<pid>/fd` directory more often.
 
+For a hard startup traffic gate, configure
+`--readiness-command /path/to/hook`. The agent synchronously invokes the hook
+with `not-ready` before spawning a `run` target, invokes it with `ready` only
+after qaffd acknowledges the worker lease, and returns to `not-ready` before
+revoking a stale socket, while restoring a lost qaffd connection, or exiting.
+The hook should idempotently update the load balancer or service-discovery
+state and must exit zero. The agent never announces readiness unless the
+`ready` transition succeeds. Any hook failure is fatal; because an external
+system cannot be forced into `not-ready`, a failed withdrawal must be treated
+as a traffic-control incident. `--readiness-timeout-ms` defaults to 5000ms.
+
 An already-running process can be onboarded with:
 
 ```sh

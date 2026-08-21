@@ -2,6 +2,7 @@
 
 #include <arpa/inet.h>
 #include <errno.h>
+#include <fcntl.h>
 #include <netinet/in.h>
 #include <poll.h>
 #include <stdint.h>
@@ -27,6 +28,26 @@ static int parse_port(const char *text, uint16_t *out) {
   return 0;
 }
 
+static int record_target_event(const char *event) {
+  const char *path = getenv("QAFF_AGENT_TARGET_EVENT_LOG");
+  if (path == NULL || path[0] == '\0') {
+    return 0;
+  }
+  int fd = open(path, O_WRONLY | O_APPEND | O_CLOEXEC);
+  if (fd < 0) {
+    return -1;
+  }
+  size_t len = strlen(event);
+  int rc = write(fd, event, len) == (ssize_t)len &&
+                   write(fd, "\n", 1) == 1
+               ? 0
+               : -1;
+  int saved_errno = errno;
+  close(fd);
+  errno = saved_errno;
+  return rc;
+}
+
 static int make_listener(uint16_t port) {
   int fd = socket(AF_INET, SOCK_DGRAM | SOCK_CLOEXEC, 0);
   if (fd < 0) {
@@ -43,6 +64,10 @@ static int make_listener(uint16_t port) {
   addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
   addr.sin_port = htons(port);
   if (bind(fd, (struct sockaddr *)&addr, sizeof(addr)) != 0) {
+    close(fd);
+    return -1;
+  }
+  if (record_target_event("bound") != 0) {
     close(fd);
     return -1;
   }

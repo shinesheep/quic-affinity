@@ -135,6 +135,14 @@ socket-cookie mapping, the egress learner cannot retroactively recover that
 SCID. Likewise, attaching `watch` to an already-busy process cannot reconstruct
 CIDs that were visible only in earlier packets.
 
+`qaff-agent --readiness-command PATH` provides a synchronous integration point
+for that gate. The command receives `not-ready` before a `run` target is spawned
+and whenever its lease is withdrawn, and receives `ready` only after qaffd
+accepts the current socket. The hook must perform the actual load-balancer or
+service-discovery update and exit successfully. A failed `ready` command never
+advertises the worker. A failed `not-ready` command is fatal, but the external
+traffic state is necessarily outside qaff-agent's control and must be alerted.
+
 ## Fallback Selection
 
 Fallback selection is used for:

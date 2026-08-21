@@ -53,6 +53,7 @@
 #define QAFF_AGENT_DISCOVERY_TIMEOUT_MS_DEFAULT 10000u
 #define QAFF_AGENT_HEARTBEAT_MS_DEFAULT 1000u
 #define QAFF_AGENT_SOCKET_CHECK_MS_DEFAULT 250u
+#define QAFF_AGENT_READINESS_TIMEOUT_MS_DEFAULT 5000u
 #define QAFF_AGENT_SCAN_INTERVAL_MS 50u
 #define QAFF_AGENT_RECONNECT_INTERVAL_MS 100u
 
@@ -74,6 +75,8 @@ struct agent_options {
   uint64_t discovery_timeout_ms;
   uint64_t heartbeat_ms;
   uint64_t socket_check_ms;
+  uint64_t readiness_timeout_ms;
+  const char *readiness_command;
   char **command;
 };
 
@@ -111,7 +114,11 @@ static void usage(FILE *out) {
           "  --heartbeat-ms N          Lease heartbeat interval; 0 disables "
           "(default 1000)\n"
           "  --socket-check-ms N       Target socket identity check interval "
-          "(default 250)\n");
+          "(default 250)\n"
+          "  --readiness-command PATH  Run PATH not-ready/ready around lease "
+          "state changes\n"
+          "  --readiness-timeout-ms N  Readiness command timeout "
+          "(default 5000)\n");
 }
 
 static int parse_u64(const char *text, uint64_t maximum, uint64_t *out) {
@@ -155,6 +162,8 @@ static int parse_args(int argc, char **argv, struct agent_options *options) {
       QAFF_AGENT_DISCOVERY_TIMEOUT_MS_DEFAULT;
   options->heartbeat_ms = QAFF_AGENT_HEARTBEAT_MS_DEFAULT;
   options->socket_check_ms = QAFF_AGENT_SOCKET_CHECK_MS_DEFAULT;
+  options->readiness_timeout_ms =
+      QAFF_AGENT_READINESS_TIMEOUT_MS_DEFAULT;
 
   if (argc < 2) {
     return -1;
@@ -218,6 +227,19 @@ static int parse_args(int argc, char **argv, struct agent_options *options) {
       if (parse_u64(argv[++i], UINT32_MAX,
                     &options->socket_check_ms) != 0 ||
           options->socket_check_ms == 0) {
+        return -1;
+      }
+    } else if (strcmp(argv[i], "--readiness-command") == 0 &&
+               i + 1 < argc) {
+      options->readiness_command = argv[++i];
+      if (options->readiness_command[0] == '\0') {
+        return -1;
+      }
+    } else if (strcmp(argv[i], "--readiness-timeout-ms") == 0 &&
+               i + 1 < argc) {
+      if (parse_u64(argv[++i], UINT32_MAX,
+                    &options->readiness_timeout_ms) != 0 ||
+          options->readiness_timeout_ms == 0) {
         return -1;
       }
     } else {
@@ -612,11 +634,15 @@ static int reconnect_control(int pidfd,
   }
 }
 
+static int run_readiness_command(const struct agent_options *options,
+                                 const char *state);
+
 static int monitor_target(int pidfd,
                           int *control_fd,
                           int worker_fd,
                           uint64_t worker_cookie,
                           int *target_fd_number,
+                          int *readiness_ready,
                           const struct agent_options *options) {
   uint64_t last_socket_check_ms = monotonic_ms();
   uint64_t last_heartbeat_ms = last_socket_check_ms;
@@ -685,6 +711,11 @@ static int monitor_target(int pidfd,
       }
     }
     if (disconnected) {
+      if (*readiness_ready &&
+          run_readiness_command(options, "not-ready") != 0) {
+        return -1;
+      }
+      *readiness_ready = 0;
       close(*control_fd);
       *control_fd =
           reconnect_control(pidfd,
@@ -701,6 +732,10 @@ static int monitor_target(int pidfd,
         }
         return -1;
       }
+      if (run_readiness_command(options, "ready") != 0) {
+        return -1;
+      }
+      *readiness_ready = 1;
       last_heartbeat_ms = monotonic_ms();
     }
   }
@@ -719,6 +754,64 @@ static void revoke_worker_registration(const struct agent_options *options) {
             strerror(errno));
   }
   close(fd);
+}
+
+static int run_readiness_command(const struct agent_options *options,
+                                 const char *state) {
+  if (options->readiness_command == NULL) {
+    return 0;
+  }
+
+  pid_t pid = fork();
+  if (pid < 0) {
+    return -1;
+  }
+  if (pid == 0) {
+    signal(SIGINT, SIG_DFL);
+    signal(SIGTERM, SIG_DFL);
+    signal(SIGHUP, SIG_DFL);
+    signal(SIGPIPE, SIG_DFL);
+    execl(options->readiness_command,
+          options->readiness_command,
+          state,
+          (char *)NULL);
+    perror("qaff-agent: readiness exec");
+    _exit(127);
+  }
+
+  uint64_t started = monotonic_ms();
+  for (;;) {
+    int status = 0;
+    pid_t waited = waitpid(pid, &status, WNOHANG);
+    if (waited == pid) {
+      if (WIFEXITED(status) && WEXITSTATUS(status) == 0) {
+        return 0;
+      }
+      errno = EIO;
+      return -1;
+    }
+    if (waited < 0) {
+      return -1;
+    }
+
+    uint64_t now = monotonic_ms();
+    if (now == 0 || started == 0 ||
+        now - started >= options->readiness_timeout_ms) {
+      int saved_errno = ETIMEDOUT;
+      kill(pid, SIGKILL);
+      do {
+        waited = waitpid(pid, &status, 0);
+      } while (waited < 0 && errno == EINTR);
+      errno = saved_errno;
+      return -1;
+    }
+
+    const struct timespec delay = {
+      .tv_sec = 0,
+      .tv_nsec = 20 * 1000 * 1000,
+    };
+    nanosleep(&delay, NULL);
+  }
 }
 
 static pid_t spawn_target(char **command) {
@@ -764,6 +857,11 @@ int main(int argc, char **argv) {
     return 1;
   }
 
+  if (run_readiness_command(&options, "not-ready") != 0) {
+    perror("qaff-agent: readiness not-ready");
+    return 1;
+  }
+
   pid_t spawned_pid = -1;
   if (options.mode == AGENT_MODE_RUN) {
     spawned_pid = spawn_target(options.command);
@@ -790,6 +888,7 @@ int main(int argc, char **argv) {
   int monitor_rc = -1;
   int monitor_errno = 0;
   int registered_once = 0;
+  int readiness_ready = 0;
 
   for (;;) {
     worker_fd = discover_socket(pidfd,
@@ -823,6 +922,7 @@ int main(int argc, char **argv) {
       perror("qaff-agent: qaff_control_connect");
       break;
     }
+    int replacing_socket = registered_once;
     if (qaff_control_register_worker_lease_for_pid(
             control_fd,
             options.worker_id,
@@ -833,27 +933,42 @@ int main(int argc, char **argv) {
       perror("qaff-agent: qaff_control_register_worker_lease");
       break;
     }
+    registered_once = 1;
+    if (run_readiness_command(&options, "ready") != 0) {
+      monitor_rc = -1;
+      monitor_errno = errno;
+      perror("qaff-agent: readiness ready");
+      break;
+    }
+    readiness_ready = 1;
     fprintf(stderr,
             "qaff-agent: %s worker_id=%u target_pid=%ld target_fd=%d "
             "listen=%s:%u\n",
-            registered_once ? "re-registered" : "registered",
+            replacing_socket ? "re-registered" : "registered",
             options.worker_id,
             (long)options.target_pid,
             target_fd_number,
             options.address_text,
             options.port);
-    registered_once = 1;
-
     monitor_rc = monitor_target(pidfd,
                                 &control_fd,
                                 worker_fd,
                                 worker_cookie,
                                 &target_fd_number,
+                                &readiness_ready,
                                 &options);
     monitor_errno = errno;
     if (monitor_rc != 1) {
       break;
     }
+
+    if (run_readiness_command(&options, "not-ready") != 0) {
+      monitor_rc = -1;
+      monitor_errno = errno;
+      perror("qaff-agent: readiness not-ready");
+      break;
+    }
+    readiness_ready = 0;
 
     fprintf(stderr,
             "qaff-agent: target socket changed; revoking worker_id=%u "
@@ -867,6 +982,15 @@ int main(int argc, char **argv) {
     control_fd = -1;
     close(worker_fd);
     worker_fd = -1;
+  }
+  if (readiness_ready &&
+      run_readiness_command(&options, "not-ready") != 0) {
+    int saved_errno = errno;
+    perror("qaff-agent: readiness not-ready");
+    if (monitor_rc == 0) {
+      monitor_rc = -1;
+      monitor_errno = saved_errno;
+    }
   }
   if (g_signal && spawned_pid > 0) {
     kill(spawned_pid, g_signal);

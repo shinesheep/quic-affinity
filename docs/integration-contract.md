@@ -277,6 +277,19 @@ check interval is configured with `--socket-check-ms`; detection is polling, so
 it defines the maximum expected stale-registration window. This changes no
 application source code.
 
+An arbitrary unmodified application cannot be paused safely between `bind()`
+and its first response. To make startup ordering deterministic, configure
+`--readiness-command PATH` and make that hook remove/add the worker from the
+external traffic source. qaff-agent calls `PATH not-ready` before spawning a
+`run` target and `PATH ready` only after qaffd acknowledges registration. It
+returns to `not-ready` before stale-socket revocation and at shutdown. Hook
+transitions are synchronous and bounded by `--readiness-timeout-ms`. Readiness
+is never announced after a failed `ready` transition. A failed `not-ready`
+transition is fatal and must raise an operational alert: qaff-agent cannot
+guarantee that an external traffic system honored a failed command. In `watch`
+mode this protects future traffic but cannot recover responses sent before the
+agent started.
+
 ## IPv4 and IPv6
 
 `sk_reuseport_md->data` starts at the UDP header for both IPv4 and IPv6. The eBPF dataplane skips the fixed 8-byte UDP header before parsing QUIC.

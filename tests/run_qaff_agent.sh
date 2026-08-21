@@ -14,6 +14,9 @@ bpf_obj=$5
 sock=/tmp/qaff-agent-$$.sock
 agent_log=/tmp/qaff-agent-$$.log
 rotate_log=/tmp/qaff-agent-rotate-$$.log
+readiness_log=/tmp/qaff-agent-readiness-$$.log
+readiness_hook=/tmp/qaff-agent-readiness-$$.sh
+readiness_failure_log=/tmp/qaff-agent-readiness-failure-$$.log
 config_out=/tmp/qaff-agent-$$.config
 port=$((20000 + ($$ % 20000)))
 caps=cap_bpf,cap_net_admin,cap_perfmon,cap_sys_resource+ep
@@ -27,7 +30,8 @@ cleanup() {
     kill "$daemon_pid" 2>/dev/null || true
     wait "$daemon_pid" 2>/dev/null || true
   fi
-  rm -f "$sock" "$agent_log" "$rotate_log" "$config_out"
+  rm -f "$sock" "$agent_log" "$rotate_log" "$readiness_log" \
+    "$readiness_hook" "$readiness_failure_log" "$config_out"
 }
 trap cleanup EXIT INT TERM
 
@@ -56,9 +60,26 @@ if [ "$ready" -ne 1 ]; then
   exit 1
 fi
 
+if "$agent_bin" run --socket "$sock" --worker-id 0 \
+    --address 127.0.0.1 --port "$port" \
+    --readiness-command /bin/false --readiness-timeout-ms 1000 \
+    -- "$target_bin" listen "$port" >"$readiness_failure_log" 2>&1; then
+  echo "qaff-agent ignored a failed initial not-ready hook" >&2
+  exit 1
+fi
+grep -q '^qaff-agent: readiness not-ready:' "$readiness_failure_log"
+
+printf '%s\n' '#!/bin/sh' \
+  'printf "%s\n" "$1" >> "$QAFF_AGENT_TARGET_EVENT_LOG"' \
+  >"$readiness_hook"
+chmod 700 "$readiness_hook"
+: >"$readiness_log"
+export QAFF_AGENT_TARGET_EVENT_LOG="$readiness_log"
+
 "$agent_bin" run --socket "$sock" --worker-id 0 \
   --address 127.0.0.1 --port "$port" --heartbeat-ms 50 \
   --socket-check-ms 50 \
+  --readiness-command "$readiness_hook" --readiness-timeout-ms 1000 \
   --discovery-timeout-ms 3000 -- "$target_bin" listen "$port" \
   >"$agent_log" 2>&1 &
 agent_pid=$!
@@ -88,6 +109,9 @@ if [ "$registered" -ne 1 ]; then
   echo "qaff-agent did not register the target socket" >&2
   exit 1
 fi
+test "$(sed -n '1p' "$readiness_log")" = not-ready
+test "$(sed -n '2p' "$readiness_log")" = bound
+test "$(sed -n '3p' "$readiness_log")" = ready
 "$qaffctl_bin" workers "$sock" >"$config_out"
 grep -Eq '^worker=0 .* target_pid=[1-9][0-9]* ' "$config_out"
 
@@ -123,10 +147,16 @@ if [ "$restored" -ne 1 ]; then
 fi
 grep -q '^qaff-agent: restored worker_id=0 lease after qaffd disconnect$' \
   "$agent_log"
+test "$(sed -n '4p' "$readiness_log")" = not-ready
+test "$(sed -n '5p' "$readiness_log")" = ready
 
-"$target_bin" send "$port"
-wait "$agent_pid"
+# A termination request must still run the synchronous not-ready hook before
+# the agent forwards the signal to, and reaps, its managed target.
+kill -TERM "$agent_pid"
+agent_rc=0
+wait "$agent_pid" || agent_rc=$?
 agent_pid=
+test "$agent_rc" -eq 143
 
 unregistered=0
 for _ in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20; do
@@ -144,13 +174,17 @@ if [ "$unregistered" -ne 1 ]; then
 fi
 
 grep -q '^qaff-agent: registered worker_id=0 ' "$agent_log"
+test "$(sed -n '6p' "$readiness_log")" = not-ready
 
 # The target may close and replace its listening socket without exiting. The
 # agent must revoke the old lease, release its duplicate of the abandoned
 # socket, discover the replacement, and register a fresh lease.
+: >"$readiness_log"
+
 "$agent_bin" run --socket "$sock" --worker-id 0 \
   --address 127.0.0.1 --port "$port" --heartbeat-ms 50 \
   --socket-check-ms 50 \
+  --readiness-command "$readiness_hook" --readiness-timeout-ms 1000 \
   --discovery-timeout-ms 3000 -- "$target_bin" rotate "$port" \
   >"$rotate_log" 2>&1 &
 agent_pid=$!
@@ -174,6 +208,9 @@ if [ "$registered" -ne 1 ]; then
   echo "qaff-agent did not register rotation test socket" >&2
   exit 1
 fi
+test "$(sed -n '1p' "$readiness_log")" = not-ready
+test "$(sed -n '2p' "$readiness_log")" = bound
+test "$(sed -n '3p' "$readiness_log")" = ready
 
 "$target_bin" send "$port"
 
@@ -198,6 +235,7 @@ if [ "$revoked" -ne 1 ]; then
   echo "qaff-agent did not revoke stale socket before replacement" >&2
   exit 1
 fi
+test "$(sed -n '4p' "$readiness_log")" = not-ready
 
 replaced=0
 for _ in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30 31 32 33 34 35 36 37 38 39 40 41 42 43 44 45 46 47 48 49 50 51 52 53 54 55 56 57 58 59 60; do
@@ -221,10 +259,13 @@ if [ "$replaced" -ne 1 ]; then
   echo "qaff-agent did not replace the stale socket registration" >&2
   exit 1
 fi
+test "$(sed -n '5p' "$readiness_log")" = bound
+test "$(sed -n '6p' "$readiness_log")" = ready
 
 "$target_bin" send "$port"
 wait "$agent_pid"
 agent_pid=
+test "$(sed -n '7p' "$readiness_log")" = not-ready
 
 unregistered=0
 for _ in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20; do

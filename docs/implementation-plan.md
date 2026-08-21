@@ -42,7 +42,8 @@
 - Detect target socket close/replacement continuously in `qaff-agent` and
   re-register without keeping an abandoned listener alive. (Implemented.)
 - Add an application-readiness gate so passive egress learning is active before
-  the first server response.
+  the first server response. (Implemented with synchronous, fail-closed
+  qaff-agent startup readiness hooks and explicit withdrawal failures.)
 - Require durable worker generations when CID profile v2 is enabled.
 - Make worker unregistration and its persisted snapshot transactional.
 - Validate fixed fallback targets and reject conflicting pre-existing
