@@ -61,6 +61,44 @@ jobs:
       - name: Build library-only configuration
         run: cmake --build build-library --parallel 2
 
+  arm64-build-and-test:
+    name: Native arm64 release build and tests
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 15
+    steps:
+      - name: Check out source
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+
+      - name: Verify native architecture
+        run: test "$(uname -m)" = aarch64
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install --no-install-recommends \
+            build-essential \
+            clang \
+            cmake \
+            libbpf-dev \
+            libcap2-bin \
+            libelf-dev \
+            pkg-config \
+            zlib1g-dev
+
+      - name: Configure and verify BPF architecture
+        run: |
+          cmake -B build-arm64 -S . \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DQAFF_BUILD_QUICHE_EXAMPLES=OFF \
+            -DCMAKE_C_FLAGS=-Werror | tee build-arm64-configure.log
+          grep -F "architecture: arm64;" build-arm64-configure.log
+
+      - name: Build
+        run: cmake --build build-arm64 --parallel 2
+
+      - name: Test
+        run: ctest --test-dir build-arm64 --output-on-failure
+
   sanitizers:
     name: ASan and UBSan
     runs-on: ubuntu-24.04

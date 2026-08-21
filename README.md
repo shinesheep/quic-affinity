@@ -170,8 +170,11 @@ Run tests:
 ctest --test-dir build --output-on-failure
 ```
 
-CI runs a warning-free release build, the full available test suite, and
-AddressSanitizer/UndefinedBehaviorSanitizer unit tests on Ubuntu 24.04.
+CI runs warning-free native x86_64 and arm64 release builds, the full available
+test suite on both architectures, and
+AddressSanitizer/UndefinedBehaviorSanitizer unit tests on Ubuntu 24.04. The
+arm64 job also verifies that CMake selects the arm64 libbpf target
+automatically.
 
 Some tests load and attach eBPF programs. They need the kernel capabilities
 required for BPF and may be skipped on hosts without writable bpffs or suitable
