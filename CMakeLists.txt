@@ -73,13 +73,25 @@ if(QAFF_BUILD_DAEMON OR BUILD_TESTING)
     ${CMAKE_CURRENT_SOURCE_DIR}/qaffd)
   target_compile_options(qaffd_authorization PRIVATE
     -Wall -Wextra -Wpedantic)
+
+  add_library(qaffd_state_store STATIC
+    qaffd/state_store.c)
+  target_include_directories(qaffd_state_store PUBLIC
+    ${CMAKE_CURRENT_SOURCE_DIR}/qaffd)
+  target_include_directories(qaffd_state_store PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/include)
+  target_compile_options(qaffd_state_store PRIVATE
+    -Wall -Wextra -Wpedantic)
 endif()
 
 if(QAFF_BUILD_DAEMON)
   add_executable(qaffd
     qaffd/main.c)
 
-  target_link_libraries(qaffd PRIVATE qaffinity qaffd_authorization)
+  target_link_libraries(qaffd PRIVATE
+    qaffinity
+    qaffd_authorization
+    qaffd_state_store)
   target_include_directories(qaffd PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/internal)
   target_compile_options(qaffd PRIVATE -Wall -Wextra -Wpedantic)
 endif()
@@ -132,7 +144,9 @@ install(FILES README.md
 install(FILES LICENSE
   DESTINATION ${CMAKE_INSTALL_DOCDIR})
 
-install(FILES docs/control-protocol.md
+install(FILES
+  docs/control-protocol.md
+  docs/state-store.md
   DESTINATION ${CMAKE_INSTALL_DOCDIR}/docs)
 
 configure_package_config_file(
@@ -248,6 +262,16 @@ if(BUILD_TESTING)
     -Wall -Wextra -Wpedantic)
   add_test(NAME qaffd_authorization
     COMMAND $<TARGET_FILE:test_qaffd_authorization>)
+
+  add_executable(test_qaffd_state_store
+    tests/test_qaffd_state_store.c)
+  target_link_libraries(test_qaffd_state_store PRIVATE qaffd_state_store)
+  target_include_directories(test_qaffd_state_store PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/include)
+  target_compile_options(test_qaffd_state_store PRIVATE
+    -Wall -Wextra -Wpedantic)
+  add_test(NAME qaffd_state_store
+    COMMAND $<TARGET_FILE:test_qaffd_state_store>)
 
   if(QAFF_BUILD_BPF)
     add_executable(test_reuseport_smoke

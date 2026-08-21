@@ -4,6 +4,7 @@
 #include "quic_affinity/control.h"
 #include "control_protocol.h"
 #include "authorization.h"
+#include "state_store.h"
 
 #include <ctype.h>
 #include <errno.h>
@@ -1432,197 +1433,21 @@ static int cleanup_passive_cids(struct qaffd_state *state,
   return 0;
 }
 
-static int fsync_parent_directory(const char *path) {
-  char parent[PATH_MAX];
-  size_t len = strlen(path);
-  if (len == 0 || len >= sizeof(parent)) {
-    errno = ENAMETOOLONG;
-    return -1;
-  }
-  memcpy(parent, path, len + 1);
-
-  char *slash = strrchr(parent, '/');
-  if (slash == NULL) {
-    memcpy(parent, ".", 2);
-  } else if (slash == parent) {
-    slash[1] = '\0';
-  } else {
-    *slash = '\0';
-  }
-
-  int fd = open(parent, O_RDONLY | O_DIRECTORY | O_CLOEXEC);
-  if (fd < 0) {
-    return -1;
-  }
-  int rc = fsync(fd);
-  int saved_errno = errno;
-  close(fd);
-  errno = saved_errno;
-  return rc;
-}
-
 static int save_state(const struct qaffd_state *state) {
-  if (state->state_path == NULL) {
-    return 0;
-  }
-
-  char tmp_path[PATH_MAX];
-  int n = snprintf(tmp_path,
-                   sizeof(tmp_path),
-                   "%s.tmp.XXXXXX",
-                   state->state_path);
-  if (n < 0 || (size_t)n >= sizeof(tmp_path)) {
-    errno = ENAMETOOLONG;
-    return -1;
-  }
-
-  int fd = mkstemp(tmp_path);
-  if (fd < 0) {
-    return -1;
-  }
-  int fd_flags = fcntl(fd, F_GETFD, 0);
-  if (fd_flags < 0 || fcntl(fd, F_SETFD, fd_flags | FD_CLOEXEC) != 0 ||
-      fchmod(fd, 0600) != 0) {
-    int saved_errno = errno;
-    close(fd);
-    unlink(tmp_path);
-    errno = saved_errno;
-    return -1;
-  }
-
-  FILE *out = fdopen(fd, "w");
-  if (out == NULL) {
-    int saved_errno = errno;
-    close(fd);
-    unlink(tmp_path);
-    errno = saved_errno;
-    return -1;
-  }
-
-  int rc = 0;
-  if (fprintf(out, "qaffd-state\n") < 0) {
-    rc = -1;
-  }
-  for (uint32_t i = 0; rc == 0 && i < QAFFD_MAX_WORKERS; i++) {
-    if (state->worker_registered[i] &&
-        fprintf(out,
-                "worker %u %u\n",
-                i,
-                state->worker_generations[i]) < 0) {
-      rc = -1;
-    } else if (!state->worker_registered[i] &&
-               state->worker_generations[i] != 0 &&
-               fprintf(out,
-                       "generation %u %u\n",
-                       i,
-                       state->worker_generations[i]) < 0) {
-      rc = -1;
-    }
-  }
-
-  if (rc == 0 && fflush(out) != 0) {
-    rc = -1;
-  }
-  if (rc == 0 && fsync(fd) != 0) {
-    rc = -1;
-  }
-  int saved_errno = errno;
-  if (fclose(out) != 0 && rc == 0) {
-    rc = -1;
-    saved_errno = errno;
-  }
-  if (rc != 0) {
-    unlink(tmp_path);
-    errno = saved_errno ? saved_errno : EIO;
-    return -1;
-  }
-  if (rename(tmp_path, state->state_path) != 0) {
-    saved_errno = errno;
-    unlink(tmp_path);
-    errno = saved_errno;
-    return -1;
-  }
-  if (fsync_parent_directory(state->state_path) != 0) {
-    return -1;
-  }
-  return 0;
+  return qaffd_state_store_save(state->state_path,
+                                state->worker_registered,
+                                state->worker_generations,
+                                QAFFD_MAX_WORKERS);
 }
 
 static int load_state(struct qaffd_state *state) {
-  if (state->state_path == NULL) {
-    return 0;
-  }
-
-  FILE *in = fopen(state->state_path, "r");
-  if (in == NULL) {
-    if (errno == ENOENT) {
-      return 0;
-    }
-    return -1;
-  }
-
-  char line[256];
-  if (fgets(line, sizeof(line), in) == NULL ||
-      strcmp(line, "qaffd-state\n") != 0) {
-    fclose(in);
-    errno = EINVAL;
-    return -1;
-  }
-
-  uint64_t loaded_at = now_ms();
-  uint8_t seen_workers[QAFFD_MAX_WORKERS];
-  memset(seen_workers, 0, sizeof(seen_workers));
-  while (fgets(line, sizeof(line), in) != NULL) {
-    uint32_t worker_id = 0;
-    uint32_t generation = 0;
-    char trailing = '\0';
-    if (sscanf(line,
-               "worker %u %u %c",
-               &worker_id,
-               &generation,
-               &trailing) == 2) {
-      if (worker_id >= QAFFD_MAX_WORKERS || seen_workers[worker_id] ||
-          generation == 0 || generation > QAFF_WORKER_GENERATION_MAX) {
-        fclose(in);
-        errno = EINVAL;
-        return -1;
-      }
-      seen_workers[worker_id] = 1;
-      state->worker_registered[worker_id] = 1;
-      state->worker_generations[worker_id] = generation;
-      state->worker_registered_at_ms[worker_id] = loaded_at;
-      state->worker_last_seen_ms[worker_id] = loaded_at;
-      continue;
-    }
-
-    if (sscanf(line,
-               "generation %u %u %c",
-               &worker_id,
-               &generation,
-               &trailing) == 2) {
-      if (worker_id >= QAFFD_MAX_WORKERS || seen_workers[worker_id] ||
-          generation == 0 ||
-          generation > QAFF_WORKER_GENERATION_MAX) {
-        fclose(in);
-        errno = EINVAL;
-        return -1;
-      }
-      seen_workers[worker_id] = 1;
-      state->worker_generations[worker_id] = generation;
-      continue;
-    }
-
-    fclose(in);
-    errno = EINVAL;
-    return -1;
-  }
-
-  if (ferror(in)) {
-    fclose(in);
-    return -1;
-  }
-  fclose(in);
-  return 0;
+  return qaffd_state_store_load(state->state_path,
+                                state->worker_registered,
+                                state->worker_registered_at_ms,
+                                state->worker_last_seen_ms,
+                                state->worker_generations,
+                                QAFFD_MAX_WORKERS,
+                                now_ms());
 }
 
 static int recover_workers_from_generation_map(struct qaffd_state *state) {

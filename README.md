@@ -210,6 +210,8 @@ The installation also provides `quic-affinity.pc` for pkg-config consumers.
 
 Maintainers can find the private daemon transport design in
 [`docs/control-protocol.md`](docs/control-protocol.md).
+The restart snapshot format and durability guarantees are documented in
+[`docs/state-store.md`](docs/state-store.md).
 
 ## Quick Start With `qaffd`
 
