@@ -58,10 +58,32 @@ static int test_lifecycle_and_validation(void) {
       qaffd_cid_index_put(&index, &one, 10) != 0 ||
       qaffd_cid_index_put(&index, &two, 20) != 0 ||
       qaffd_cid_index_put(&index, &three, 30) != 0 ||
-      qaffd_cid_index_put(&index, &one, 11) != 0 ||
+      qaffd_cid_index_put(&index, &one, 10) != 0 ||
       expect(qaffd_cid_index_size(&index) == 3,
-             "updating an owner does not duplicate the key") != 0 ||
-      expect_owner(&index, &one, 11, "owner update is visible") != 0) {
+             "idempotent insertion does not duplicate the key") != 0 ||
+      expect_owner(&index, &one, 10, "idempotent insertion retains owner") !=
+          0 ||
+      expect(qaffd_cid_index_has_worker(&index, 10),
+             "worker ownership can be queried") != 0 ||
+      expect(!qaffd_cid_index_has_worker(&index, 99),
+             "absent worker ownership is reported") != 0) {
+    qaffd_cid_index_destroy(&index);
+    return -1;
+  }
+
+  errno = 0;
+  if (expect(qaffd_cid_index_put(&index, &one, 11) == -1 &&
+                 errno == EEXIST,
+             "reassigning a live CID is rejected") != 0 ||
+      expect_owner(&index, &one, 10,
+                   "rejected reassignment preserves owner") != 0) {
+    qaffd_cid_index_destroy(&index);
+    return -1;
+  }
+  if (qaffd_cid_index_remove(&index, &one) != 0 ||
+      qaffd_cid_index_put(&index, &one, 11) != 0 ||
+      expect_owner(&index, &one, 11,
+                   "retired CID can be assigned to a new owner") != 0) {
     qaffd_cid_index_destroy(&index);
     return -1;
   }
@@ -203,15 +225,22 @@ static int test_randomized_model(void) {
     struct qaff_cid_key key = make_key(id);
     if ((random & 3u) != 0) {
       uint32_t owner = (uint32_t)(random >> 32);
-      if (qaffd_cid_index_put(&index, &key, owner) != 0) {
+      if (present[id] && owners[id] != owner) {
+        errno = 0;
+        if (expect(qaffd_cid_index_put(&index, &key, owner) == -1 &&
+                       errno == EEXIST,
+                   "random reassignment is rejected") != 0) {
+          qaffd_cid_index_destroy(&index);
+          return -1;
+        }
+      } else if (qaffd_cid_index_put(&index, &key, owner) != 0) {
         qaffd_cid_index_destroy(&index);
         return -1;
-      }
-      if (!present[id]) {
+      } else if (!present[id]) {
         expected_size++;
+        present[id] = 1;
+        owners[id] = owner;
       }
-      present[id] = 1;
-      owners[id] = owner;
     } else if (present[id]) {
       if (qaffd_cid_index_remove(&index, &key) != 0) {
         qaffd_cid_index_destroy(&index);

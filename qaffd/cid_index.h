@@ -34,6 +34,8 @@ int qaffd_cid_index_put(struct qaffd_cid_index *index,
 int qaffd_cid_index_remove(struct qaffd_cid_index *index,
                            const struct qaff_cid_key *key);
 int qaffd_cid_index_remove_at(struct qaffd_cid_index *index, size_t position);
+int qaffd_cid_index_has_worker(const struct qaffd_cid_index *index,
+                               uint32_t worker_id);
 int qaffd_cid_index_check(const struct qaffd_cid_index *index);
 
 #endif

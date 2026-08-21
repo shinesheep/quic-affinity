@@ -191,6 +191,11 @@ When the QUIC stack creates or advertises a server-side CID, it must register th
 qaff_register_cid(ctx, cid, cid_len, worker_id);
 ```
 
+CID ownership is exclusive and immutable while the entry is live. Repeating
+the registration for the same worker is idempotent. A different worker cannot
+claim the CID until the current owner retires it; that attempt fails with
+`EEXIST`.
+
 Register:
 
 - the server SCID chosen for the handshake
@@ -219,6 +224,9 @@ Workers must use stable worker IDs while any registered CID can still route to t
 4. Call `UNREGISTER_WORKER` after the worker is drained.
 
 `qaffd` rejects new CID registrations for unregistered worker IDs. It keeps a daemon-side reverse index from worker ID to CID for CIDs registered through the control API, and bulk-retires those CIDs during worker unregistration.
+It also rejects replacing an active worker's socket with `EBUSY` while that
+worker owns exact CIDs. Unregister the drained worker first if the worker ID
+must be reused with a different socket.
 
 ## Packet Routing Semantics
 

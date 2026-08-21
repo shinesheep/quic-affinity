@@ -1388,6 +1388,17 @@ static int handle_register_worker(struct qaffd_state *state,
   if (same_socket < 0) {
     return -1;
   }
+  if (state->worker_registered[request->worker_id] && !recovered_worker &&
+      !same_socket &&
+      qaffd_cid_index_has_worker(&state->cid_index, request->worker_id)) {
+    /*
+     * Exact CID entries contain only a worker ID, not a generation. Rebinding
+     * that ID while it owns live CIDs would silently move existing QUIC
+     * connections to the new socket.
+     */
+    errno = EBUSY;
+    return -1;
+  }
   uint32_t generation = state->worker_generations[request->worker_id];
   if (!same_socket &&
       next_worker_generation(state->worker_generations[request->worker_id],
@@ -1565,6 +1576,19 @@ static int handle_register_cid(struct qaffd_state *state,
   if (qaff_cid_key_from_bytes(request->cid, request->cid_len, &key) !=
       QAFF_PARSE_OK) {
     errno = EINVAL;
+    return -1;
+  }
+
+  ptrdiff_t existing_position =
+      qaffd_cid_index_find(&state->cid_index, &key);
+  const struct qaffd_cid_entry *existing_entry =
+      existing_position < 0
+          ? NULL
+          : qaffd_cid_index_entry(&state->cid_index,
+                                  (size_t)existing_position);
+  if (existing_entry != NULL &&
+      existing_entry->worker_id != request->worker_id) {
+    errno = EEXIST;
     return -1;
   }
 

@@ -167,8 +167,11 @@ int qaffd_cid_index_put(struct qaffd_cid_index *index,
   }
   ptrdiff_t position = qaffd_cid_index_find(index, key);
   if (position >= 0) {
-    index->entries[position].worker_id = worker_id;
-    return 0;
+    if (index->entries[position].worker_id == worker_id) {
+      return 0;
+    }
+    errno = EEXIST;
+    return -1;
   }
   if (prepare_insert(index) != 0) {
     return -1;
@@ -258,6 +261,19 @@ int qaffd_cid_index_remove(struct qaffd_cid_index *index,
     return -1;
   }
   return qaffd_cid_index_remove_at(index, (size_t)position);
+}
+
+int qaffd_cid_index_has_worker(const struct qaffd_cid_index *index,
+                               uint32_t worker_id) {
+  if (index == NULL) {
+    return 0;
+  }
+  for (size_t i = 0; i < index->entries_len; i++) {
+    if (index->entries[i].worker_id == worker_id) {
+      return 1;
+    }
+  }
+  return 0;
 }
 
 int qaffd_cid_index_check(const struct qaffd_cid_index *index) {

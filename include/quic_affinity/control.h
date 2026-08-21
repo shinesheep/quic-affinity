@@ -111,6 +111,7 @@ int qaff_control_connect(const char *socket_path);
  *
  * This registration is not tied to the control connection lifetime. New
  * integrations should prefer qaff_control_register_worker_lease().
+ * Replacing an active worker socket while it owns exact CIDs fails with EBUSY.
  */
 int qaff_control_register_worker(int control_fd,
                                  uint32_t worker_id,
@@ -144,7 +145,12 @@ int qaff_control_worker_heartbeat(int control_fd, uint32_t worker_id);
 /** Unregister a worker socket and retire CIDs owned by that worker. */
 int qaff_control_unregister_worker(int control_fd, uint32_t worker_id);
 
-/** Register a server-issued CID to the given worker through qaffd. */
+/**
+ * Register a server-issued CID to the given worker through qaffd.
+ *
+ * Registration is idempotent for the current owner. Reassigning a live CID to
+ * another worker fails with EEXIST.
+ */
 int qaff_control_register_cid(int control_fd,
                               uint32_t worker_id,
                               const uint8_t *cid,

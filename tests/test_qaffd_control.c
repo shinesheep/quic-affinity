@@ -521,6 +521,38 @@ static int child_attempt_register_worker(const char *socket_path,
   return WIFEXITED(status) ? WEXITSTATUS(status) : 12;
 }
 
+static int child_attempt_claim_owned_cid(const char *socket_path,
+                                         uint32_t worker_id,
+                                         int worker_fd,
+                                         const uint8_t *cid) {
+  pid_t pid = fork();
+  if (pid < 0) {
+    return -1;
+  }
+  if (pid == 0) {
+    int lease_fd = -1;
+    if (control_call_register_worker_lease(socket_path,
+                                           worker_id,
+                                           worker_fd,
+                                           &lease_fd) != 0) {
+      _exit(20);
+    }
+    int rc = control_call_register_cid(socket_path, worker_id, cid);
+    int saved_errno = errno;
+    close(lease_fd);
+    if (rc == 0) {
+      _exit(0);
+    }
+    _exit(saved_errno == EEXIST ? 10 : 11);
+  }
+
+  int status = 0;
+  if (waitpid(pid, &status, 0) < 0) {
+    return -1;
+  }
+  return WIFEXITED(status) ? WEXITSTATUS(status) : 12;
+}
+
 static int control_call_read_stats(const char *socket_path,
                                    struct qaff_stats *stats) {
   int fd = qaff_control_connect(socket_path);
@@ -968,8 +1000,43 @@ static int run_case(const char *qaffd_path,
     perror("qaff_control_register_cid");
     return 1;
   }
+  if (control_call_register_cid(socket_path, TARGET_WORKER, k_dcid) != 0) {
+    perror("qaff_control_register_cid idempotent");
+    return 1;
+  }
   if (control_call_register_cid(socket_path, TARGET_WORKER, k_second_dcid) != 0) {
     perror("qaff_control_register_cid second");
+    return 1;
+  }
+
+  int replacement_worker = make_worker_socket(test->family, &port);
+  if (replacement_worker < 0) {
+    perror("make_worker_socket replacement");
+    return 1;
+  }
+  errno = 0;
+  if (control_call_register_worker(socket_path,
+                                   TARGET_WORKER,
+                                   replacement_worker) == 0 ||
+      errno != EBUSY) {
+    fprintf(stderr,
+            "%s: replaced worker %d while it owned live CIDs\n",
+            test->name,
+            TARGET_WORKER);
+    close(replacement_worker);
+    return 1;
+  }
+  close(replacement_worker);
+
+  if (child_attempt_claim_owned_cid(socket_path, 1, workers[1], k_dcid) != 10) {
+    fprintf(stderr,
+            "%s: worker 1 claimed worker %d's live CID\n",
+            test->name,
+            TARGET_WORKER);
+    return 1;
+  }
+  if (wait_registered_workers_len(socket_path, 2) != 0) {
+    perror("wait cross-owner lease cleanup");
     return 1;
   }
 

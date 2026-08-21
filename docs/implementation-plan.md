@@ -30,6 +30,24 @@
 - Add config IDs and rotation.
 - Add keyed tag verification outside the verifier-critical path if needed.
 
+## Functional Correctness Remediation
+
+- Make exact CID ownership immutable until explicit retirement, including
+  atomic enforcement in the embedded API and cross-process enforcement in
+  `qaffd`. (Implemented.)
+- Reject replacing an active worker socket while that worker owns exact CIDs;
+  preserve daemon restart recovery. (Implemented.)
+- Enforce one worker ID per socket cookie and complete passive-egress cookie
+  registration in embedded mode.
+- Detect target socket close/replacement continuously in `qaff-agent` and
+  re-register without keeping an abandoned listener alive.
+- Add an application-readiness gate so passive egress learning is active before
+  the first server response.
+- Require durable worker generations when CID profile v2 is enabled.
+- Make worker unregistration and its persisted snapshot transactional.
+- Validate fixed fallback targets and reject conflicting pre-existing
+  reuseport BPF programs.
+
 ## Pre-release Productionization
 
 - Export an installable CMake package and pkg-config metadata. (Implemented.)

@@ -635,7 +635,31 @@ int qaff_register_cid(struct qaff_context *ctx,
     return -1;
   }
 
-  return bpf_map_update_elem(ctx->cid_map_fd, &key, &worker_id, BPF_ANY);
+  /*
+   * CID ownership is immutable until the CID is explicitly retired. Using
+   * BPF_NOEXIST makes that invariant atomic even when multiple callers share
+   * a context or pinned map. Re-registering a CID for its current owner is
+   * idempotent; assigning it to another worker is rejected.
+   */
+  if (bpf_map_update_elem(ctx->cid_map_fd,
+                          &key,
+                          &worker_id,
+                          BPF_NOEXIST) == 0) {
+    return 0;
+  }
+  if (errno != EEXIST) {
+    return -1;
+  }
+
+  uint32_t existing_worker_id = 0;
+  if (bpf_map_lookup_elem(ctx->cid_map_fd, &key, &existing_worker_id) != 0) {
+    return -1;
+  }
+  if (existing_worker_id == worker_id) {
+    return 0;
+  }
+  errno = EEXIST;
+  return -1;
 }
 
 int qaff_retire_cid(struct qaff_context *ctx,

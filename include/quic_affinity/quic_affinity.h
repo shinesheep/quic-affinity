@@ -89,7 +89,9 @@ void qaff_close(struct qaff_context *ctx);
  * Register a server-issued CID to a worker.
  *
  * Packets whose DCID exactly matches cid are routed to worker_id before
- * user-space receives them.
+ * user-space receives them. Registration is idempotent for the current owner.
+ * A CID cannot be reassigned to another worker until it is retired; such an
+ * attempt fails with EEXIST.
  *
  * Returns 0 on success or -1 with errno set.
  */

@@ -471,6 +471,16 @@ static int run_case(const char *object_path, const struct test_case *test) {
     perror("qaff_register_cid");
     return 1;
   }
+  if (qaff_register_cid(ctx, k_dcid, sizeof(k_dcid), TARGET_WORKER) != 0) {
+    perror("qaff_register_cid idempotent");
+    return 1;
+  }
+  errno = 0;
+  if (qaff_register_cid(ctx, k_dcid, sizeof(k_dcid), FALLBACK_WORKER) == 0 ||
+      errno != EEXIST) {
+    fprintf(stderr, "live CID was reassigned to another worker\n");
+    return 1;
+  }
   struct qaff_passive_cid_value passive_value;
   memset(&passive_value, 0, sizeof(passive_value));
   passive_value.worker_id = TARGET_WORKER;
@@ -691,6 +701,15 @@ static int run_case(const char *object_path, const struct test_case *test) {
   }
 
   if (expect_case_stats(ctx, test) != 0) {
+    return 1;
+  }
+
+  if (qaff_retire_cid(ctx, k_dcid, sizeof(k_dcid)) != 0 ||
+      qaff_register_cid(ctx,
+                        k_dcid,
+                        sizeof(k_dcid),
+                        FALLBACK_WORKER) != 0) {
+    perror("retire and reassign CID");
     return 1;
   }
 
