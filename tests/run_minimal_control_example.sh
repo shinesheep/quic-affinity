@@ -26,7 +26,8 @@ if command -v sudo >/dev/null 2>&1 && command -v setcap >/dev/null 2>&1; then
   sudo -n setcap "$caps" "$qaffd_bin" 2>/dev/null || true
 fi
 
-"$qaffd_bin" --socket "$sock" --bpf "$bpf_obj" --short-cid-len 8 &
+"$qaffd_bin" --socket "$sock" --bpf "$bpf_obj" --short-cid-len 8 \
+  --reuseport-bpf-policy replace &
 daemon_pid=$!
 
 ready=0
@@ -54,4 +55,3 @@ grep -q '^packets=0$' /tmp/qaff-minimal-control-$$.out
 "$qaffctl_bin" stop "$sock"
 wait "$daemon_pid"
 daemon_pid=
-

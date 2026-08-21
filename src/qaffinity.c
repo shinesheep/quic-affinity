@@ -299,17 +299,17 @@ static int qaff_validate_context_maps(const struct qaff_context *ctx) {
                            BPF_MAP_TYPE_REUSEPORT_SOCKARRAY,
                            sizeof(uint32_t),
                            sizeof(uint32_t),
-                           4096) != 0 ||
+                           QAFF_WORKER_CAPACITY) != 0 ||
       qaff_validate_map_fd(ctx->socket_worker_map_fd,
                            BPF_MAP_TYPE_HASH,
                            sizeof(uint64_t),
                            sizeof(uint32_t),
-                           4096) != 0 ||
+                           QAFF_WORKER_CAPACITY) != 0 ||
       qaff_validate_map_fd(ctx->worker_generation_map_fd,
                            BPF_MAP_TYPE_ARRAY,
                            sizeof(uint32_t),
                            sizeof(uint32_t),
-                           4096) != 0 ||
+                           QAFF_WORKER_CAPACITY) != 0 ||
       qaff_validate_map_fd(ctx->stats_map_fd,
                            BPF_MAP_TYPE_ARRAY,
                            sizeof(uint32_t),
@@ -359,6 +359,10 @@ int qaff_open(const struct qaff_options *options, struct qaff_context **out) {
   ctx->fallback_mode = options->fallback_mode;
   if (ctx->fallback_mode != QAFF_FALLBACK_MODE_FIXED &&
       ctx->fallback_mode != QAFF_FALLBACK_MODE_KERNEL) {
+    errno = EINVAL;
+    goto fail;
+  }
+  if (options->fallback_worker_id >= QAFF_WORKER_CAPACITY) {
     errno = EINVAL;
     goto fail;
   }
@@ -446,7 +450,8 @@ int qaff_open(const struct qaff_options *options, struct qaff_context **out) {
       goto fail;
     }
     if (ctx->worker_sock_map_fd < 0) {
-      ctx->worker_sock_map_fd = qaff_create_sockhash_map("qaff_workers", 4096);
+      ctx->worker_sock_map_fd =
+          qaff_create_sockhash_map("qaff_workers", QAFF_WORKER_CAPACITY);
     }
     if (ctx->worker_sock_map_fd < 0) {
       goto fail;
@@ -461,7 +466,7 @@ int qaff_open(const struct qaff_options *options, struct qaff_context **out) {
                              BPF_MAP_TYPE_REUSEPORT_SOCKARRAY,
                              sizeof(uint32_t),
                              sizeof(uint32_t),
-                             4096) != 0) {
+                             QAFF_WORKER_CAPACITY) != 0) {
       goto fail;
     }
     ctx->owns_worker_sock_map = 1;
@@ -477,7 +482,7 @@ int qaff_open(const struct qaff_options *options, struct qaff_context **out) {
       ctx->socket_worker_map_fd = qaff_create_hash_map("qaff_socket_workers",
                                                        sizeof(uint64_t),
                                                        sizeof(uint32_t),
-                                                       4096);
+                                                       QAFF_WORKER_CAPACITY);
     }
     if (ctx->socket_worker_map_fd < 0) {
       goto fail;
@@ -493,7 +498,7 @@ int qaff_open(const struct qaff_options *options, struct qaff_context **out) {
                              BPF_MAP_TYPE_HASH,
                              sizeof(uint64_t),
                              sizeof(uint32_t),
-                             4096) != 0) {
+                             QAFF_WORKER_CAPACITY) != 0) {
       goto fail;
     }
     ctx->owns_socket_worker_map = 1;
@@ -507,7 +512,8 @@ int qaff_open(const struct qaff_options *options, struct qaff_context **out) {
     }
     if (ctx->worker_generation_map_fd < 0) {
       ctx->worker_generation_map_fd =
-          qaff_create_generation_map("qaff_worker_generations", 4096);
+          qaff_create_generation_map("qaff_worker_generations",
+                                     QAFF_WORKER_CAPACITY);
     }
     if (ctx->worker_generation_map_fd < 0) {
       goto fail;
@@ -523,7 +529,7 @@ int qaff_open(const struct qaff_options *options, struct qaff_context **out) {
                              BPF_MAP_TYPE_ARRAY,
                              sizeof(uint32_t),
                              sizeof(uint32_t),
-                             4096) != 0) {
+                             QAFF_WORKER_CAPACITY) != 0) {
       goto fail;
     }
     ctx->owns_worker_generation_map = 1;

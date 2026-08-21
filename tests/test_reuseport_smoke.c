@@ -772,6 +772,17 @@ int main(int argc, char **argv) {
     return 2;
   }
 
+  struct qaff_options invalid_options;
+  struct qaff_context *invalid_context = NULL;
+  qaff_options_init(&invalid_options);
+  invalid_options.fallback_worker_id = QAFF_WORKER_CAPACITY;
+  errno = 0;
+  if (qaff_open(&invalid_options, &invalid_context) == 0 || errno != EINVAL) {
+    fprintf(stderr, "accepted an out-of-range embedded fallback worker\n");
+    qaff_close(invalid_context);
+    return 1;
+  }
+
   const struct test_case tests[] = {
     {.family = AF_INET, .name = "ipv4", .fallback_worker = FALLBACK_WORKER},
     {.family = AF_INET6, .name = "ipv6", .fallback_worker = FALLBACK_WORKER},

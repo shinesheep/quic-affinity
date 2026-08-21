@@ -58,7 +58,7 @@ struct qaff_options {
   uint8_t fallback_mode;
   /** Listener-local key used by enabled routable CID profiles. */
   uint8_t cid_profile_v1_key[QAFF_CID_PROFILE_KEY_LEN];
-  /** Worker ID used by QAFF_FALLBACK_MODE_FIXED. */
+  /** Worker ID used by QAFF_FALLBACK_MODE_FIXED; must be below capacity. */
   uint32_t fallback_worker_id;
 };
 
@@ -208,7 +208,9 @@ int qaff_bpf_egress_program_fd(const struct qaff_bpf_object *object);
 /**
  * Attach the loaded reuseport program to a SO_REUSEPORT UDP socket group.
  *
- * The attach is performed with SO_ATTACH_REUSEPORT_EBPF on socket_fd.
+ * The attach is performed with SO_ATTACH_REUSEPORT_EBPF on socket_fd. Linux
+ * replaces any program already attached to the group; calling this function
+ * explicitly acknowledges ownership of that replacement.
  * Returns 0 on success or -1 with errno set.
  */
 int qaff_attach_reuseport_bpf(const struct qaff_bpf_object *object,

@@ -31,7 +31,34 @@ printf '%s\n' 707172737475767778797a7b7c7d7e7f >"$key_file"
 chmod 600 "$key_file"
 
 set +e
+"$qaffd_bin" --socket "$sock" --bpf "$bpf_obj" --short-cid-len 8 \
+  >"$validation_log" 2>&1
+validation_rc=$?
+set -e
+if [ "$validation_rc" -ne 2 ]; then
+  cat "$validation_log" >&2 || true
+  echo "qaffd accepted an implicit reuseport BPF replacement policy" >&2
+  exit 1
+fi
+grep -q '^qaffd: --reuseport-bpf-policy replace is required because Linux attach replaces the current group program$' \
+  "$validation_log"
+
+set +e
+"$qaffd_bin" --socket "$sock" --bpf "$bpf_obj" --short-cid-len 8 \
+  --reuseport-bpf-policy replace \
+  --fallback-worker 4096 >"$validation_log" 2>&1
+validation_rc=$?
+set -e
+if [ "$validation_rc" -ne 2 ]; then
+  cat "$validation_log" >&2 || true
+  echo "qaffd accepted an out-of-range fixed fallback worker" >&2
+  exit 1
+fi
+grep -q '^qaffd: --fallback-worker must be less than 4096$' "$validation_log"
+
+set +e
 "$qaffd_bin" --socket "$sock" --bpf "$bpf_obj" --short-cid-len 12 \
+  --reuseport-bpf-policy replace \
   --cid-profile-v2-key-file "$key_file" \
   --cid-profile-v2-config-id 7 >"$validation_log" 2>&1
 validation_rc=$?
@@ -46,6 +73,43 @@ grep -q '^qaffd: CID profile v2 requires --pin-root and --state-path$' \
 grep -q '^Usage: qaffd ' "$validation_log"
 
 "$qaffd_bin" --socket "$sock" --bpf "$bpf_obj" --short-cid-len 8 \
+  --reuseport-bpf-policy replace &
+daemon_pid=$!
+
+fixed_ready=0
+for _ in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25; do
+  if "$qaffctl_bin" stats "$sock" >/dev/null 2>/dev/null; then
+    fixed_ready=1
+    break
+  fi
+  if ! kill -0 "$daemon_pid" 2>/dev/null; then
+    echo "skipping: fixed-fallback qaffd exited before qaffctl could connect" >&2
+    exit 77
+  fi
+  sleep 0.02
+done
+if [ "$fixed_ready" -ne 1 ]; then
+  echo "fixed-fallback qaffd did not become ready" >&2
+  exit 1
+fi
+
+set +e
+"$qaffctl_bin" health "$sock" >/tmp/qaffctl-control-$$.fixed-health
+fixed_health_rc=$?
+set -e
+if [ "$fixed_health_rc" -ne 1 ]; then
+  cat /tmp/qaffctl-control-$$.fixed-health >&2 || true
+  echo "qaffctl health accepted an unavailable fixed fallback" >&2
+  exit 1
+fi
+grep -q '^ok=0$' /tmp/qaffctl-control-$$.fixed-health
+grep -q '^fallback_available=0$' /tmp/qaffctl-control-$$.fixed-health
+"$qaffctl_bin" stop "$sock"
+wait "$daemon_pid"
+daemon_pid=
+
+"$qaffd_bin" --socket "$sock" --bpf "$bpf_obj" --short-cid-len 8 \
+  --reuseport-bpf-policy replace \
   --fallback-worker 1 \
   --fallback-mode kernel \
   --passive-affinity \
@@ -74,6 +138,7 @@ fi
 
 "$qaffctl_bin" health "$sock" >/tmp/qaffctl-control-$$.health
 grep -q '^ok=1$' /tmp/qaffctl-control-$$.health
+grep -q '^fallback_available=1$' /tmp/qaffctl-control-$$.health
 grep -q '^attached=0$' /tmp/qaffctl-control-$$.health
 grep -q '^worker_count=0$' /tmp/qaffctl-control-$$.health
 grep -q '^cid_map_count=0$' /tmp/qaffctl-control-$$.health
@@ -95,6 +160,7 @@ grep -q '^attached=0$' /tmp/qaffctl-control-$$.config
 grep -q '^worker_count=0$' /tmp/qaffctl-control-$$.config
 grep -q '^fallback_mode=kernel$' /tmp/qaffctl-control-$$.config
 grep -q '^fallback_worker_id=1$' /tmp/qaffctl-control-$$.config
+grep -q '^fallback_available=1$' /tmp/qaffctl-control-$$.config
 grep -q '^cid_map_count=0$' /tmp/qaffctl-control-$$.config
 grep -q '^cid_owner_count=0$' /tmp/qaffctl-control-$$.config
 grep -q '^cid_index_mismatch=0$' /tmp/qaffctl-control-$$.config
@@ -148,6 +214,7 @@ grep -q '^passive_egress_map_update_error=0$' /tmp/qaffctl-control-$$.out
 wait "$daemon_pid"
 daemon_pid=
 rm -f /tmp/qaffctl-control-$$.out /tmp/qaffctl-control-$$.err \
+  /tmp/qaffctl-control-$$.fixed-health \
   /tmp/qaffctl-control-$$.health /tmp/qaffctl-control-$$.config \
   /tmp/qaffctl-control-$$.cids /tmp/qaffctl-control-$$.workers \
   /tmp/qaffctl-control-$$.passive /tmp/qaffctl-control-$$.passive.err \

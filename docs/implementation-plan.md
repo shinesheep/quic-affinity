@@ -48,8 +48,11 @@
   (Implemented: qaffd requires both pinned maps and a state snapshot.)
 - Make worker unregistration and its persisted snapshot transactional.
   (Implemented with a tombstone commit point and startup reconciliation.)
-- Validate fixed fallback targets and reject conflicting pre-existing
-  reuseport BPF programs.
+- Validate fixed fallback targets and eliminate silent reuseport BPF
+  replacement. (Implemented: fixed worker IDs are range-checked, non-fallback
+  workers cannot register while a fixed fallback is absent, health exposes
+  fallback availability, and qaffd requires an explicit `replace` policy.
+  Linux exposes no query/no-replace API for reuseport BPF attachment.)
 
 ## Pre-release Productionization
 

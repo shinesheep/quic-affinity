@@ -15,6 +15,9 @@
  */
 #define QAFF_MAX_CID_LEN 32
 
+/** Number of worker IDs supported by one listener and its BPF maps. */
+#define QAFF_WORKER_CAPACITY 4096u
+
 /** Length, in bytes, of routable CID profile v1. */
 #define QAFF_CID_PROFILE_V1_LEN 8u
 

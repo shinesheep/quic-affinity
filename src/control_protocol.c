@@ -166,6 +166,7 @@ static int put_config(struct qaff_writer *writer,
       put_u8(writer, config->passive_min_confidence) != 0 ||
       put_u8(writer, config->egress_attached) != 0 ||
       put_u8(writer, config->fallback_mode) != 0 ||
+      put_u8(writer, config->fallback_available) != 0 ||
       put_u32(writer, config->worker_count) != 0 ||
       put_u32(writer, config->fallback_worker_id) != 0 ||
       put_u64(writer, config->cid_map_count) != 0 ||
@@ -196,6 +197,7 @@ static int get_config(struct qaff_reader *reader,
       get_u8(reader, &config->passive_min_confidence) != 0 ||
       get_u8(reader, &config->egress_attached) != 0 ||
       get_u8(reader, &config->fallback_mode) != 0 ||
+      get_u8(reader, &config->fallback_available) != 0 ||
       get_u32(reader, &config->worker_count) != 0 ||
       get_u32(reader, &config->fallback_worker_id) != 0 ||
       get_u64(reader, &config->cid_map_count) != 0 ||

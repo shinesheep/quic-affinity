@@ -41,12 +41,18 @@ duplicated worker fd and automatically restores the leased registration after
 a qaffd disconnect or restart.
 
 The listener config includes `short_cid_len`, `fallback_mode`,
-`fallback_worker_id`, and optional routable CID profile settings. Fallback is
-used for unregistered opaque CIDs, invalid profile CIDs, parse failures, and the
-first client Initial before the server has issued a routable CID. `fixed`
-selects `fallback_worker_id`; `kernel` leaves selection to Linux's native
-reuseport hash. Profile v2 adds a config ID, worker generation, and a 32-bit
-keyed tag.
+`fallback_worker_id`, `fallback_available`, and optional routable CID profile
+settings. Fallback is used for unregistered opaque CIDs, invalid profile CIDs,
+parse failures, and the first client Initial before the server has issued a
+routable CID. `fixed` selects `fallback_worker_id`; that worker must register
+before non-fallback workers, and health fails while it is absent. `kernel`
+leaves selection to Linux's native reuseport hash and is always available.
+Profile v2 adds a config ID, worker generation, and a 32-bit keyed tag.
+
+qaffd requires `--reuseport-bpf-policy replace` at startup. Linux attach
+replaces any reuseport BPF program already owned by the group and offers no
+query/no-replace operation, so this argument records an explicit ownership
+decision instead of silently taking over another controller's program.
 
 In daemon-controlled mode, `REGISTER_CID` is accepted only for currently registered worker IDs. `qaffd` keeps a CID owner index so `UNREGISTER_WORKER` can bulk-retire CIDs owned by the removed worker. The QUIC stack should still drain and retire CIDs first when possible, so delayed packets are less likely to fall back. Profile-routed CIDs do not consume CID map entries. For profile v2, qaffd increments a per-worker generation on replacement and BPF rejects stale CIDs whose generation no longer matches.
 
@@ -236,7 +242,7 @@ qaffctl listeners
 qaffctl cids LISTENER_ID --limit 20
 ```
 
-`qaffctl health`, `qaffctl config`, and `qaffctl cids --count` expose `cid_map_count`, `cid_owner_count`, and `cid_index_mismatch`. `qaffctl workers` reports worker IDs, lease state, pidfd availability, peer pid/uid/gid when available, registration age, and last-seen age. CID bytes and profile keys are not printed by default. `qaffd` emits audit records to stderr for worker lifecycle, CID lifecycle, and denied mutations. `qaffctl` currently talks to `qaffd` over the daemon Unix socket. Direct pinned-map inspection remains future work.
+`qaffctl health`, `qaffctl config`, and `qaffctl cids --count` expose `cid_map_count`, `cid_owner_count`, and `cid_index_mismatch`. Health also returns a nonzero status and prints `fallback_available=0` when a fixed fallback worker is absent. `qaffctl workers` reports worker IDs, lease state, pidfd availability, peer pid/uid/gid when available, registration age, and last-seen age. CID bytes and profile keys are not printed by default. `qaffd` emits audit records to stderr for worker lifecycle, CID lifecycle, fallback availability transitions, and denied mutations. `qaffctl` currently talks to `qaffd` over the daemon Unix socket. Direct pinned-map inspection remains future work.
 
 ## Open Decisions
 

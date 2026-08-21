@@ -40,6 +40,7 @@ if command -v sudo >/dev/null 2>&1 && command -v setcap >/dev/null 2>&1; then
 fi
 
 "$qaffd_bin" --socket "$sock" --bpf "$bpf_obj" --short-cid-len 8 \
+  --reuseport-bpf-policy replace \
   --fallback-mode kernel &
 daemon_pid=$!
 
@@ -122,6 +123,7 @@ wait "$daemon_pid"
 daemon_pid=
 
 "$qaffd_bin" --socket "$sock" --bpf "$bpf_obj" --short-cid-len 8 \
+  --reuseport-bpf-policy replace \
   --fallback-mode kernel &
 daemon_pid=$!
 

@@ -31,21 +31,21 @@ struct {
 
 struct {
   __uint(type, BPF_MAP_TYPE_REUSEPORT_SOCKARRAY);
-  __uint(max_entries, 4096);
+  __uint(max_entries, QAFF_WORKER_CAPACITY);
   __type(key, __u32);
   __type(value, __u32);
 } qaff_workers SEC(".maps");
 
 struct {
   __uint(type, BPF_MAP_TYPE_HASH);
-  __uint(max_entries, 4096);
+  __uint(max_entries, QAFF_WORKER_CAPACITY);
   __type(key, __u64);
   __type(value, __u32);
 } qaff_socket_workers SEC(".maps");
 
 struct {
   __uint(type, BPF_MAP_TYPE_ARRAY);
-  __uint(max_entries, 4096);
+  __uint(max_entries, QAFF_WORKER_CAPACITY);
   __type(key, __u32);
   __type(value, __u32);
 } qaff_worker_generations SEC(".maps");

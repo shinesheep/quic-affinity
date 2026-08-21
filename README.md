@@ -233,8 +233,16 @@ build/qaffd \
   --socket /tmp/qaffd.sock \
   --bpf build/qaff_reuseport.bpf.o \
   --short-cid-len 8 \
+  --reuseport-bpf-policy replace \
   --fallback-mode kernel
 ```
+
+Linux replaces the reuseport group's current BPF program when a new program is
+attached and provides no query/no-replace operation for this attachment type.
+`qaffd` therefore requires `--reuseport-bpf-policy replace` as an explicit
+ownership acknowledgement. Do not run two reuseport-program managers for the
+same listener group. In embedded mode, calling
+`qaff_attach_reuseport_bpf()` is the equivalent explicit acknowledgement.
 
 Register workers and CIDs from a QUIC server through the control API:
 
@@ -267,6 +275,7 @@ build/qaffd \
   --socket /tmp/qaffd.sock \
   --bpf build/qaff_reuseport.bpf.o \
   --short-cid-len 8 \
+  --reuseport-bpf-policy replace \
   --passive-affinity \
   --egress-cgroup /sys/fs/cgroup
 ```
@@ -367,6 +376,7 @@ build/qaffd \
   --socket /tmp/qaffd.sock \
   --bpf build/qaff_reuseport.bpf.o \
   --short-cid-len 12 \
+  --reuseport-bpf-policy replace \
   --pin-root /sys/fs/bpf/quic-affinity/listeners/example \
   --state-path /var/lib/quic-affinity/example.state \
   --cid-profile-v2-key-file /etc/quic-affinity/profile-v2.key \
@@ -420,6 +430,7 @@ build/qaffd \
   --socket /run/quic-affinity/example.sock \
   --bpf /usr/libexec/quic-affinity/qaff_reuseport.bpf.o \
   --short-cid-len 8 \
+  --reuseport-bpf-policy replace \
   --pin-root /sys/fs/bpf/quic-affinity/listeners/example \
   --state-path /var/lib/quic-affinity/example.state
 ```

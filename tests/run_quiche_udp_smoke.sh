@@ -27,7 +27,8 @@ if command -v sudo >/dev/null 2>&1 && command -v setcap >/dev/null 2>&1; then
   sudo -n setcap "$caps" "$qaffd_bin" 2>/dev/null || true
 fi
 
-"$qaffd_bin" --socket "$sock" --bpf "$bpf_obj" --short-cid-len 8 &
+"$qaffd_bin" --socket "$sock" --bpf "$bpf_obj" --short-cid-len 8 \
+  --reuseport-bpf-policy replace &
 daemon_pid=$!
 
 for _ in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25; do
@@ -43,4 +44,3 @@ done
 
 echo "qaffd did not become ready" >&2
 exit 1
-

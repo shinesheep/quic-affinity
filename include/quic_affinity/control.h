@@ -12,7 +12,7 @@ extern "C" {
 #endif
 
 /** Maximum number of worker IDs supported by one qaffd listener. */
-#define QAFF_CONTROL_WORKER_CAPACITY 4096u
+#define QAFF_CONTROL_WORKER_CAPACITY QAFF_WORKER_CAPACITY
 
 /** Maximum path bytes carried in control-plane config replies. */
 #define QAFF_CONTROL_MAX_PATH 256u
@@ -46,7 +46,9 @@ struct qaff_control_config {
   uint8_t egress_attached;
   /** Fallback policy: QAFF_FALLBACK_MODE_FIXED or _KERNEL. */
   uint8_t fallback_mode;
-  uint8_t reserved[3];
+  /** Non-zero when the configured fallback can currently accept traffic. */
+  uint8_t fallback_available;
+  uint8_t reserved[2];
   /** Number of registered workers. */
   uint32_t worker_count;
   /** Worker used for fallback when fallback_mode is FIXED. */

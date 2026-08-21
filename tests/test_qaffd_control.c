@@ -320,6 +320,8 @@ static pid_t start_qaffd(const char *qaffd_path,
         bpf_path,
         "--short-cid-len",
         "8",
+        "--reuseport-bpf-policy",
+        "replace",
         "--passive-affinity",
         "--passive-min-confidence",
         "3",
@@ -564,6 +566,17 @@ static int control_call_read_stats(const char *socket_path,
   return rc;
 }
 
+static int control_call_config(const char *socket_path,
+                               struct qaff_control_config *config) {
+  int fd = qaff_control_connect(socket_path);
+  if (fd < 0) {
+    return -1;
+  }
+  int rc = qaff_control_config(fd, config);
+  close(fd);
+  return rc;
+}
+
 static int control_call_cids(const char *socket_path,
                              struct qaff_control_config *config) {
   int fd = qaff_control_connect(socket_path);
@@ -714,6 +727,14 @@ static int run_case(const char *qaffd_path,
   }
   close(ready_fd);
 
+  struct qaff_control_config fallback_config;
+  if (control_call_config(socket_path, &fallback_config) != 0 ||
+      fallback_config.fallback_available != 0) {
+    fprintf(stderr, "%s: fixed fallback unexpectedly available before registration\n",
+            test->name);
+    return 1;
+  }
+
   pid_t duplicate_pid = start_qaffd(qaffd_path, socket_path, bpf_path);
   if (duplicate_pid < 0) {
     perror("fork duplicate qaffd");
@@ -796,6 +817,12 @@ static int run_case(const char *qaffd_path,
     perror("qaff_control_register_worker_lease");
     return 1;
   }
+  if (control_call_config(socket_path, &fallback_config) != 0 ||
+      fallback_config.fallback_available != 1) {
+    fprintf(stderr, "%s: registered fixed fallback reported unavailable\n",
+            test->name);
+    return 1;
+  }
 
   const uint32_t leased_workers[] = {0};
   if (expect_registered_workers(socket_path,
@@ -853,6 +880,12 @@ static int run_case(const char *qaffd_path,
     perror("wait lease cleanup");
     return 1;
   }
+  if (control_call_config(socket_path, &fallback_config) != 0 ||
+      fallback_config.fallback_available != 0) {
+    fprintf(stderr, "%s: expired fixed fallback reported available\n",
+            test->name);
+    return 1;
+  }
   if (control_call_cids(socket_path, &cid_config) != 0) {
     perror("qaff_control_cids after lease close");
     return 1;
@@ -902,6 +935,39 @@ static int run_case(const char *qaffd_path,
 
   int workers[WORKER_COUNT] = {-1, -1, -1};
 
+  uint16_t premature_port = 0;
+  int premature_worker = make_worker_socket(test->family, &premature_port);
+  if (premature_worker < 0) {
+    perror("make_worker_socket premature_worker");
+    return 1;
+  }
+  errno = 0;
+  if (control_call_register_worker(socket_path, 1, premature_worker) == 0 ||
+      errno != EHOSTDOWN) {
+    fprintf(stderr,
+            "%s: non-fallback worker registered before fixed fallback\n",
+            test->name);
+    return 1;
+  }
+  close(premature_worker);
+
+  uint16_t port = 0;
+  workers[0] = make_worker_socket(test->family, &port);
+  if (workers[0] < 0) {
+    perror("make_worker_socket");
+    return 1;
+  }
+  if (control_call_register_worker(socket_path, 0, workers[0]) != 0) {
+    perror("qaff_control_register_worker first");
+    return 1;
+  }
+  if (control_call_config(socket_path, &fallback_config) != 0 ||
+      fallback_config.fallback_available != 1) {
+    fprintf(stderr, "%s: fixed fallback unavailable after registration\n",
+            test->name);
+    return 1;
+  }
+
   int plain_udp = make_plain_udp_socket(test->family);
   if (plain_udp < 0) {
     perror("make_plain_udp_socket");
@@ -914,17 +980,6 @@ static int run_case(const char *qaffd_path,
     return 1;
   }
   close(plain_udp);
-
-  uint16_t port = 0;
-  workers[0] = make_worker_socket(test->family, &port);
-  if (workers[0] < 0) {
-    perror("make_worker_socket");
-    return 1;
-  }
-  if (control_call_register_worker(socket_path, 0, workers[0]) != 0) {
-    perror("qaff_control_register_worker first");
-    return 1;
-  }
 
   uint16_t other_port = 0;
   int wrong_listener = make_worker_socket(test->family, &other_port);
@@ -1397,6 +1452,32 @@ static int run_case(const char *qaffd_path,
     fprintf(stderr, "%s: bounded worker listing failed\n", test->name);
     return 1;
   }
+
+  if (control_call_unregister_worker(socket_path, FALLBACK_WORKER) != 0) {
+    perror("qaff_control_unregister_worker fallback");
+    return 1;
+  }
+  if (control_call_config(socket_path, &fallback_config) != 0 ||
+      fallback_config.fallback_available != 0) {
+    fprintf(stderr, "%s: removed fixed fallback reported available\n",
+            test->name);
+    return 1;
+  }
+
+  int unavailable_worker = make_worker_socket(test->family, &port);
+  if (unavailable_worker < 0) {
+    perror("make_worker_socket unavailable_worker");
+    return 1;
+  }
+  errno = 0;
+  if (control_call_register_worker(socket_path, 200, unavailable_worker) == 0 ||
+      errno != EHOSTDOWN) {
+    fprintf(stderr,
+            "%s: non-fallback worker registered after fixed fallback loss\n",
+            test->name);
+    return 1;
+  }
+  close(unavailable_worker);
 
   if (stop_qaffd(socket_path, daemon_pid) != 0) {
     perror("stop_qaffd");

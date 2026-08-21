@@ -112,6 +112,7 @@ group or other permissions:
 qaffd --socket /tmp/qaffd.sock \
       --bpf /usr/libexec/quic-affinity/qaff_reuseport.bpf.o \
       --short-cid-len 12 \
+      --reuseport-bpf-policy replace \
       --pin-root /sys/fs/bpf/quic-affinity/listeners/example \
       --state-path /var/lib/quic-affinity/example.state \
       --cid-profile-v2-key-file /etc/quic-affinity/profile-v2.key \

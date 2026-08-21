@@ -77,7 +77,9 @@ The expected startup sequence is:
 5. Call `qaff_open()`.
 6. Register each worker socket with `qaff_register_worker_socket()`.
 7. Load the BPF object with `qaff_bpf_object_open()`.
-8. Attach the BPF program with `qaff_attach_reuseport_bpf()` on one socket in the group.
+8. Attach the BPF program with `qaff_attach_reuseport_bpf()` on one socket in
+   the group. This explicit call replaces any reuseport BPF program already
+   owned by that group.
 9. Start accepting packets.
 
 The BPF program applies to the reuseport group after attachment.
@@ -89,9 +91,9 @@ reusing a socket under another worker ID.
 
 When using `qaffd`, the privileged daemon owns BPF setup:
 
-1. Start `qaffd` with a Unix socket path, BPF object path, `short_cid_len`,
-   optional fallback mode/worker, optional profile key/config arguments,
-   optional socket permission arguments, and optional restart-recovery paths.
+1. Start `qaffd` with a Unix socket path, BPF object path, `short_cid_len`, and
+   `--reuseport-bpf-policy replace`, plus any fallback, profile, socket
+   permission, and restart-recovery arguments.
 2. Each worker creates and binds its UDP `SO_REUSEPORT` socket.
 3. Each worker passes its socket fd to `qaffd` with `REGISTER_WORKER_LEASE` and keeps that control connection open for the worker lifetime.
 4. `qaffd` registers the socket in the sockarray and attaches BPF on first worker registration.
@@ -103,6 +105,12 @@ If the leased control connection closes unexpectedly, `qaffd` treats the worker 
 `qaffd` records the registering process' Unix peer credentials and exposes them through `qaffctl workers`. For leased workers it also opens a pidfd when supported; pidfd readability is treated as worker death and triggers the same unregister cleanup as lease close. Existing worker IDs, worker CID registration, CID retirement, and worker unregistration can be mutated only by the original worker process or by the configured management identity. Deployments use `--allow-worker-uid` and `--allow-worker-gid` to restrict worker admission, and the independent `--allow-admin-uid` and `--allow-admin-gid` options to grant management authority. Group-accessible control sockets require an explicit management identity.
 
 The current MVP supports one listener per `qaffd` process.
+
+Linux replaces a reuseport group's current BPF program during attach and does
+not expose a query or no-replace operation for this attachment type. The
+required `--reuseport-bpf-policy replace` argument makes qaffd's ownership
+decision explicit. A listener group must not be managed by another reuseport
+BPF controller at the same time.
 
 ### Optional Passive Egress Learning
 
@@ -267,7 +275,12 @@ Fixed fallback:
 worker_id = qaff_options.fallback_worker_id
 ```
 
-The default is `0`. In daemon-controlled mode this is set with `qaffd --fallback-worker ID` and can be inspected with `qaffctl config`.
+The default is `0`. In daemon-controlled mode this is set with
+`qaffd --fallback-worker ID`; valid IDs are `0..4095`. The fixed fallback must
+register before any non-fallback worker. If it later disappears, qaffd rejects
+new non-fallback registrations until it returns. `qaffctl health` fails and
+prints `fallback_available=0` while the fixed fallback is absent; `qaffctl
+config` exposes the same state. Kernel fallback is always reported available.
 
 `qaffd --fallback-mode kernel` skips explicit socket selection on a fallback,
 so Linux applies its normal SO_REUSEPORT 4-tuple hash. This is recommended for

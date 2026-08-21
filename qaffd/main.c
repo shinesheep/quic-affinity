@@ -29,7 +29,7 @@
 
 #include <bpf/bpf.h>
 
-#define QAFFD_MAX_WORKERS 4096
+#define QAFFD_MAX_WORKERS QAFF_WORKER_CAPACITY
 #define QAFFD_MAX_PENDING_CLIENTS 128
 #define QAFFD_MAX_POLLFDS \
   (QAFFD_MAX_WORKERS * 2 + QAFFD_MAX_PENDING_CLIENTS + 1)
@@ -93,6 +93,7 @@ struct qaffd_options {
   uint32_t fallback_worker_id;
   uint64_t worker_heartbeat_timeout_ms;
   uint64_t passive_scan_interval_ms;
+  int reuseport_bpf_replace_allowed;
   int allow_worker_uid_set;
   int allow_worker_gid_set;
   int allow_admin_uid_set;
@@ -564,6 +565,10 @@ static void fill_config_reply(const struct qaffd_state *state,
   reply->config.passive_min_confidence = state->passive_min_confidence;
   reply->config.egress_attached = state->egress_attached ? 1 : 0;
   reply->config.fallback_mode = state->fallback_mode;
+  reply->config.fallback_available =
+      state->fallback_mode == QAFF_FALLBACK_MODE_KERNEL ||
+      (state->fallback_worker_id < QAFFD_MAX_WORKERS &&
+       state->worker_registered[state->fallback_worker_id]);
   reply->config.attached = state->attached ? 1 : 0;
   reply->config.worker_count = worker_count(state);
   reply->config.fallback_worker_id = state->fallback_worker_id;
@@ -640,6 +645,7 @@ static void fill_workers_reply(const struct qaffd_state *state,
 static void usage(FILE *out) {
   fprintf(out,
           "Usage: qaffd --socket PATH --bpf PATH --short-cid-len N "
+          "--reuseport-bpf-policy replace "
           "[--fallback-worker ID] [--fallback-mode fixed|kernel] "
           "[--pin-root PATH] [--state-path PATH] "
           "[--egress-cgroup PATH] "
@@ -767,6 +773,12 @@ static int parse_args(int argc, char **argv, struct qaffd_options *options) {
       options->pin_root = argv[++i];
     } else if (strcmp(argv[i], "--state-path") == 0 && i + 1 < argc) {
       options->state_path = argv[++i];
+    } else if (strcmp(argv[i], "--reuseport-bpf-policy") == 0 &&
+               i + 1 < argc) {
+      if (strcmp(argv[++i], "replace") != 0) {
+        return -1;
+      }
+      options->reuseport_bpf_replace_allowed = 1;
     } else if (strcmp(argv[i], "--short-cid-len") == 0 && i + 1 < argc) {
       char *end = NULL;
       unsigned long value = strtoul(argv[++i], &end, 10);
@@ -913,6 +925,17 @@ static int parse_args(int argc, char **argv, struct qaffd_options *options) {
   if (options->socket_path == NULL ||
       options->bpf_object_path == NULL ||
       options->short_cid_len == 0) {
+    return -1;
+  }
+  if (!options->reuseport_bpf_replace_allowed) {
+    fprintf(stderr,
+            "qaffd: --reuseport-bpf-policy replace is required because "
+            "Linux attach replaces the current group program\n");
+    return -1;
+  }
+  if (options->fallback_worker_id >= QAFFD_MAX_WORKERS) {
+    fprintf(stderr, "qaffd: --fallback-worker must be less than %u\n",
+            QAFFD_MAX_WORKERS);
     return -1;
   }
   if (options->state_path != NULL && options->pin_root == NULL) {
@@ -1442,6 +1465,18 @@ static int handle_register_worker(struct qaffd_state *state,
   if (validate_worker_peer(state, peer) != 0) {
     return -1;
   }
+  if (state->fallback_mode == QAFF_FALLBACK_MODE_FIXED &&
+      request->worker_id != state->fallback_worker_id &&
+      !state->worker_registered[state->fallback_worker_id]) {
+    audit_event("worker_registration_rejected",
+                peer,
+                "worker_id=%u reason=fixed_fallback_unavailable "
+                "fallback_worker_id=%u",
+                request->worker_id,
+                state->fallback_worker_id);
+    errno = EHOSTDOWN;
+    return -1;
+  }
   int recovered_worker =
       state->worker_registered[request->worker_id] &&
       state->worker_fds[request->worker_id] < 0 &&
@@ -1597,6 +1632,13 @@ static int handle_register_worker(struct qaffd_state *state,
               enable_pidfd ? 1u : 0u,
               same_socket ? 1u : 0u,
               state->worker_target_pids[request->worker_id]);
+  if (state->fallback_mode == QAFF_FALLBACK_MODE_FIXED &&
+      request->worker_id == state->fallback_worker_id) {
+    audit_event("fixed_fallback_available",
+                peer,
+                "worker_id=%u",
+                request->worker_id);
+  }
   return 0;
 }
 
@@ -1671,6 +1713,14 @@ static int unregister_worker_authorized(struct qaffd_state *state,
               peer,
               "worker_id=%u",
               worker_id);
+  if (state->fallback_mode == QAFF_FALLBACK_MODE_FIXED &&
+      worker_id == state->fallback_worker_id) {
+    audit_event("fixed_fallback_unavailable",
+                peer,
+                "worker_id=%u remaining_workers=%u",
+                worker_id,
+                worker_count(state));
+  }
   return 0;
 }
 

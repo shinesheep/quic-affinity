@@ -37,6 +37,7 @@ if command -v sudo >/dev/null 2>&1 && command -v setcap >/dev/null 2>&1; then
 fi
 
 "$qaffd_bin" --socket "$sock" --bpf "$bpf_obj" --short-cid-len 8 \
+  --reuseport-bpf-policy replace \
   --passive-affinity \
   --egress-cgroup "$cgroup_path" >"$out" 2>"$err" &
 daemon_pid=$!

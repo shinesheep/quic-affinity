@@ -193,7 +193,8 @@ static int cmd_health(int argc, char **argv) {
     return 1;
   }
 
-  printf("ok=1\n");
+  printf("ok=%u\n", config.fallback_available ? 1u : 0u);
+  printf("fallback_available=%u\n", config.fallback_available);
   printf("attached=%u\n", config.attached);
   printf("worker_count=%u\n", config.worker_count);
   printf("cid_map_count=%llu\n",
@@ -209,7 +210,7 @@ static int cmd_health(int argc, char **argv) {
   printf("passive_cleanup_error_count=%llu\n",
          (unsigned long long)config.passive_cleanup_error_count);
   close(fd);
-  return 0;
+  return config.fallback_available ? 0 : 1;
 }
 
 static void print_config(const struct qaff_control_config *config) {
@@ -227,6 +228,7 @@ static void print_config(const struct qaff_control_config *config) {
              ? "kernel"
              : "fixed");
   printf("fallback_worker_id=%u\n", config->fallback_worker_id);
+  printf("fallback_available=%u\n", config->fallback_available);
   printf("cid_map_count=%llu\n",
          (unsigned long long)config->cid_map_count);
   printf("cid_owner_count=%llu\n",
