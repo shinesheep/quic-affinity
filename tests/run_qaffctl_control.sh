@@ -150,7 +150,6 @@ grep -q '^passive_cleanup_error_count=0$' /tmp/qaffctl-control-$$.health
 
 "$qaffctl_bin" config "$sock" >/tmp/qaffctl-control-$$.config
 grep -q '^short_cid_len=8$' /tmp/qaffctl-control-$$.config
-grep -q '^cid_profile_v1_enabled=0$' /tmp/qaffctl-control-$$.config
 grep -q '^cid_profile_v2_enabled=0$' /tmp/qaffctl-control-$$.config
 grep -q '^cid_profile_v2_config_id=0$' /tmp/qaffctl-control-$$.config
 grep -q '^passive_affinity_enabled=1$' /tmp/qaffctl-control-$$.config
@@ -209,6 +208,7 @@ grep -q '^passive_egress_too_long_scid=0$' /tmp/qaffctl-control-$$.out
 grep -q '^passive_egress_socket_cookie_hit=0$' /tmp/qaffctl-control-$$.out
 grep -q '^passive_egress_socket_cookie_miss=0$' /tmp/qaffctl-control-$$.out
 grep -q '^passive_egress_map_update_error=0$' /tmp/qaffctl-control-$$.out
+grep -q '^cid_map_reject_generation=0$' /tmp/qaffctl-control-$$.out
 
 "$qaffctl_bin" stop "$sock"
 wait "$daemon_pid"

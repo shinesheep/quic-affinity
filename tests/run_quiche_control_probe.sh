@@ -53,7 +53,7 @@ fi
 grep -q '^registered_worker=2$' /tmp/qaff-quiche-probe-$$.out
 grep -q '^registered_source_cid_len=8$' /tmp/qaff-quiche-probe-$$.out
 grep -q '^profile_worker=2$' /tmp/qaff-quiche-probe-$$.out
-grep -q '^registered_profile_cid_len=8$' /tmp/qaff-quiche-probe-$$.out
+grep -q '^registered_profile_cid_len=12$' /tmp/qaff-quiche-probe-$$.out
 grep -q '^quiche_new_scid_rc=0$' /tmp/qaff-quiche-probe-$$.out
 grep -q '^registered_new_scid_len=8$' /tmp/qaff-quiche-probe-$$.out
 

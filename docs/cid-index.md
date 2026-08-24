@@ -1,10 +1,16 @@
 # qaffd CID Ownership Index
 
-The CID ownership index is qaffd's process-local mirror of the BPF CID map. It
-maps each canonical `qaff_cid_key` to one worker ID and supports constant-time
+The CID ownership index is qaffd's process-local ownership mirror of the BPF
+CID map. The BPF value stores worker ID plus generation, while the index maps
+each canonical `qaff_cid_key` to its authorized worker ID and supports constant-time
 average lookup, insertion, reassignment, and removal. qaffd uses it to authorize
 CID retirement, retire every CID owned by a departing worker, recover ownership
 after restart, and report BPF/userspace consistency.
+
+Restart recovery accepts only entries whose worker ID is registered and whose
+stored generation equals the live worker generation. Stale or malformed exact
+entries are removed before the control socket opens. Runtime consistency checks
+compare the index owner, BPF owner, and generation together.
 
 The index combines a dense entry array with an open-addressed hash table. Hash
 slots store one-based array positions; zero denotes an unused slot and

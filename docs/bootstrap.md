@@ -95,7 +95,7 @@ UDP packet arrives
   -> eBPF parses QUIC header
   -> eBPF extracts DCID
   -> if DCID exists in CID map:
-       select owner worker
+       validate owner generation, then select owner worker
      else if DCID matches routable CID profile:
        decode worker id and select worker
      else:
@@ -272,4 +272,3 @@ Out of scope for MVP:
 - QUIC Transport, RFC 9000: https://www.rfc-editor.org/rfc/rfc9000.html
 - NGINX HTTP/3 `quic_bpf`: https://nginx.org/en/docs/http/ngx_http_v3_module.html
 - QUIC-LB draft: https://www.ietf.org/archive/id/draft-ietf-quic-load-balancers-21.html
-

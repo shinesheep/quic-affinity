@@ -41,13 +41,12 @@ struct qaff_context {
   int owns_config_map;
   const char *pin_root;
   uint8_t short_cid_len;
-  uint8_t cid_profile_v1_enabled;
   uint8_t cid_profile_v2_enabled;
   uint8_t cid_profile_v2_config_id;
   uint8_t passive_affinity_enabled;
   uint8_t passive_min_confidence;
   uint8_t fallback_mode;
-  uint8_t cid_profile_v1_key[QAFF_CID_PROFILE_KEY_LEN];
+  uint8_t cid_profile_key[QAFF_CID_PROFILE_KEY_LEN];
   uint32_t fallback_worker_id;
   pthread_mutex_t mutation_lock;
   int mutation_lock_initialized;
@@ -79,13 +78,12 @@ void qaff_options_init(struct qaff_options *options) {
   options->stats_map_fd = -1;
   options->config_map_fd = -1;
   options->pin_root = NULL;
-  options->cid_profile_v1_enabled = 0;
   options->cid_profile_v2_enabled = 0;
   options->cid_profile_v2_config_id = 0;
   options->passive_affinity_enabled = 0;
   options->passive_min_confidence = QAFF_PASSIVE_CONFIDENCE_HIGH;
   options->fallback_mode = QAFF_FALLBACK_MODE_FIXED;
-  memset(options->cid_profile_v1_key, 0, sizeof(options->cid_profile_v1_key));
+  memset(options->cid_profile_key, 0, sizeof(options->cid_profile_key));
   options->fallback_worker_id = 0;
 }
 
@@ -287,15 +285,14 @@ static int qaff_write_config(struct qaff_context *ctx) {
   struct qaff_config_value value;
   memset(&value, 0, sizeof(value));
   value.short_cid_len = ctx->short_cid_len;
-  value.cid_profile_v1_enabled = ctx->cid_profile_v1_enabled;
   value.cid_profile_v2_enabled = ctx->cid_profile_v2_enabled;
   value.cid_profile_v2_config_id = ctx->cid_profile_v2_config_id;
   value.passive_affinity_enabled = ctx->passive_affinity_enabled;
   value.passive_min_confidence = ctx->passive_min_confidence;
   value.fallback_mode = ctx->fallback_mode;
-  memcpy(value.cid_profile_v1_key,
-         ctx->cid_profile_v1_key,
-         sizeof(value.cid_profile_v1_key));
+  memcpy(value.cid_profile_key,
+         ctx->cid_profile_key,
+         sizeof(value.cid_profile_key));
   value.fallback_worker_id = ctx->fallback_worker_id;
 
   uint32_t key = 0;
@@ -306,7 +303,7 @@ static int qaff_validate_context_maps(const struct qaff_context *ctx) {
   if (qaff_validate_map_fd(ctx->cid_map_fd,
                            BPF_MAP_TYPE_HASH,
                            sizeof(struct qaff_cid_key),
-                           sizeof(uint32_t),
+                           sizeof(struct qaff_cid_value),
                            1024 * 1024) != 0 ||
       qaff_validate_map_fd(ctx->passive_cid_map_fd,
                            BPF_MAP_TYPE_LRU_HASH,
@@ -376,7 +373,6 @@ int qaff_open(const struct qaff_options *options, struct qaff_context **out) {
   ctx->config_map_fd = options->config_map_fd;
   ctx->pin_root = options->pin_root;
   ctx->short_cid_len = options->short_cid_len;
-  ctx->cid_profile_v1_enabled = options->cid_profile_v1_enabled;
   ctx->cid_profile_v2_enabled = options->cid_profile_v2_enabled;
   ctx->cid_profile_v2_config_id = options->cid_profile_v2_config_id;
   ctx->passive_affinity_enabled = options->passive_affinity_enabled;
@@ -384,6 +380,11 @@ int qaff_open(const struct qaff_options *options, struct qaff_context **out) {
   ctx->fallback_mode = options->fallback_mode;
   if (ctx->fallback_mode != QAFF_FALLBACK_MODE_FIXED &&
       ctx->fallback_mode != QAFF_FALLBACK_MODE_KERNEL) {
+    errno = EINVAL;
+    goto fail;
+  }
+  if (ctx->cid_profile_v2_enabled &&
+      ctx->short_cid_len != QAFF_CID_PROFILE_V2_LEN) {
     errno = EINVAL;
     goto fail;
   }
@@ -400,9 +401,9 @@ int qaff_open(const struct qaff_options *options, struct qaff_context **out) {
     errno = EINVAL;
     goto fail;
   }
-  memcpy(ctx->cid_profile_v1_key,
-         options->cid_profile_v1_key,
-         sizeof(ctx->cid_profile_v1_key));
+  memcpy(ctx->cid_profile_key,
+         options->cid_profile_key,
+         sizeof(ctx->cid_profile_key));
   ctx->fallback_worker_id = options->fallback_worker_id;
 
   if (ctx->cid_map_fd < 0) {
@@ -413,7 +414,7 @@ int qaff_open(const struct qaff_options *options, struct qaff_context **out) {
     if (ctx->cid_map_fd < 0) {
       ctx->cid_map_fd = qaff_create_hash_map("qaff_cids",
                                              sizeof(struct qaff_cid_key),
-                                             sizeof(uint32_t),
+                                             sizeof(struct qaff_cid_value),
                                              1024 * 1024);
     }
     if (ctx->cid_map_fd < 0) {
@@ -428,7 +429,7 @@ int qaff_open(const struct qaff_options *options, struct qaff_context **out) {
     if (qaff_validate_map_fd(ctx->cid_map_fd,
                              BPF_MAP_TYPE_HASH,
                              sizeof(struct qaff_cid_key),
-                             sizeof(uint32_t),
+                             sizeof(struct qaff_cid_value),
                              1024 * 1024) != 0) {
       goto fail;
     }
@@ -679,6 +680,20 @@ static int qaff_worker_generation(const struct qaff_context *ctx,
   return 0;
 }
 
+static int qaff_worker_generation_matches(const struct qaff_context *ctx,
+                                          uint32_t worker_id,
+                                          uint32_t expected_generation) {
+  uint32_t live_generation = 0;
+  if (qaff_worker_generation(ctx, worker_id, &live_generation) != 0) {
+    return -1;
+  }
+  if (live_generation != expected_generation) {
+    errno = ESTALE;
+    return -1;
+  }
+  return 0;
+}
+
 int qaff_register_cid(struct qaff_context *ctx,
                       const uint8_t *cid,
                       size_t cid_len,
@@ -711,10 +726,18 @@ int qaff_register_cid(struct qaff_context *ctx,
    * a context or pinned map. Re-registering a CID for its current owner is
    * idempotent; assigning it to another worker is rejected.
    */
+  struct qaff_cid_value value = {
+      .worker_id = worker_id,
+      .worker_generation = generation,
+  };
   if (bpf_map_update_elem(ctx->cid_map_fd,
                           &key,
-                          &worker_id,
+                          &value,
                           BPF_NOEXIST) == 0) {
+    if (qaff_worker_generation_matches(ctx, worker_id, generation) != 0) {
+      qaff_unlock_mutations(ctx);
+      return -1;
+    }
     qaff_unlock_mutations(ctx);
     return 0;
   }
@@ -723,12 +746,17 @@ int qaff_register_cid(struct qaff_context *ctx,
     return -1;
   }
 
-  uint32_t existing_worker_id = 0;
-  if (bpf_map_lookup_elem(ctx->cid_map_fd, &key, &existing_worker_id) != 0) {
+  struct qaff_cid_value existing;
+  if (bpf_map_lookup_elem(ctx->cid_map_fd, &key, &existing) != 0) {
     qaff_unlock_mutations(ctx);
     return -1;
   }
-  if (existing_worker_id == worker_id) {
+  if (existing.worker_id == worker_id &&
+      existing.worker_generation == generation) {
+    if (qaff_worker_generation_matches(ctx, worker_id, generation) != 0) {
+      qaff_unlock_mutations(ctx);
+      return -1;
+    }
     qaff_unlock_mutations(ctx);
     return 0;
   }
@@ -810,6 +838,12 @@ int qaff_register_passive_cid(struct qaff_context *ctx,
   struct qaff_passive_cid_value stored = *value;
   stored.worker_generation = generation;
   rc = bpf_map_update_elem(ctx->passive_cid_map_fd, &key, &stored, BPF_ANY);
+  if (rc == 0 &&
+      qaff_worker_generation_matches(ctx,
+                                     stored.worker_id,
+                                     stored.worker_generation) != 0) {
+    rc = -1;
+  }
   qaff_unlock_mutations(ctx);
   return rc;
 }
@@ -1052,9 +1086,9 @@ static int qaff_delete_exact_worker_routes(struct qaff_context *ctx,
       return -1;
     }
 
-    uint32_t owner = UINT32_MAX;
-    if (bpf_map_lookup_elem(ctx->cid_map_fd, &current, &owner) == 0) {
-      if (owner == worker_id &&
+    struct qaff_cid_value value;
+    if (bpf_map_lookup_elem(ctx->cid_map_fd, &current, &value) == 0) {
+      if (value.worker_id == worker_id &&
           bpf_map_delete_elem(ctx->cid_map_fd, &current) != 0 &&
           errno != ENOENT) {
         return -1;
@@ -1326,6 +1360,8 @@ const char *qaff_stat_name(uint32_t index) {
     return "passive_egress_socket_cookie_miss";
   case QAFF_STAT_PASSIVE_EGRESS_MAP_UPDATE_ERROR:
     return "passive_egress_map_update_error";
+  case QAFF_STAT_CID_MAP_REJECT_GENERATION:
+    return "cid_map_reject_generation";
   default:
     return "unknown";
   }

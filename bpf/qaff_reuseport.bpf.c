@@ -19,7 +19,7 @@ struct {
   __uint(type, BPF_MAP_TYPE_HASH);
   __uint(max_entries, 1048576);
   __type(key, struct qaff_cid_key);
-  __type(value, __u32);
+  __type(value, struct qaff_cid_value);
 } qaff_cids SEC(".maps");
 
 struct {
@@ -156,7 +156,7 @@ static __always_inline __u32 qaff_profile_hash32(
 
 #pragma unroll
   for (__u32 i = 0; i < QAFF_CID_PROFILE_KEY_LEN; i++) {
-    h ^= config->cid_profile_v1_key[i];
+    h ^= config->cid_profile_key[i];
     h *= 16777619u;
   }
 
@@ -175,38 +175,6 @@ static __always_inline __u32 qaff_profile_hash32(
   h *= 3266489917u;
   h ^= h >> 16;
   return h;
-}
-
-static __always_inline __u16 qaff_profile_v1_tag(
-    const struct qaff_config_value *config,
-    const struct qaff_cid_key *key) {
-  return (__u16)qaff_profile_hash32(config, key, 6);
-}
-
-static __always_inline int qaff_profile_v1_worker(
-    const struct qaff_config_value *config,
-    const struct qaff_cid_key *key,
-    __u32 *worker_id) {
-  if (!config || !config->cid_profile_v1_enabled) {
-    return 0;
-  }
-  if (key->len != QAFF_CID_PROFILE_V1_LEN) {
-    return 0;
-  }
-
-  __u8 version = key->bytes[0] >> 4;
-  if (version != QAFF_CID_PROFILE_V1_VERSION) {
-    return 0;
-  }
-
-  __u16 expected = qaff_profile_v1_tag(config, key);
-  __u16 got = ((__u16)key->bytes[6] << 8) | (__u16)key->bytes[7];
-  if (got != expected) {
-    return -1;
-  }
-
-  *worker_id = ((__u32)key->bytes[1] << 8) | (__u32)key->bytes[2];
-  return 1;
 }
 
 static __always_inline int qaff_profile_v2_worker(
@@ -418,19 +386,29 @@ int qaff_select(struct sk_reuseport_md *ctx) {
   } else if (rc < 0) {
     qaff_count(QAFF_STAT_PARSE_ERROR);
   } else {
-    __u32 *worker_id = bpf_map_lookup_elem(&qaff_cids, &key);
-    if (worker_id) {
+    struct qaff_cid_value *cid_value =
+        bpf_map_lookup_elem(&qaff_cids, &key);
+    if (cid_value) {
+      __u32 *current_generation = bpf_map_lookup_elem(
+          &qaff_worker_generations, &cid_value->worker_id);
+      if (!current_generation ||
+          cid_value->worker_generation == 0 ||
+          *current_generation == 0 ||
+          *current_generation != cid_value->worker_generation) {
+        qaff_count(QAFF_STAT_CID_MAP_REJECT_GENERATION);
+        goto fallback;
+      }
       qaff_count(QAFF_STAT_CID_MAP_HIT);
-      if (bpf_sk_select_reuseport(ctx, &qaff_workers, worker_id, 0) == 0) {
+      if (bpf_sk_select_reuseport(ctx,
+                                  &qaff_workers,
+                                  &cid_value->worker_id,
+                                  0) == 0) {
         return SK_PASS;
       }
       qaff_count(QAFF_STAT_WORKER_MISSING);
     } else {
       __u32 profile_worker = 0;
       int profile_rc = qaff_profile_v2_worker(config, &key, &profile_worker);
-      if (profile_rc == 0) {
-        profile_rc = qaff_profile_v1_worker(config, &key, &profile_worker);
-      }
       if (profile_rc > 0) {
         qaff_count(QAFF_STAT_CID_PROFILE_HIT);
         if (bpf_sk_select_reuseport(ctx,
@@ -459,6 +437,7 @@ int qaff_select(struct sk_reuseport_md *ctx) {
     }
   }
 
+fallback:
   qaff_count(QAFF_STAT_FALLBACK);
   if (config && config->fallback_mode == QAFF_FALLBACK_MODE_KERNEL) {
     return SK_PASS;

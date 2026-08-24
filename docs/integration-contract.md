@@ -57,12 +57,13 @@ For the stateful CID registry mode, every server-issued CID routed by `quic-affi
 For routable CID profile v2, set `short_cid_len` to
 `QAFF_CID_PROFILE_V2_LEN`, enable `cid_profile_v2_enabled`, set
 `cid_profile_v2_config_id`, and copy the 16-byte listener key into
-`cid_profile_v1_key`. The dataplane checks the CID map first; on map miss, it
+`cid_profile_key`. The dataplane checks the CID map first; on map miss, it
 validates the profile tag, config ID, and worker generation before routing to
 the embedded worker ID. qaffd requires both `--pin-root` and `--state-path`
 whenever profile v2 is enabled, so allocated generations and tombstones survive
 restart. Embedded users are responsible for an equivalent durable generation
-allocator. Profile v1 remains available for compatibility.
+allocator. Generationless profile v1 is not supported because it cannot reject
+stale CIDs after worker-ID reuse.
 
 Zero-length server CIDs are incompatible with CID-based worker affinity.
 
@@ -147,7 +148,10 @@ qaffd --pin-root /sys/fs/bpf/quic-affinity/listeners/<listener-id> \
 Profile v2 additionally requires both options and fails configuration parsing
 when either is absent.
 
-On restart, `qaffd` reloads worker IDs and generation tombstones from `--state-path`, reconciles pinned worker generations, and rebuilds CID ownership from the pinned `qaff_cids` map.
+On restart, `qaffd` reloads worker IDs and generation tombstones from
+`--state-path`, reconciles pinned worker generations, removes exact CID entries
+whose generation is no longer live, and rebuilds ownership from the remaining
+`qaff_cids` entries.
 An unregistration tombstone is committed before live routing is removed. Failed
 snapshot commits leave routing unchanged; after a committed interruption,
 startup removes residual pinned entries before opening the control socket.
@@ -182,7 +186,7 @@ The probe:
 1. Creates a real quiche server-side connection with `quiche_accept()`.
 2. Reads the connection source CID with `quiche_conn_source_id()`.
 3. Registers that source CID through `qaffd`.
-4. Generates and parses a routable CID profile v1 CID for the registered worker.
+4. Generates and parses a generation-bound routable CID profile v2 CID for the registered worker.
 5. Registers the profile CID through `qaffd`.
 6. Calls `quiche_conn_new_scid()` to provision an additional server CID.
 7. Registers the additional CID through `qaffd`.
@@ -214,9 +218,10 @@ qaff_register_cid(ctx, cid, cid_len, worker_id);
 ```
 
 CID ownership is exclusive and immutable while the entry is live. Repeating
-the registration for the same worker is idempotent. A different worker cannot
-claim the CID until the current owner retires it; that attempt fails with
-`EEXIST`.
+the registration for the same worker generation is idempotent. Each exact map
+entry stores both worker ID and generation, and BPF rejects it as soon as that
+generation is withdrawn. A replacement worker cannot reactivate or claim the
+CID until the current owner retires it; that attempt fails with `EEXIST`.
 
 Register:
 

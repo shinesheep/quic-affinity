@@ -76,6 +76,8 @@ static int test_config_reply(void) {
   input.op = QAFF_CONTROL_CONFIG;
   input.config.short_cid_len = 20;
   input.config.attached = 1;
+  input.config.cid_profile_v2_enabled = 1;
+  input.config.cid_profile_v2_config_id = 9;
   input.config.passive_affinity_enabled = 1;
   input.config.fallback_available = 1;
   input.config.worker_count = 73;
@@ -99,6 +101,9 @@ static int test_config_reply(void) {
   }
   return check(output.config.short_cid_len == 20,
                "config byte field round trip") == 0 &&
+                 check(output.config.cid_profile_v2_enabled == 1 &&
+                           output.config.cid_profile_v2_config_id == 9,
+                       "profile-v2 config round trip") == 0 &&
                  check(output.config.worker_count == 73,
                        "config u32 round trip") == 0 &&
                  check(output.config.fallback_available == 1,

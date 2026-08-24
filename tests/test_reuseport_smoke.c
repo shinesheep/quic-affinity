@@ -34,18 +34,22 @@
 
 static const uint8_t k_dcid[] = {
   0xde, 0xad, 0xbe, 0xef, 0xaa, 0xbb, 0xcc, 0xdd,
+  0x10, 0x11, 0x12, 0x13,
 };
 
 static const uint8_t k_unknown_dcid[] = {
   0xba, 0xad, 0xf0, 0x0d, 0x12, 0x34, 0x56, 0x78,
+  0x20, 0x21, 0x22, 0x23,
 };
 
 static const uint8_t k_passive_dcid[] = {
   0x70, 0x61, 0x73, 0x73, 0x01, 0x02, 0x03, 0x04,
+  0x30, 0x31, 0x32, 0x33,
 };
 
 static const uint8_t k_worker_lifecycle_dcid[] = {
   0x6c, 0x69, 0x66, 0x65, 0x01, 0x02, 0x03, 0x04,
+  0x40, 0x41, 0x42, 0x43,
 };
 
 static struct qaff_cid_profile_key profile_key(void) {
@@ -302,8 +306,8 @@ static void drain_workers(const int *workers, size_t count) {
 }
 
 static int receive_worker(const int *workers, size_t count, int timeout_ms) {
-  struct pollfd fds[WORKER_COUNT];
-  if (count > WORKER_COUNT) {
+  struct pollfd fds[WORKER_COUNT + 1];
+  if (count > WORKER_COUNT + 1) {
     errno = EINVAL;
     return -1;
   }
@@ -439,9 +443,9 @@ static int run_case(const char *object_path, const struct test_case *test) {
   options.cid_profile_v2_config_id = 7;
   options.passive_affinity_enabled = 1;
   options.passive_min_confidence = QAFF_PASSIVE_CONFIDENCE_HIGH;
-  memcpy(options.cid_profile_v1_key,
+  memcpy(options.cid_profile_key,
          key.bytes,
-         sizeof(options.cid_profile_v1_key));
+         sizeof(options.cid_profile_key));
 
   if (qaff_cid_profile_v2_generate(&key,
                                    options.cid_profile_v2_config_id,
@@ -897,6 +901,23 @@ static int run_case(const char *object_path, const struct test_case *test) {
     perror("register worker lifecycle CID");
     return 1;
   }
+  struct qaff_cid_key lifecycle_key;
+  if (qaff_cid_key_from_bytes(k_worker_lifecycle_dcid,
+                              sizeof(k_worker_lifecycle_dcid),
+                              &lifecycle_key) != QAFF_PARSE_OK) {
+    fprintf(stderr, "%s: could not build lifecycle CID key\n", test->name);
+    return 1;
+  }
+  struct qaff_cid_value lifecycle_value;
+  if (bpf_map_lookup_elem(qaff_get_cid_map_fd(ctx),
+                          &lifecycle_key,
+                          &lifecycle_value) != 0 ||
+      lifecycle_value.worker_id != TARGET_WORKER ||
+      lifecycle_value.worker_generation !=
+          QAFF_WORKER_GENERATION_DEFAULT) {
+    fprintf(stderr, "%s: exact CID was not generation-bound\n", test->name);
+    return 1;
+  }
   uint32_t withdrawn_worker = TARGET_WORKER;
   uint32_t withdrawn_generation = 0;
   if (bpf_map_update_elem(qaff_get_worker_generation_map_fd(ctx),
@@ -906,10 +927,97 @@ static int run_case(const char *object_path, const struct test_case *test) {
     perror("inject interrupted worker withdrawal");
     return 1;
   }
+
+  int replacement_after_withdrawal = make_worker_socket(test->family, &port);
+  if (replacement_after_withdrawal < 0) {
+    perror("make replacement after withdrawal");
+    return 1;
+  }
+  struct qaff_options peer_options;
+  qaff_options_init(&peer_options);
+  peer_options.cid_map_fd = qaff_get_cid_map_fd(ctx);
+  peer_options.passive_cid_map_fd = qaff_get_passive_cid_map_fd(ctx);
+  peer_options.worker_sock_map_fd = qaff_get_worker_sock_map_fd(ctx);
+  peer_options.socket_worker_map_fd = qaff_get_socket_worker_map_fd(ctx);
+  peer_options.worker_generation_map_fd =
+      qaff_get_worker_generation_map_fd(ctx);
+  peer_options.stats_map_fd = qaff_get_stats_map_fd(ctx);
+  peer_options.config_map_fd = qaff_get_config_map_fd(ctx);
+  peer_options.short_cid_len = options.short_cid_len;
+  peer_options.cid_profile_v2_enabled = options.cid_profile_v2_enabled;
+  peer_options.cid_profile_v2_config_id = options.cid_profile_v2_config_id;
+  peer_options.passive_affinity_enabled = options.passive_affinity_enabled;
+  peer_options.passive_min_confidence = options.passive_min_confidence;
+  peer_options.fallback_mode = options.fallback_mode;
+  peer_options.fallback_worker_id = options.fallback_worker_id;
+  memcpy(peer_options.cid_profile_key,
+         options.cid_profile_key,
+         sizeof(peer_options.cid_profile_key));
+  struct qaff_context *peer_ctx = NULL;
+  if (qaff_open(&peer_options, &peer_ctx) != 0 ||
+      qaff_register_worker_socket_generation(peer_ctx,
+                                             TARGET_WORKER,
+                                             replacement_after_withdrawal,
+                                             2) != 0) {
+    perror("reuse worker ID from independent context");
+    return 1;
+  }
+
+  errno = 0;
+  if (qaff_register_cid(peer_ctx,
+                        k_worker_lifecycle_dcid,
+                        sizeof(k_worker_lifecycle_dcid),
+                        TARGET_WORKER) == 0 ||
+      errno != EEXIST) {
+    fprintf(stderr, "%s: stale exact CID was silently reactivated\n",
+            test->name);
+    return 1;
+  }
+
+  struct qaff_stats before_stale_exact;
+  struct qaff_stats after_stale_exact;
+  int observed_workers[WORKER_COUNT + 1] = {
+      workers[0],
+      workers[1],
+      workers[2],
+      replacement_after_withdrawal,
+  };
+  drain_workers(observed_workers, WORKER_COUNT + 1);
+  if (qaff_read_stats(ctx, &before_stale_exact) != 0 ||
+      send_quic_like_packet(senders[0].fd,
+                            test->family,
+                            port,
+                            0,
+                            k_worker_lifecycle_dcid,
+                            sizeof(k_worker_lifecycle_dcid)) != 0) {
+    perror("send stale exact CID after worker reuse");
+    return 1;
+  }
+  int stale_exact_receiver =
+      receive_worker(observed_workers, WORKER_COUNT + 1, 1000);
+  if (qaff_read_stats(ctx, &after_stale_exact) != 0 ||
+      stale_exact_receiver < 0 ||
+      after_stale_exact.values[QAFF_STAT_CID_MAP_REJECT_GENERATION] !=
+          before_stale_exact.values[QAFF_STAT_CID_MAP_REJECT_GENERATION] + 1 ||
+      after_stale_exact.values[QAFF_STAT_CID_MAP_HIT] !=
+          before_stale_exact.values[QAFF_STAT_CID_MAP_HIT] ||
+      after_stale_exact.values[QAFF_STAT_FALLBACK] !=
+          before_stale_exact.values[QAFF_STAT_FALLBACK] + 1 ||
+      (test->fallback_mode == QAFF_FALLBACK_MODE_FIXED &&
+       stale_exact_receiver != (int)test->fallback_worker)) {
+    fprintf(stderr,
+            "%s: stale exact CID selected receiver %d after worker reuse\n",
+            test->name,
+            stale_exact_receiver);
+    return 1;
+  }
+
   if (qaff_unregister_worker_socket(ctx, TARGET_WORKER) != 0) {
     perror("qaff_unregister_worker_socket");
     return 1;
   }
+  qaff_close(peer_ctx);
+  close(replacement_after_withdrawal);
   errno = 0;
   if (bpf_map_lookup_elem(qaff_get_socket_worker_map_fd(ctx),
                           &target_socket_cookie,
@@ -918,17 +1026,10 @@ static int run_case(const char *object_path, const struct test_case *test) {
     fprintf(stderr, "worker unregister left a socket-cookie mapping\n");
     return 1;
   }
-  struct qaff_cid_key lifecycle_key;
-  if (qaff_cid_key_from_bytes(k_worker_lifecycle_dcid,
-                              sizeof(k_worker_lifecycle_dcid),
-                              &lifecycle_key) != QAFF_PARSE_OK) {
-    fprintf(stderr, "%s: could not build lifecycle CID key\n", test->name);
-    return 1;
-  }
   errno = 0;
   if (bpf_map_lookup_elem(qaff_get_cid_map_fd(ctx),
                           &lifecycle_key,
-                          &cookie_worker_id) == 0 ||
+                          &lifecycle_value) == 0 ||
       errno != ENOENT) {
     fprintf(stderr, "%s: worker unregister left an exact CID\n", test->name);
     return 1;
@@ -953,7 +1054,7 @@ static int run_case(const char *object_path, const struct test_case *test) {
   if (qaff_register_worker_socket_generation(ctx,
                                              TARGET_WORKER,
                                              workers[TARGET_WORKER],
-                                             2) != 0) {
+                                             3) != 0) {
     perror("reuse worker ID with a new generation");
     return 1;
   }
@@ -969,7 +1070,7 @@ static int run_case(const char *object_path, const struct test_case *test) {
   errno = 0;
   if (bpf_map_lookup_elem(qaff_get_cid_map_fd(ctx),
                           &lifecycle_key,
-                          &cookie_worker_id) == 0 ||
+                          &lifecycle_value) == 0 ||
       errno != ENOENT) {
     fprintf(stderr, "%s: worker ID reuse reactivated an exact CID\n",
             test->name);
@@ -1048,6 +1149,15 @@ int main(int argc, char **argv) {
   errno = 0;
   if (qaff_open(&invalid_options, &invalid_context) == 0 || errno != EINVAL) {
     fprintf(stderr, "accepted an out-of-range embedded fallback worker\n");
+    qaff_close(invalid_context);
+    return 1;
+  }
+  qaff_options_init(&invalid_options);
+  invalid_options.short_cid_len = 8;
+  invalid_options.cid_profile_v2_enabled = 1;
+  errno = 0;
+  if (qaff_open(&invalid_options, &invalid_context) == 0 || errno != EINVAL) {
+    fprintf(stderr, "accepted profile v2 with an incompatible CID length\n");
     qaff_close(invalid_context);
     return 1;
   }

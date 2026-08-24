@@ -1,6 +1,6 @@
-profile_v1="\x10"
 profile_v2="\x20"
 zero_worker="\x00\x00"
-maximum_worker="\xff\xff"
+maximum_supported_worker="\x0f\xff"
+out_of_range_worker="\x10\x00"
 zero_nonce="\x00\x00\x00"
 maximum_nonce="\xff\xff\xff"

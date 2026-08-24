@@ -32,8 +32,6 @@ struct qaff_control_config {
   uint8_t short_cid_len;
   /** Non-zero when the reuseport eBPF program has been attached. */
   uint8_t attached;
-  /** Non-zero when profile v1 routing is enabled. */
-  uint8_t cid_profile_v1_enabled;
   /** Non-zero when profile v2 routing is enabled. */
   uint8_t cid_profile_v2_enabled;
   /** Config ID expected for profile v2 CIDs. */
@@ -48,7 +46,7 @@ struct qaff_control_config {
   uint8_t fallback_mode;
   /** Non-zero when the configured fallback can currently accept traffic. */
   uint8_t fallback_available;
-  uint8_t reserved[2];
+  uint8_t reserved[3];
   /** Number of registered workers. */
   uint32_t worker_count;
   /** Worker used for fallback when fallback_mode is FIXED. */

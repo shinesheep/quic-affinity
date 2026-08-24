@@ -55,7 +55,15 @@ replaces any reuseport BPF program already owned by the group and offers no
 query/no-replace operation, so this argument records an explicit ownership
 decision instead of silently taking over another controller's program.
 
-In daemon-controlled mode, `REGISTER_CID` is accepted only for currently registered worker IDs. `qaffd` keeps a CID owner index so `UNREGISTER_WORKER` can bulk-retire CIDs owned by the removed worker. The QUIC stack should still drain and retire CIDs first when possible, so delayed packets are less likely to fall back. Profile-routed CIDs do not consume CID map entries. For profile v2, qaffd increments a per-worker generation on replacement and BPF rejects stale CIDs whose generation no longer matches.
+In daemon-controlled mode, `REGISTER_CID` is accepted only for currently
+registered worker IDs. Each BPF entry records the worker's current generation,
+so withdrawal immediately invalidates stale exact CIDs even if cleanup is
+interrupted. `qaffd` keeps a CID owner index so `UNREGISTER_WORKER` can
+bulk-retire CIDs owned by the removed worker. The QUIC stack should still drain
+and retire CIDs first when possible, so delayed packets are less likely to fall
+back. Profile-routed CIDs do not consume CID map entries. For profile v2, qaffd
+increments a per-worker generation on replacement and BPF rejects stale CIDs
+whose generation no longer matches.
 
 The control socket defaults to `0600`. Deployments that need group access must use `--socket-mode 0660 --socket-gid GID` and configure an explicit management UID and/or GID with `--allow-admin-uid` or `--allow-admin-gid`; world permissions are rejected. Worker admission options never implicitly grant daemon-management authority.
 
@@ -180,11 +188,14 @@ During reload:
 1. New workers join the same listener.
 2. New workers register their sockets.
 3. New connections can be assigned to new worker IDs.
-4. Old CIDs remain mapped to old worker IDs while old connections drain.
+4. Old CIDs remain mapped to the old worker ID and generation while old
+   connections drain.
 5. Retired CIDs are removed.
 6. Old workers are removed after their active CIDs expire.
 
-The control plane must avoid reusing a worker ID while CIDs still point to the old socket.
+The control plane must still drain before reusing a worker ID. If reuse races
+with cleanup, generation validation prevents old CIDs from selecting the new
+socket.
 Profile-v2 generations do not wrap: after generation 255, that worker ID is
 exhausted for the listener and registration fails instead of making generation
 1—and potentially stale CIDs—valid again.
@@ -195,11 +206,22 @@ and all routing entries remain intact. Post-commit cleanup is idempotent, and
 restart recovery honors the tombstone over residual pinned map entries left by
 an interruption.
 
-The current daemon maintains a daemon-side CID owner index for CIDs registered through the control API. This enables bulk CID cleanup during `UNREGISTER_WORKER`; across restarts, the index is rebuilt from the pinned `qaff_cids` map.
+The current daemon maintains a daemon-side CID owner index for CIDs registered
+through the control API. This enables bulk CID cleanup during
+`UNREGISTER_WORKER`; across restarts, the index is rebuilt from generation-valid
+entries in the pinned `qaff_cids` map.
 
 ## Restart Recovery
 
-`qaffd --pin-root PATH` opens existing pinned maps from bpffs or creates and pins new maps under `PATH`. The pin root must not be writable by group or other users. Existing pinned maps are schema-checked for type, key size, value size, and max entries before reuse. `qaffd --state-path PATH` persists the daemon-side worker list and every allocated worker generation, including generations of unregistered workers, in a regular filesystem snapshot. Keeping those generation tombstones prevents a stale profile-v2 or passive CID from becoming valid when a worker ID is reused after restart. CID ownership is recovered from the pinned `qaff_cids` map.
+`qaffd --pin-root PATH` opens existing pinned maps from bpffs or creates and
+pins new maps under `PATH`. The pin root must not be writable by group or other
+users. Existing pinned maps are schema-checked for type, key size, value size,
+and max entries before reuse. `qaffd --state-path PATH` persists the
+daemon-side worker list and every allocated worker generation, including
+generations of unregistered workers, in a regular filesystem snapshot. Keeping
+those generation tombstones prevents stale exact, profile-v2, and passive CIDs
+from becoming valid when a worker ID is reused after restart. CID ownership is
+recovered only from pinned `qaff_cids` entries whose generation is still live.
 
 On daemon restart:
 
@@ -207,7 +229,8 @@ On daemon restart:
 2. It reloads worker IDs and generation tombstones from `--state-path`, then
    reconciles live generations from the pinned generation map. Tombstones take
    precedence and trigger cleanup of any interrupted-unregistration residue.
-3. It rebuilds CID ownership by iterating the pinned CID map into a hash index.
+3. It removes generation-stale exact entries and rebuilds ownership from the
+   remaining pinned CID map into a hash index.
 4. Existing socket-group BPF attachment can continue using the pinned maps while worker sockets remain open.
 5. New control operations, including `UNREGISTER_WORKER`, operate on the recovered map and owner state.
 6. qaff-agent notices the control connection closing and retries its leased

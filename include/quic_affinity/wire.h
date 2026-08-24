@@ -18,17 +18,11 @@
 /** Number of worker IDs supported by one listener and its BPF maps. */
 #define QAFF_WORKER_CAPACITY 4096u
 
-/** Length, in bytes, of routable CID profile v1. */
-#define QAFF_CID_PROFILE_V1_LEN 8u
-
 /** Length, in bytes, of routable CID profile v2. */
 #define QAFF_CID_PROFILE_V2_LEN 12u
 
 /** Length, in bytes, of the listener-local routable CID profile key. */
 #define QAFF_CID_PROFILE_KEY_LEN 16u
-
-/** Version nibble used by routable CID profile v1. */
-#define QAFF_CID_PROFILE_V1_VERSION 1u
 
 /** Version nibble used by routable CID profile v2. */
 #define QAFF_CID_PROFILE_V2_VERSION 2u
@@ -78,6 +72,22 @@ struct qaff_cid_key {
 };
 
 /**
+ * Exact CID routing entry.
+ *
+ * Binding every exact route to a worker generation prevents an entry left by
+ * an interrupted cleanup from becoming valid when the worker ID is reused.
+ */
+struct qaff_cid_value {
+#if defined(__KERNEL__) || defined(QAFF_BPF)
+  __u32 worker_id;
+  __u32 worker_generation;
+#else
+  uint32_t worker_id;
+  uint32_t worker_generation;
+#endif
+};
+
+/**
  * Passive CID routing entry.
  *
  * This is used for best-effort black-box affinity. The dataplane routes by this
@@ -112,26 +122,24 @@ struct qaff_passive_cid_value {
 struct qaff_config_value {
 #if defined(__KERNEL__) || defined(QAFF_BPF)
   __u8 short_cid_len;
-  __u8 cid_profile_v1_enabled;
   __u8 cid_profile_v2_enabled;
   __u8 cid_profile_v2_config_id;
   __u8 passive_affinity_enabled;
   __u8 passive_min_confidence;
   __u8 fallback_mode;
-  __u8 reserved;
+  __u8 reserved[2];
   __u32 fallback_worker_id;
-  __u8 cid_profile_v1_key[QAFF_CID_PROFILE_KEY_LEN];
+  __u8 cid_profile_key[QAFF_CID_PROFILE_KEY_LEN];
 #else
   uint8_t short_cid_len;
-  uint8_t cid_profile_v1_enabled;
   uint8_t cid_profile_v2_enabled;
   uint8_t cid_profile_v2_config_id;
   uint8_t passive_affinity_enabled;
   uint8_t passive_min_confidence;
   uint8_t fallback_mode;
-  uint8_t reserved;
+  uint8_t reserved[2];
   uint32_t fallback_worker_id;
-  uint8_t cid_profile_v1_key[QAFF_CID_PROFILE_KEY_LEN];
+  uint8_t cid_profile_key[QAFF_CID_PROFILE_KEY_LEN];
 #endif
 };
 
@@ -187,8 +195,10 @@ enum qaff_stat_index {
   QAFF_STAT_PASSIVE_EGRESS_SOCKET_COOKIE_MISS = 23,
   /** Egress observer failed to update the passive CID map. */
   QAFF_STAT_PASSIVE_EGRESS_MAP_UPDATE_ERROR = 24,
+  /** Exact CID entry generation did not match the live worker generation. */
+  QAFF_STAT_CID_MAP_REJECT_GENERATION = 25,
   /** Number of stats slots; always keep this last. */
-  QAFF_STAT_MAX = 25,
+  QAFF_STAT_MAX = 26,
 };
 
 #endif

@@ -34,7 +34,8 @@
 
 - Make exact CID ownership immutable until explicit retirement, including
   atomic enforcement in the embedded API and cross-process enforcement in
-  `qaffd`. (Implemented.)
+  `qaffd`. (Implemented; exact map values also carry worker generation, so
+  interrupted cleanup cannot reactivate a CID after worker-ID reuse.)
 - Reject replacing an active worker socket while that worker owns exact CIDs;
   preserve daemon restart recovery. (Implemented in both qaffd and the
   embedded API; embedded unregistration also purges exact/passive routes.)
@@ -47,6 +48,8 @@
   qaff-agent startup readiness hooks and explicit withdrawal failures.)
 - Require durable worker generations when CID profile v2 is enabled.
   (Implemented: qaffd requires both pinned maps and a state snapshot.)
+- Remove the generationless routable profile path. (Implemented: profile v1 is
+  unsupported; the production dataplane accepts only generation-bound v2.)
 - Make worker unregistration and its persisted snapshot transactional.
   (Implemented with a tombstone commit point and startup reconciliation.)
 - Validate fixed fallback targets and eliminate silent reuseport BPF

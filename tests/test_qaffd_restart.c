@@ -444,7 +444,11 @@ static int inject_interrupted_unregistration(const char *pin_root,
     goto out;
   }
 
-  if (bpf_map_update_elem(exact_map_fd, &key, &worker_id, BPF_ANY) != 0 ||
+  struct qaff_cid_value exact_value = {
+      .worker_id = worker_id,
+      .worker_generation = QAFF_WORKER_GENERATION_DEFAULT,
+  };
+  if (bpf_map_update_elem(exact_map_fd, &key, &exact_value, BPF_ANY) != 0 ||
       bpf_map_update_elem(worker_map_fd,
                           &worker_id,
                           &worker_fd,

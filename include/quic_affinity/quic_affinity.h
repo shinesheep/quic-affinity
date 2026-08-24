@@ -44,8 +44,6 @@ struct qaff_options {
   const char *pin_root;
   /** Fixed short-header DCID length used by the dataplane parser. */
   uint8_t short_cid_len;
-  /** Enable routable CID profile v1 validation in the dataplane. */
-  uint8_t cid_profile_v1_enabled;
   /** Enable routable CID profile v2 validation in the dataplane. */
   uint8_t cid_profile_v2_enabled;
   /** Expected v2 config ID. */
@@ -57,7 +55,7 @@ struct qaff_options {
   /** Fallback policy: QAFF_FALLBACK_MODE_FIXED or _KERNEL. */
   uint8_t fallback_mode;
   /** Listener-local key used by enabled routable CID profiles. */
-  uint8_t cid_profile_v1_key[QAFF_CID_PROFILE_KEY_LEN];
+  uint8_t cid_profile_key[QAFF_CID_PROFILE_KEY_LEN];
   /** Worker ID used by QAFF_FALLBACK_MODE_FIXED; must be below capacity. */
   uint32_t fallback_worker_id;
 };
@@ -94,7 +92,9 @@ void qaff_close(struct qaff_context *ctx);
  * user-space receives them. Registration is idempotent for the current owner.
  * A CID cannot be reassigned to another worker until it is retired; such an
  * attempt fails with EEXIST. worker_id must identify a currently registered
- * worker; otherwise the call fails with EINVAL or ENOENT.
+ * worker; otherwise the call fails with EINVAL or ENOENT. The stored route is
+ * bound to the worker's current generation, so it becomes unusable immediately
+ * after generation withdrawal and cannot be reactivated by worker-ID reuse.
  *
  * Returns 0 on success or -1 with errno set.
  */

@@ -25,23 +25,6 @@ static struct qaff_cid_profile_key test_key(void) {
   return key;
 }
 
-static int roundtrips_v1_cid(void) {
-  struct qaff_cid_profile_key key = test_key();
-  uint8_t cid[QAFF_CID_PROFILE_V1_LEN];
-
-  int rc = qaff_cid_profile_v1_generate(&key, 42, 0x010203, cid, sizeof(cid));
-  CHECK(rc == 0);
-  CHECK((cid[0] >> 4) == QAFF_CID_PROFILE_V1_VERSION);
-
-  struct qaff_cid_profile_v1_fields fields;
-  rc = qaff_cid_profile_v1_parse(&key, cid, sizeof(cid), &fields);
-  CHECK(rc == 0);
-  CHECK(fields.version == QAFF_CID_PROFILE_V1_VERSION);
-  CHECK(fields.worker_id == 42);
-  CHECK(fields.nonce == 0x010203);
-  return 0;
-}
-
 static int roundtrips_v2_cid(void) {
   struct qaff_cid_profile_key key = test_key();
   uint8_t cid[QAFF_CID_PROFILE_V2_LEN];
@@ -67,28 +50,15 @@ static int roundtrips_v2_cid(void) {
   return 0;
 }
 
-static int rejects_tampered_cid(void) {
-  struct qaff_cid_profile_key key = test_key();
-  uint8_t cid[QAFF_CID_PROFILE_V1_LEN];
-  CHECK(qaff_cid_profile_v1_generate(&key, 7, 9, cid, sizeof(cid)) == 0);
-
-  cid[3] ^= 0x40;
-  struct qaff_cid_profile_v1_fields fields;
-  int rc = qaff_cid_profile_v1_parse(&key, cid, sizeof(cid), &fields);
-  CHECK(rc != 0);
-  CHECK(errno == EBADMSG);
-  return 0;
-}
-
 static int rejects_wrong_key(void) {
   struct qaff_cid_profile_key key = test_key();
   struct qaff_cid_profile_key wrong_key = test_key();
   wrong_key.bytes[0] ^= 0x55;
-  uint8_t cid[QAFF_CID_PROFILE_V1_LEN];
-  CHECK(qaff_cid_profile_v1_generate(&key, 7, 9, cid, sizeof(cid)) == 0);
+  uint8_t cid[QAFF_CID_PROFILE_V2_LEN];
+  CHECK(qaff_cid_profile_v2_generate(&key, 1, 7, 2, 9, cid, sizeof(cid)) == 0);
 
-  struct qaff_cid_profile_v1_fields fields;
-  int rc = qaff_cid_profile_v1_parse(&wrong_key, cid, sizeof(cid), &fields);
+  struct qaff_cid_profile_v2_fields fields;
+  int rc = qaff_cid_profile_v2_parse(&wrong_key, cid, sizeof(cid), &fields);
   CHECK(rc != 0);
   CHECK(errno == EBADMSG);
   return 0;
@@ -115,19 +85,7 @@ static int rejects_tampered_v2_cid(void) {
 
 static int rejects_invalid_bounds(void) {
   struct qaff_cid_profile_key key = test_key();
-  uint8_t cid[QAFF_CID_PROFILE_V1_LEN];
   uint8_t cid_v2[QAFF_CID_PROFILE_V2_LEN];
-
-  CHECK(qaff_cid_profile_v1_generate(&key,
-                                     QAFF_WORKER_CAPACITY,
-                                     1,
-                                     cid,
-                                     sizeof(cid)) != 0);
-  CHECK(errno == EINVAL);
-  CHECK(qaff_cid_profile_v1_generate(&key, 1, 0x1000000, cid, sizeof(cid)) != 0);
-  CHECK(errno == EINVAL);
-  CHECK(qaff_cid_profile_v1_generate(&key, 1, 1, cid, sizeof(cid) - 1) != 0);
-  CHECK(errno == EINVAL);
   CHECK(qaff_cid_profile_v2_generate(&key,
                                      0x100,
                                      1,
@@ -156,8 +114,7 @@ static int rejects_invalid_bounds(void) {
 }
 
 int main(void) {
-  if (roundtrips_v1_cid() != 0 || roundtrips_v2_cid() != 0 ||
-      rejects_tampered_cid() != 0 || rejects_tampered_v2_cid() != 0 ||
+  if (roundtrips_v2_cid() != 0 || rejects_tampered_v2_cid() != 0 ||
       rejects_wrong_key() != 0 || rejects_invalid_bounds() != 0) {
     return 1;
   }

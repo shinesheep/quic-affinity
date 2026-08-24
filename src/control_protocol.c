@@ -159,7 +159,6 @@ static int put_config(struct qaff_writer *writer,
                       const struct qaff_control_config *config) {
   if (put_u8(writer, config->short_cid_len) != 0 ||
       put_u8(writer, config->attached) != 0 ||
-      put_u8(writer, config->cid_profile_v1_enabled) != 0 ||
       put_u8(writer, config->cid_profile_v2_enabled) != 0 ||
       put_u8(writer, config->cid_profile_v2_config_id) != 0 ||
       put_u8(writer, config->passive_affinity_enabled) != 0 ||
@@ -190,7 +189,6 @@ static int get_config(struct qaff_reader *reader,
                       struct qaff_control_config *config) {
   if (get_u8(reader, &config->short_cid_len) != 0 ||
       get_u8(reader, &config->attached) != 0 ||
-      get_u8(reader, &config->cid_profile_v1_enabled) != 0 ||
       get_u8(reader, &config->cid_profile_v2_enabled) != 0 ||
       get_u8(reader, &config->cid_profile_v2_config_id) != 0 ||
       get_u8(reader, &config->passive_affinity_enabled) != 0 ||

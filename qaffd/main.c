@@ -84,13 +84,12 @@ struct qaffd_options {
   const char *pin_root;
   const char *state_path;
   uint8_t short_cid_len;
-  uint8_t cid_profile_v1_enabled;
   uint8_t cid_profile_v2_enabled;
   uint8_t cid_profile_v2_config_id;
   uint8_t passive_affinity_enabled;
   uint8_t passive_min_confidence;
   uint8_t fallback_mode;
-  uint8_t cid_profile_v1_key[QAFF_CID_PROFILE_KEY_LEN];
+  uint8_t cid_profile_key[QAFF_CID_PROFILE_KEY_LEN];
   uint32_t fallback_worker_id;
   uint64_t worker_heartbeat_timeout_ms;
   uint64_t passive_scan_interval_ms;
@@ -133,13 +132,12 @@ struct qaffd_state {
   const char *pin_root;
   const char *state_path;
   uint8_t short_cid_len;
-  uint8_t cid_profile_v1_enabled;
   uint8_t cid_profile_v2_enabled;
   uint8_t cid_profile_v2_config_id;
   uint8_t passive_affinity_enabled;
   uint8_t passive_min_confidence;
   uint8_t fallback_mode;
-  uint8_t cid_profile_v1_key[QAFF_CID_PROFILE_KEY_LEN];
+  uint8_t cid_profile_key[QAFF_CID_PROFILE_KEY_LEN];
   uint32_t fallback_worker_id;
   uint64_t worker_heartbeat_timeout_ms;
   uint64_t passive_scan_interval_ms;
@@ -559,7 +557,6 @@ static int read_passive_table_info(const struct qaffd_state *state,
 static void fill_config_reply(const struct qaffd_state *state,
                               struct qaff_control_msg *reply) {
   reply->config.short_cid_len = state->short_cid_len;
-  reply->config.cid_profile_v1_enabled = state->cid_profile_v1_enabled;
   reply->config.cid_profile_v2_enabled = state->cid_profile_v2_enabled;
   reply->config.cid_profile_v2_config_id = state->cid_profile_v2_config_id;
   reply->config.passive_affinity_enabled = state->passive_affinity_enabled;
@@ -650,7 +647,6 @@ static void usage(FILE *out) {
           "[--fallback-worker ID] [--fallback-mode fixed|kernel] "
           "[--pin-root PATH] [--state-path PATH] "
           "[--egress-cgroup PATH] "
-          "[--cid-profile-v1-key HEX32 | --cid-profile-v1-key-file PATH] "
           "[--cid-profile-v2-key HEX32 | --cid-profile-v2-key-file PATH] "
           "[--cid-profile-v2-config-id ID] "
           "[--passive-affinity] [--passive-min-confidence N] "
@@ -803,33 +799,18 @@ static int parse_args(int argc, char **argv, struct qaffd_options *options) {
       } else {
         return -1;
       }
-    } else if (strcmp(argv[i], "--cid-profile-v1-key") == 0 && i + 1 < argc) {
-      if (parse_fixed_hex(argv[++i],
-                          options->cid_profile_v1_key,
-                          sizeof(options->cid_profile_v1_key)) != 0) {
-        return -1;
-      }
-      options->cid_profile_v1_enabled = 1;
-    } else if (strcmp(argv[i], "--cid-profile-v1-key-file") == 0 &&
-               i + 1 < argc) {
-      if (read_profile_key_file(argv[++i],
-                                options->cid_profile_v1_key,
-                                sizeof(options->cid_profile_v1_key)) != 0) {
-        return -1;
-      }
-      options->cid_profile_v1_enabled = 1;
     } else if (strcmp(argv[i], "--cid-profile-v2-key") == 0 && i + 1 < argc) {
       if (parse_fixed_hex(argv[++i],
-                          options->cid_profile_v1_key,
-                          sizeof(options->cid_profile_v1_key)) != 0) {
+                          options->cid_profile_key,
+                          sizeof(options->cid_profile_key)) != 0) {
         return -1;
       }
       options->cid_profile_v2_enabled = 1;
     } else if (strcmp(argv[i], "--cid-profile-v2-key-file") == 0 &&
                i + 1 < argc) {
       if (read_profile_key_file(argv[++i],
-                                options->cid_profile_v1_key,
-                                sizeof(options->cid_profile_v1_key)) != 0) {
+                                options->cid_profile_key,
+                                sizeof(options->cid_profile_key)) != 0) {
         return -1;
       }
       options->cid_profile_v2_enabled = 1;
@@ -1051,9 +1032,9 @@ static int read_cid_consistency(const struct qaffd_state *state,
   struct qaff_cid_key *previous = NULL;
 
   while (bpf_map_get_next_key(map_fd, previous, &next_key) == 0) {
-    uint32_t worker_id = 0;
+    struct qaff_cid_value value;
     out->map_count++;
-    if (bpf_map_lookup_elem(map_fd, &next_key, &worker_id) != 0) {
+    if (bpf_map_lookup_elem(map_fd, &next_key, &value) != 0) {
       out->mismatch_count++;
       key = next_key;
       previous = &key;
@@ -1065,7 +1046,13 @@ static int read_cid_consistency(const struct qaffd_state *state,
         position < 0 ? NULL
                      : qaffd_cid_index_entry(&state->cid_index,
                                              (size_t)position);
-    if (entry == NULL || entry->worker_id != worker_id) {
+    if (entry == NULL ||
+        value.worker_id >= QAFFD_MAX_WORKERS ||
+        entry->worker_id != value.worker_id ||
+        value.worker_generation == 0 ||
+        !state->worker_registered[value.worker_id] ||
+        state->worker_generations[value.worker_id] !=
+            value.worker_generation) {
       out->mismatch_count++;
     }
 
@@ -1080,10 +1067,15 @@ static int read_cid_consistency(const struct qaffd_state *state,
   for (size_t i = 0; i < qaffd_cid_index_size(&state->cid_index); i++) {
     const struct qaffd_cid_entry *entry =
         qaffd_cid_index_entry(&state->cid_index, i);
-    uint32_t worker_id = 0;
+    struct qaff_cid_value value;
     if (entry == NULL ||
-        bpf_map_lookup_elem(map_fd, &entry->key, &worker_id) != 0 ||
-        worker_id != entry->worker_id) {
+        bpf_map_lookup_elem(map_fd, &entry->key, &value) != 0 ||
+        value.worker_id != entry->worker_id ||
+        value.worker_id >= QAFFD_MAX_WORKERS ||
+        value.worker_generation == 0 ||
+        !state->worker_registered[value.worker_id] ||
+        state->worker_generations[value.worker_id] !=
+            value.worker_generation) {
       out->mismatch_count++;
     }
   }
@@ -1305,52 +1297,68 @@ static int recover_workers_from_generation_map(struct qaffd_state *state) {
 
 static int recover_cids_from_map(struct qaffd_state *state) {
   int map_fd = qaff_get_cid_map_fd(state->ctx);
-  if (map_fd < 0) {
+  int generation_map_fd = qaff_get_worker_generation_map_fd(state->ctx);
+  if (map_fd < 0 || generation_map_fd < 0) {
     errno = EINVAL;
     return -1;
   }
 
-  struct qaff_cid_key key;
-  struct qaff_cid_key next_key;
-  struct qaff_cid_key *previous = NULL;
-
-  while (bpf_map_get_next_key(map_fd, previous, &next_key) == 0) {
-    uint32_t worker_id = 0;
-    if (bpf_map_lookup_elem(map_fd, &next_key, &worker_id) != 0) {
-      key = next_key;
-      previous = &key;
-      continue;
-    }
-    if (worker_id >= QAFFD_MAX_WORKERS) {
-      errno = EINVAL;
-      return -1;
-    }
-    if (qaffd_cid_index_put(&state->cid_index, &next_key, worker_id) != 0) {
-      return -1;
-    }
-    if (worker_is_tombstoned(state, worker_id)) {
-      key = next_key;
-      previous = &key;
-      continue;
-    }
-    state->worker_registered[worker_id] = 1;
-    if (state->worker_generations[worker_id] == 0) {
-      state->worker_generations[worker_id] = QAFF_WORKER_GENERATION_DEFAULT;
-    }
-    if (state->worker_registered_at_ms[worker_id] == 0) {
-      uint64_t recovered_at = now_ms();
-      state->worker_registered_at_ms[worker_id] = recovered_at;
-      state->worker_last_seen_ms[worker_id] = recovered_at;
-    }
-
-    key = next_key;
-    previous = &key;
-  }
-
-  if (errno != ENOENT) {
+  struct bpf_map_info info;
+  memset(&info, 0, sizeof(info));
+  uint32_t info_len = sizeof(info);
+  if (bpf_obj_get_info_by_fd(map_fd, &info, &info_len) != 0) {
     return -1;
   }
-  return 0;
+
+  struct qaff_cid_key current;
+  if (bpf_map_get_next_key(map_fd, NULL, &current) != 0) {
+    return errno == ENOENT ? 0 : -1;
+  }
+  for (uint32_t inspected = 0; inspected < info.max_entries; inspected++) {
+    struct qaff_cid_key next;
+    int has_next = bpf_map_get_next_key(map_fd, &current, &next) == 0;
+    if (!has_next && errno != ENOENT) {
+      return -1;
+    }
+
+    struct qaff_cid_value value;
+    int valid = bpf_map_lookup_elem(map_fd, &current, &value) == 0;
+    if (!valid && errno != ENOENT) {
+      return -1;
+    }
+    if (valid) {
+      uint32_t live_generation = 0;
+      if (value.worker_id < QAFFD_MAX_WORKERS &&
+          bpf_map_lookup_elem(generation_map_fd,
+                              &value.worker_id,
+                              &live_generation) != 0) {
+        return -1;
+      }
+      valid = value.worker_id < QAFFD_MAX_WORKERS &&
+              value.worker_generation != 0 &&
+              live_generation != 0 &&
+              live_generation == value.worker_generation &&
+              state->worker_registered[value.worker_id] &&
+              state->worker_generations[value.worker_id] ==
+                  value.worker_generation;
+    }
+    if (!valid) {
+      if (bpf_map_delete_elem(map_fd, &current) != 0 && errno != ENOENT) {
+        return -1;
+      }
+    } else if (qaffd_cid_index_put(&state->cid_index,
+                                    &current,
+                                    value.worker_id) != 0) {
+      return -1;
+    }
+
+    if (!has_next) {
+      return 0;
+    }
+    current = next;
+  }
+  errno = EAGAIN;
+  return -1;
 }
 
 static int reconcile_worker_tombstones(struct qaffd_state *state) {
@@ -2612,15 +2620,14 @@ int main(int argc, char **argv) {
   state.pin_root = daemon_options.pin_root;
   state.state_path = daemon_options.state_path;
   state.short_cid_len = daemon_options.short_cid_len;
-  state.cid_profile_v1_enabled = daemon_options.cid_profile_v1_enabled;
   state.cid_profile_v2_enabled = daemon_options.cid_profile_v2_enabled;
   state.cid_profile_v2_config_id = daemon_options.cid_profile_v2_config_id;
   state.passive_affinity_enabled = daemon_options.passive_affinity_enabled;
   state.passive_min_confidence = daemon_options.passive_min_confidence;
   state.fallback_mode = daemon_options.fallback_mode;
-  memcpy(state.cid_profile_v1_key,
-         daemon_options.cid_profile_v1_key,
-         sizeof(state.cid_profile_v1_key));
+  memcpy(state.cid_profile_key,
+         daemon_options.cid_profile_key,
+         sizeof(state.cid_profile_key));
   state.fallback_worker_id = daemon_options.fallback_worker_id;
   state.worker_heartbeat_timeout_ms =
       daemon_options.worker_heartbeat_timeout_ms;
@@ -2665,15 +2672,14 @@ int main(int argc, char **argv) {
   qaff_options_init(&options);
   options.pin_root = daemon_options.pin_root;
   options.short_cid_len = daemon_options.short_cid_len;
-  options.cid_profile_v1_enabled = daemon_options.cid_profile_v1_enabled;
   options.cid_profile_v2_enabled = daemon_options.cid_profile_v2_enabled;
   options.cid_profile_v2_config_id = daemon_options.cid_profile_v2_config_id;
   options.passive_affinity_enabled = daemon_options.passive_affinity_enabled;
   options.passive_min_confidence = daemon_options.passive_min_confidence;
   options.fallback_mode = daemon_options.fallback_mode;
-  memcpy(options.cid_profile_v1_key,
-         daemon_options.cid_profile_v1_key,
-         sizeof(options.cid_profile_v1_key));
+  memcpy(options.cid_profile_key,
+         daemon_options.cid_profile_key,
+         sizeof(options.cid_profile_key));
   options.fallback_worker_id = daemon_options.fallback_worker_id;
 
   if (qaff_open(&options, &state.ctx) != 0) {

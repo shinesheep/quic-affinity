@@ -445,8 +445,10 @@ build/qaffd \
 
 Pinned maps allow the dataplane state to survive a `qaffd` restart. The state
 snapshot preserves registered workers and generation tombstones so reusing a
-worker ID cannot reactivate a stale profile-v2 or passive CID. CID ownership is
-rebuilt from the pinned CID map into the daemon's hash index.
+worker ID cannot reactivate a stale exact, profile-v2, or passive CID. Exact
+map entries carry the generation they were registered against, and CID
+ownership is rebuilt from validated pinned entries into the daemon's hash
+index.
 
 Worker unregistration commits its generation tombstone before removing live
 routing. Snapshot failures leave the worker intact, while restart recovery
@@ -504,7 +506,7 @@ Implemented:
   routable CID profiles, control client, and BPF loader.
 - QUIC DCID parsing for long headers and configured-length short headers.
 - IPv4 and IPv6 reuseport dataplane tests.
-- Stateful CID routing and profile v1/v2 routing.
+- Generation-bound stateful CID routing and profile v2 routing.
 - `qaffd` control plane with fd passing, map pinning, restart recovery,
   worker cleanup, authorization, audit logs, and observability.
 - Zero-source-change worker onboarding and real-process lifecycle tracking with

@@ -21,16 +21,6 @@ struct qaff_cid_profile_key {
   uint8_t bytes[QAFF_CID_PROFILE_KEY_LEN];
 };
 
-/** Decoded fields from an 8-byte routable CID profile v1. */
-struct qaff_cid_profile_v1_fields {
-  /** Profile version, currently QAFF_CID_PROFILE_V1_VERSION. */
-  uint8_t version;
-  /** Embedded worker ID; v1 encodes 16 bits. */
-  uint32_t worker_id;
-  /** Embedded 24-bit nonce. */
-  uint32_t nonce;
-};
-
 /** Decoded fields from a 12-byte routable CID profile v2. */
 struct qaff_cid_profile_v2_fields {
   /** Profile version, currently QAFF_CID_PROFILE_V2_VERSION. */
@@ -44,30 +34,6 @@ struct qaff_cid_profile_v2_fields {
   /** Embedded 24-bit nonce. */
   uint32_t nonce;
 };
-
-/**
- * Generate an 8-byte routable CID profile v1.
- *
- * worker_id must be below QAFF_WORKER_CAPACITY and nonce must fit in 24 bits.
- * The output buffer must be at least QAFF_CID_PROFILE_V1_LEN bytes.
- *
- * Returns 0 on success or -1 with errno set.
- */
-int qaff_cid_profile_v1_generate(const struct qaff_cid_profile_key *key,
-                                  uint32_t worker_id,
-                                  uint32_t nonce,
-                                  uint8_t *out,
-                                  size_t out_len);
-
-/**
- * Validate and decode an 8-byte routable CID profile v1.
- *
- * Returns 0 on success or -1 with errno set to EINVAL, EPROTO, or EBADMSG.
- */
-int qaff_cid_profile_v1_parse(const struct qaff_cid_profile_key *key,
-                               const uint8_t *cid,
-                               size_t cid_len,
-                               struct qaff_cid_profile_v1_fields *out);
 
 /**
  * Generate a 12-byte routable CID profile v2.
