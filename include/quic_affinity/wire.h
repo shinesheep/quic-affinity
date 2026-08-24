@@ -199,8 +199,16 @@ enum qaff_stat_index {
   QAFF_STAT_CID_MAP_REJECT_GENERATION = 25,
   /** Egress learning refused to overwrite another passive CID owner. */
   QAFF_STAT_PASSIVE_EGRESS_CONFLICT = 26,
+  /** Egress observer rejected an IPv4 or IPv6 fragment. */
+  QAFF_STAT_PASSIVE_EGRESS_FRAGMENTED = 27,
+  /** Egress observer rejected Version Negotiation or an unknown version. */
+  QAFF_STAT_PASSIVE_EGRESS_REJECT_VERSION = 28,
+  /** Egress observer rejected a long-header type unsafe for server learning. */
+  QAFF_STAT_PASSIVE_EGRESS_REJECT_TYPE = 29,
+  /** Egress observer saw a normal short header with no visible server SCID. */
+  QAFF_STAT_PASSIVE_EGRESS_SHORT_HEADER = 30,
   /** Number of stats slots; always keep this last. */
-  QAFF_STAT_MAX = 27,
+  QAFF_STAT_MAX = 31,
 };
 
 #endif

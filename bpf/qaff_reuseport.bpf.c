@@ -6,12 +6,27 @@
 #define QAFF_ETH_P_IP 0x0008
 #define QAFF_ETH_P_IPV6 0xdd86
 #define QAFF_IPPROTO_UDP 17
+#define QAFF_IPPROTO_HOPOPTS 0
+#define QAFF_IPPROTO_ROUTING 43
+#define QAFF_IPPROTO_FRAGMENT 44
+#define QAFF_IPPROTO_AH 51
+#define QAFF_IPPROTO_DSTOPTS 60
+#define QAFF_IPPROTO_MH 135
 #define QAFF_UDP_HEADER_LEN 8
+#define QAFF_QUIC_VERSION_1 0x00000001u
+#define QAFF_QUIC_VERSION_2 0x6b3343cfu
+#define QAFF_QUIC_LONG_TYPE_0RTT_V1 1u
+#define QAFF_QUIC_LONG_TYPE_0RTT_V2 2u
+#define QAFF_IPV6_MAX_EXTENSION_HEADERS 6
 
 #define QAFF_EGRESS_PARSE_MISS -1
 #define QAFF_EGRESS_NOT_UDP -2
 #define QAFF_EGRESS_ZERO_LENGTH_SCID -3
 #define QAFF_EGRESS_TOO_LONG_SCID -4
+#define QAFF_EGRESS_FRAGMENTED -5
+#define QAFF_EGRESS_REJECT_VERSION -6
+#define QAFF_EGRESS_REJECT_TYPE -7
+#define QAFF_EGRESS_SHORT_HEADER -8
 
 char LICENSE[] SEC("license") = "Dual BSD/GPL";
 
@@ -115,6 +130,19 @@ static __always_inline int qaff_copy_dcid(struct qaff_cid_key *key,
   }
 
   return 0;
+}
+
+static __always_inline int qaff_copy_skb_cid(struct __sk_buff *skb,
+                                             struct qaff_cid_key *key,
+                                             __u32 offset,
+                                             __u32 len) {
+  if (len > QAFF_MAX_CID_LEN) {
+    return -1;
+  }
+
+  __builtin_memset(key, 0, sizeof(*key));
+  key->len = len;
+  return bpf_skb_load_bytes(skb, offset, key->bytes, len) == 0 ? 0 : -1;
 }
 
 static __always_inline int qaff_extract_dcid(struct sk_reuseport_md *ctx,
@@ -309,8 +337,8 @@ static __always_inline int qaff_egress_udp_payload_offset(
   }
 
   __u8 first = *(__u8 *)data;
-  __u8 version = first >> 4;
-  if (version == 4) {
+  __u8 ip_version = first >> 4;
+  if (ip_version == 4) {
     if (data + 20 > data_end) {
       return QAFF_EGRESS_PARSE_MISS;
     }
@@ -326,20 +354,74 @@ static __always_inline int qaff_egress_udp_payload_offset(
     if (protocol != QAFF_IPPROTO_UDP) {
       return QAFF_EGRESS_NOT_UDP;
     }
+    __u16 fragment = ((__u16)*(__u8 *)(data + 6) << 8) |
+                     (__u16)*(__u8 *)(data + 7);
+    if (fragment & 0x3fffu) {
+      return QAFF_EGRESS_FRAGMENTED;
+    }
     *payload_offset = ip_header_len + QAFF_UDP_HEADER_LEN;
     return 0;
   }
 
-  if (version == 6) {
-    if (data + 40 + QAFF_UDP_HEADER_LEN > data_end) {
+  if (ip_version == 6) {
+    if (data + 40 > data_end) {
       return QAFF_EGRESS_PARSE_MISS;
     }
     __u8 next_header = *(__u8 *)(data + 6);
-    if (next_header != QAFF_IPPROTO_UDP) {
+    __u32 offset = 40u;
+
+#pragma unroll
+    for (int i = 0; i < QAFF_IPV6_MAX_EXTENSION_HEADERS; i++) {
+      if (next_header == QAFF_IPPROTO_UDP) {
+        if (data + offset + QAFF_UDP_HEADER_LEN > data_end) {
+          return QAFF_EGRESS_PARSE_MISS;
+        }
+        *payload_offset = offset + QAFF_UDP_HEADER_LEN;
+        return 0;
+      }
+      if (next_header == QAFF_IPPROTO_FRAGMENT) {
+        return QAFF_EGRESS_FRAGMENTED;
+      }
+      if (next_header == QAFF_IPPROTO_HOPOPTS ||
+          next_header == QAFF_IPPROTO_ROUTING ||
+          next_header == QAFF_IPPROTO_DSTOPTS ||
+          next_header == QAFF_IPPROTO_MH) {
+        if (data + offset + 2 > data_end) {
+          return QAFF_EGRESS_PARSE_MISS;
+        }
+        __u8 extension_next = *(__u8 *)(data + offset);
+        __u8 extension_units = *(__u8 *)(data + offset + 1);
+        __u32 extension_len = ((__u32)extension_units + 1u) * 8u;
+        if (data + offset + extension_len > data_end) {
+          return QAFF_EGRESS_PARSE_MISS;
+        }
+        next_header = extension_next;
+        offset += extension_len;
+        continue;
+      }
+      if (next_header == QAFF_IPPROTO_AH) {
+        if (data + offset + 2 > data_end) {
+          return QAFF_EGRESS_PARSE_MISS;
+        }
+        __u8 extension_next = *(__u8 *)(data + offset);
+        __u8 extension_units = *(__u8 *)(data + offset + 1);
+        __u32 extension_len = ((__u32)extension_units + 2u) * 4u;
+        if (data + offset + extension_len > data_end) {
+          return QAFF_EGRESS_PARSE_MISS;
+        }
+        next_header = extension_next;
+        offset += extension_len;
+        continue;
+      }
       return QAFF_EGRESS_NOT_UDP;
     }
-    *payload_offset = 40u + QAFF_UDP_HEADER_LEN;
-    return 0;
+
+    if (next_header == QAFF_IPPROTO_UDP &&
+        data + offset + QAFF_UDP_HEADER_LEN <= data_end) {
+      *payload_offset = offset + QAFF_UDP_HEADER_LEN;
+      return 0;
+    }
+    return QAFF_EGRESS_PARSE_MISS;
   }
 
   return QAFF_EGRESS_PARSE_MISS;
@@ -361,7 +443,27 @@ static __always_inline int qaff_extract_long_scid(struct __sk_buff *skb,
 
   __u8 first = *(__u8 *)(data + payload_offset);
   if ((first & 0x80) == 0) {
+    return QAFF_EGRESS_SHORT_HEADER;
+  }
+  if ((first & 0xc0) != 0xc0) {
     return QAFF_EGRESS_PARSE_MISS;
+  }
+
+  __u32 version = ((__u32)*(__u8 *)(data + payload_offset + 1) << 24) |
+                  ((__u32)*(__u8 *)(data + payload_offset + 2) << 16) |
+                  ((__u32)*(__u8 *)(data + payload_offset + 3) << 8) |
+                  (__u32)*(__u8 *)(data + payload_offset + 4);
+  __u8 packet_type = (first >> 4) & 0x03u;
+  if (version == 0 ||
+      (version != QAFF_QUIC_VERSION_1 &&
+       version != QAFF_QUIC_VERSION_2)) {
+    return QAFF_EGRESS_REJECT_VERSION;
+  }
+  if ((version == QAFF_QUIC_VERSION_1 &&
+       packet_type == QAFF_QUIC_LONG_TYPE_0RTT_V1) ||
+      (version == QAFF_QUIC_VERSION_2 &&
+       packet_type == QAFF_QUIC_LONG_TYPE_0RTT_V2)) {
+    return QAFF_EGRESS_REJECT_TYPE;
   }
 
   __u8 dcid_len = *(__u8 *)(data + payload_offset + 5);
@@ -382,7 +484,7 @@ static __always_inline int qaff_extract_long_scid(struct __sk_buff *skb,
     return QAFF_EGRESS_TOO_LONG_SCID;
   }
 
-  return qaff_copy_dcid(key, data, data_end, scid_len_offset + 1, scid_len);
+  return qaff_copy_skb_cid(skb, key, scid_len_offset + 1, scid_len);
 }
 
 SEC("sk_reuseport")
@@ -485,6 +587,14 @@ int qaff_egress_learn(struct __sk_buff *skb) {
       qaff_count(QAFF_STAT_PASSIVE_EGRESS_ZERO_LENGTH_SCID);
     } else if (parse_rc == QAFF_EGRESS_TOO_LONG_SCID) {
       qaff_count(QAFF_STAT_PASSIVE_EGRESS_TOO_LONG_SCID);
+    } else if (parse_rc == QAFF_EGRESS_FRAGMENTED) {
+      qaff_count(QAFF_STAT_PASSIVE_EGRESS_FRAGMENTED);
+    } else if (parse_rc == QAFF_EGRESS_REJECT_VERSION) {
+      qaff_count(QAFF_STAT_PASSIVE_EGRESS_REJECT_VERSION);
+    } else if (parse_rc == QAFF_EGRESS_REJECT_TYPE) {
+      qaff_count(QAFF_STAT_PASSIVE_EGRESS_REJECT_TYPE);
+    } else if (parse_rc == QAFF_EGRESS_SHORT_HEADER) {
+      qaff_count(QAFF_STAT_PASSIVE_EGRESS_SHORT_HEADER);
     } else {
       qaff_count(QAFF_STAT_PASSIVE_EGRESS_PARSE_MISS);
     }

@@ -400,6 +400,18 @@ if(BUILD_TESTING)
         ${CMAKE_CURRENT_BINARY_DIR}/qaff_reuseport.bpf.o)
     set_tests_properties(reuseport_smoke PROPERTIES SKIP_RETURN_CODE 77)
 
+    add_executable(test_egress_parser
+      tests/test_egress_parser.c)
+    target_link_libraries(test_egress_parser PRIVATE qaffinity)
+    target_compile_options(test_egress_parser PRIVATE
+      -Wall -Wextra -Wpedantic)
+    add_test(NAME egress_parser
+      COMMAND /bin/sh
+        ${CMAKE_CURRENT_SOURCE_DIR}/tests/run_egress_parser.sh
+        $<TARGET_FILE:test_egress_parser>
+        ${CMAKE_CURRENT_BINARY_DIR}/qaff_reuseport.bpf.o)
+    set_tests_properties(egress_parser PROPERTIES SKIP_RETURN_CODE 77)
+
     if(TARGET qaffd)
       add_executable(test_qaffd_control
         tests/test_qaffd_control.c)

@@ -20,6 +20,7 @@
 #define WORKER_COUNT 3
 #define TARGET_WORKER 2
 #define CONFLICT_WORKER 1
+#define FALLBACK_WORKER 0
 #define TEST_SKIP 77
 
 static const uint8_t k_client_cid[] = {
@@ -32,6 +33,26 @@ static const uint8_t k_server_cid[] = {
 
 static const uint8_t k_conflict_server_cid[] = {
   0xcf, 0x11, 0xc7, 0x01, 0xaa, 0xbb, 0xcc, 0xdd,
+};
+
+static const uint8_t k_v2_server_cid[] = {
+  0x62, 0x02, 0x51, 0xd0, 0xaa, 0xbb, 0xcc, 0xdd,
+};
+
+static const uint8_t k_retry_server_cid[] = {
+  0x12, 0xe7, 0x12, 0xd0, 0xaa, 0xbb, 0xcc, 0xdd,
+};
+
+static const uint8_t k_ipv4_options_server_cid[] = {
+  0x14, 0x04, 0x71, 0x05, 0xaa, 0xbb, 0xcc, 0xdd,
+};
+
+static const uint8_t k_vn_scid[] = {
+  0x00, 0x00, 0x00, 0x00, 0xaa, 0xbb, 0xcc, 0xdd,
+};
+
+static const uint8_t k_0rtt_scid[] = {
+  0x00, 0x12, 0x77, 0x00, 0xaa, 0xbb, 0xcc, 0xdd,
 };
 
 static int set_nonblocking(int fd) {
@@ -130,6 +151,16 @@ static size_t make_long_packet(uint8_t *packet,
   return off;
 }
 
+static void set_long_header_type_and_version(uint8_t *packet,
+                                             uint8_t first,
+                                             uint32_t version) {
+  packet[0] = first;
+  packet[1] = (uint8_t)(version >> 24);
+  packet[2] = (uint8_t)(version >> 16);
+  packet[3] = (uint8_t)(version >> 8);
+  packet[4] = (uint8_t)version;
+}
+
 static int send_packet_to_port(int fd,
                                uint16_t port,
                                const uint8_t *packet,
@@ -213,6 +244,51 @@ static int register_passive_cid(const char *socket_path,
                                              &value);
   close(control_fd);
   return rc;
+}
+
+static int observe_and_route_server_cid(const int *workers,
+                                        int client_fd,
+                                        uint16_t client_port,
+                                        uint16_t listener_port,
+                                        uint8_t outbound_first,
+                                        uint32_t outbound_version,
+                                        const uint8_t *server_cid,
+                                        size_t server_cid_len) {
+  uint8_t packet[128];
+  size_t packet_len = make_long_packet(packet,
+                                       sizeof(packet),
+                                       k_client_cid,
+                                       sizeof(k_client_cid),
+                                       server_cid,
+                                       server_cid_len);
+  if (packet_len == 0) {
+    errno = EINVAL;
+    return -1;
+  }
+  set_long_header_type_and_version(packet,
+                                   outbound_first,
+                                   outbound_version);
+  if (send_packet_to_port(workers[TARGET_WORKER],
+                          client_port,
+                          packet,
+                          packet_len) != 0) {
+    return -1;
+  }
+
+  packet_len = make_long_packet(packet,
+                                sizeof(packet),
+                                server_cid,
+                                server_cid_len,
+                                k_client_cid,
+                                sizeof(k_client_cid));
+  if (packet_len == 0 ||
+      send_packet_to_port(client_fd,
+                          listener_port,
+                          packet,
+                          packet_len) != 0) {
+    return -1;
+  }
+  return receive_worker(workers);
 }
 
 int main(int argc, char **argv) {
@@ -330,24 +406,133 @@ int main(int argc, char **argv) {
     return 1;
   }
 
+  worker = observe_and_route_server_cid(workers,
+                                        client_fd,
+                                        client_port,
+                                        listener_port,
+                                        0xd3,
+                                        UINT32_C(0x6b3343cf),
+                                        k_v2_server_cid,
+                                        sizeof(k_v2_server_cid));
+  if (worker != TARGET_WORKER) {
+    fprintf(stderr, "QUIC v2 Initial SCID was not learned, got worker %d\n",
+            worker);
+    return 1;
+  }
+
+  worker = observe_and_route_server_cid(workers,
+                                        client_fd,
+                                        client_port,
+                                        listener_port,
+                                        0xf3,
+                                        1,
+                                        k_retry_server_cid,
+                                        sizeof(k_retry_server_cid));
+  if (worker != TARGET_WORKER) {
+    fprintf(stderr, "QUIC v1 Retry SCID was not learned, got worker %d\n",
+            worker);
+    return 1;
+  }
+
+  const uint8_t ip_options[] = {1, 1, 1, 0};
+  if (setsockopt(workers[TARGET_WORKER],
+                 IPPROTO_IP,
+                 IP_OPTIONS,
+                 ip_options,
+                 sizeof(ip_options)) != 0) {
+    perror("setsockopt IP_OPTIONS");
+    return 1;
+  }
+  worker = observe_and_route_server_cid(workers,
+                                        client_fd,
+                                        client_port,
+                                        listener_port,
+                                        0xc3,
+                                        1,
+                                        k_ipv4_options_server_cid,
+                                        sizeof(k_ipv4_options_server_cid));
+  int options_errno = errno;
+  if (setsockopt(workers[TARGET_WORKER],
+                 IPPROTO_IP,
+                 IP_OPTIONS,
+                 NULL,
+                 0) != 0) {
+    perror("clear IP_OPTIONS");
+    return 1;
+  }
+  errno = options_errno;
+  if (worker != TARGET_WORKER) {
+    fprintf(stderr, "IPv4-options SCID was not learned, got worker %d\n",
+            worker);
+    return 1;
+  }
+
+  worker = observe_and_route_server_cid(workers,
+                                        client_fd,
+                                        client_port,
+                                        listener_port,
+                                        0xc3,
+                                        0,
+                                        k_vn_scid,
+                                        sizeof(k_vn_scid));
+  if (worker != FALLBACK_WORKER) {
+    fprintf(stderr,
+            "Version Negotiation SCID was learned by worker %d\n",
+            worker);
+    return 1;
+  }
+
+  worker = observe_and_route_server_cid(workers,
+                                        client_fd,
+                                        client_port,
+                                        listener_port,
+                                        0xd3,
+                                        1,
+                                        k_0rtt_scid,
+                                        sizeof(k_0rtt_scid));
+  if (worker != FALLBACK_WORKER) {
+    fprintf(stderr, "server 0-RTT SCID was learned by worker %d\n", worker);
+    return 1;
+  }
+
+  const uint8_t short_packet[] = {
+    0x43, 0x52, 0x10, 0x12, 0x34, 0x56, 0x78, 0x9a, 0xbc,
+  };
+  if (send_packet_to_port(workers[TARGET_WORKER],
+                          client_port,
+                          short_packet,
+                          sizeof(short_packet)) != 0) {
+    perror("send short-header server packet");
+    return 1;
+  }
+
   struct qaff_stats stats;
   if (read_stats(socket_path, &stats) != 0) {
     perror("qaff_control_read_stats");
     return 1;
   }
-  if (stats.values[QAFF_STAT_PASSIVE_EGRESS_LEARN] < 1 ||
-      stats.values[QAFF_STAT_PASSIVE_HIT] < 1 ||
+  if (stats.values[QAFF_STAT_PASSIVE_EGRESS_LEARN] < 4 ||
+      stats.values[QAFF_STAT_PASSIVE_HIT] < 5 ||
       stats.values[QAFF_STAT_PASSIVE_EGRESS_SOCKET_COOKIE_HIT] < 1 ||
       stats.values[QAFF_STAT_PASSIVE_EGRESS_CONFLICT] < 1 ||
+      stats.values[QAFF_STAT_PASSIVE_EGRESS_REJECT_VERSION] < 1 ||
+      stats.values[QAFF_STAT_PASSIVE_EGRESS_REJECT_TYPE] < 1 ||
+      stats.values[QAFF_STAT_PASSIVE_EGRESS_SHORT_HEADER] < 1 ||
       stats.values[QAFF_STAT_PASSIVE_EGRESS_MAP_UPDATE_ERROR] != 0) {
     fprintf(stderr,
-            "unexpected egress stats learn=%llu hit=%llu cookie_hit=%llu conflict=%llu update_error=%llu\n",
+            "unexpected egress stats learn=%llu hit=%llu cookie_hit=%llu conflict=%llu reject_version=%llu reject_type=%llu short_header=%llu update_error=%llu\n",
             (unsigned long long)stats.values[QAFF_STAT_PASSIVE_EGRESS_LEARN],
             (unsigned long long)stats.values[QAFF_STAT_PASSIVE_HIT],
             (unsigned long long)
                 stats.values[QAFF_STAT_PASSIVE_EGRESS_SOCKET_COOKIE_HIT],
             (unsigned long long)
                 stats.values[QAFF_STAT_PASSIVE_EGRESS_CONFLICT],
+            (unsigned long long)
+                stats.values[QAFF_STAT_PASSIVE_EGRESS_REJECT_VERSION],
+            (unsigned long long)
+                stats.values[QAFF_STAT_PASSIVE_EGRESS_REJECT_TYPE],
+            (unsigned long long)
+                stats.values[QAFF_STAT_PASSIVE_EGRESS_SHORT_HEADER],
             (unsigned long long)
                 stats.values[QAFF_STAT_PASSIVE_EGRESS_MAP_UPDATE_ERROR]);
     return 1;

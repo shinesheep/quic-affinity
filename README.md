@@ -82,7 +82,9 @@ provide CID lifecycle hooks. Worker sockets can be registered by the
 application or discovered without source changes by `qaff-agent`. With
 `--passive-affinity --egress-cgroup PATH`, a cgroup v2 egress program observes
 server QUIC long headers, maps the sending socket cookie to a registered
-worker, and learns the visible server SCID as a high-confidence passive route.
+worker, and learns visible v1/v2 Initial, Handshake, and Retry server SCIDs as
+high-confidence passive routes. Version Negotiation, server-side 0-RTT,
+malformed headers, and fragmented IP packets are never learned.
 
 The egress learner cannot read encrypted `NEW_CONNECTION_ID` frames in QUIC
 short-header packets. Explicit CID registration or a routable CID profile

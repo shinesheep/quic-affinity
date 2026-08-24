@@ -1423,6 +1423,14 @@ const char *qaff_stat_name(uint32_t index) {
     return "cid_map_reject_generation";
   case QAFF_STAT_PASSIVE_EGRESS_CONFLICT:
     return "passive_egress_conflict";
+  case QAFF_STAT_PASSIVE_EGRESS_FRAGMENTED:
+    return "passive_egress_fragmented";
+  case QAFF_STAT_PASSIVE_EGRESS_REJECT_VERSION:
+    return "passive_egress_reject_version";
+  case QAFF_STAT_PASSIVE_EGRESS_REJECT_TYPE:
+    return "passive_egress_reject_type";
+  case QAFF_STAT_PASSIVE_EGRESS_SHORT_HEADER:
+    return "passive_egress_short_header";
   default:
     return "unknown";
   }

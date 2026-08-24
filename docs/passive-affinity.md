@@ -106,10 +106,14 @@ worker even if the client address or UDP port changed.
 
 The initial implementation uses an optional cgroup skb egress program. Start
 `qaffd` with `--egress-cgroup PATH` where `PATH` is a cgroup v2 directory. The
-egress learner currently parses QUIC long headers and learns the server Source
-Connection ID from visible Initial/Handshake packets. It does not parse
-encrypted short-header frames such as `NEW_CONNECTION_ID`; those remain outside
-the black-box dataplane's reliable visibility.
+egress learner parses QUIC v1 and v2 long headers and learns server Source
+Connection IDs from Initial, Handshake, and Retry packets. It rejects Version
+Negotiation, unknown versions, server-side 0-RTT, malformed fixed bits, and IP
+fragments instead of turning ambiguous bytes into high-confidence ownership.
+IPv4 options and a bounded chain of IPv6 hop-by-hop, routing, destination,
+mobility, and AH extension headers are supported. Encrypted short-header frames
+such as `NEW_CONNECTION_ID` remain outside the black-box dataplane's reliable
+visibility.
 
 ### Socket-to-Worker Mapping
 
@@ -336,6 +340,10 @@ passive_egress_socket_cookie_hit
 passive_egress_socket_cookie_miss
 passive_egress_map_update_error
 passive_egress_conflict
+passive_egress_fragmented
+passive_egress_reject_version
+passive_egress_reject_type
+passive_egress_short_header
 ```
 
 A passive CID keeps its worker and generation owner until it is retired or
