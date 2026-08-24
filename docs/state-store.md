@@ -1,10 +1,10 @@
 # qaffd State Store
 
-qaffd persists worker registration generations when `--state-path` is set.
+qaffd persists worker registration generations through `--state-path`.
 The snapshot is an internal restart mechanism, not a public interchange format.
 Before the first compatibility baseline, qaffd accepts only the current format.
-CID profile v2 requires `--state-path` together with `--pin-root`; qaffd rejects
-v2 at startup if either persistence component is absent.
+Pinned maps and the state path must be configured together; qaffd rejects a
+one-sided persistence configuration at startup.
 
 ## Format
 
@@ -67,18 +67,29 @@ through `worker_cleanup_degraded`, `worker_cleanup_pending_count`,
 while any cleanup remains pending.
 
 Registration uses the inverse transaction boundary: local registry and durable
-state are not committed until all BPF insertion stages succeed. If rollback of
-a failed insertion is itself incomplete, the same retry queue quarantines the
-worker ID. New registrations use full dataplane cleanup. A failed claim of a
-recovered worker uses route withdrawal only, preserving the durable record,
-exact/passive CIDs, and reverse-cookie ownership needed for another claim.
+state are not committed until all BPF insertion stages succeed. Before exposing
+a newly allocated generation to BPF, qaffd durably writes it as an unregistered
+generation tombstone. The final snapshot changes that tombstone into a worker
+record. Therefore a crash anywhere between BPF insertion and final commit makes
+startup remove the uncommitted pinned route instead of recovering it as a
+worker. If rollback of a failed insertion is itself incomplete, the same retry
+queue quarantines the worker ID. New registrations use full dataplane cleanup.
+A failed claim of a recovered worker uses route withdrawal only, preserving the
+durable record, exact/passive CIDs, and reverse-cookie ownership needed for
+another claim.
+
+The snapshot is authoritative during startup. A nonzero pinned generation for
+an ID absent from the snapshot, or a generation that differs from a durable
+worker record, is treated as inconsistent state and fails startup. qaffd never
+promotes map-only residue into a registered worker.
 
 Loading uses `O_NOFOLLOW` and accepts only a private regular file owned by the
 daemon user, with no group/world permissions and exactly one hard link. Parsing
 is transactional: truncated lines,
 embedded NUL bytes, unknown or duplicate records, trailing fields, and invalid
 ranges fail before any caller state is changed. A missing snapshot is treated
-as an empty initial state.
+as an empty initial state, which is accepted only when the pinned generation
+map also contains no live worker generations.
 
 The implementation and deterministic fault tests for interrupted/short writes,
 zero-progress writes, file and directory sync failures, rename failures, and

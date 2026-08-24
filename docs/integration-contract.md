@@ -122,11 +122,14 @@ and health remains failed while either is nonzero. A daemon restart performs
 the same tombstone reconciliation before opening the control socket.
 
 Failed registrations follow the same quarantine rule when their BPF rollback
-is incomplete. Cleanup for a new worker removes all worker-keyed residue. For
-a recovered exact-socket claim, cleanup only re-withdraws the attempted live
-generation and socket; it does not delete the old CID or cookie ownership that
-the recovery record still needs. Registrations for a cleanup-pending ID return
-`EBUSY` until the retry succeeds.
+is incomplete. A new generation is first persisted as a tombstone and only
+changed to a worker record after all BPF and local registration stages succeed;
+restart therefore purges, rather than recovers, a pre-commit BPF route. Cleanup
+for a new worker removes all worker-keyed residue. For a recovered exact-socket
+claim, cleanup only re-withdraws the attempted live generation and socket; it
+does not delete the old CID or cookie ownership that the recovery record still
+needs. Registrations for a cleanup-pending ID return `EBUSY` until the retry
+succeeds.
 
 After qaffd restarts, persisted workers begin in a recovery quarantine rather
 than being considered live. Their live BPF generation is zero and their
@@ -204,14 +207,16 @@ qaffd --pin-root /sys/fs/bpf/quic-affinity/listeners/<listener-id> \
       --state-path /var/lib/quic-affinity/<listener-id>.state
 ```
 
-`--pin-root` must point to a writable bpffs directory. `--state-path` must point to a normal filesystem path, not bpffs. If `--state-path` is set, `--pin-root` is required.
-Profile v2 additionally requires both options and fails configuration parsing
-when either is absent.
+`--pin-root` must point to a writable bpffs directory. `--state-path` must point
+to a normal filesystem path, not bpffs. They are one persistence unit and must
+be configured together.
 
 On restart, `qaffd` reloads worker IDs and generation tombstones from
-`--state-path`, reconciles pinned worker generations, removes exact CID entries
-whose generation is no longer live, and rebuilds ownership from the remaining
-`qaff_cids` entries.
+`--state-path`, validates pinned worker generations against that authoritative
+snapshot, removes exact CID entries whose generation is no longer live, and
+rebuilds ownership from the remaining `qaff_cids` entries. A map-only worker or
+a generation mismatch fails startup rather than being promoted into durable
+state.
 An unregistration tombstone is committed before live routing is removed. Failed
 snapshot commits leave routing unchanged; after a committed interruption,
 startup removes residual pinned entries before opening the control socket.

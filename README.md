@@ -481,6 +481,12 @@ the recovered worker's prior CID and cookie ownership remain available for a
 later exact-socket claim. `qaffctl workers` exposes either case with
 `cleanup_pending=1`.
 
+Before inserting a new generation into pinned BPF maps, qaffd persists that
+generation as an unregistered tombstone. Only the final registration commit
+changes it into a worker record. A crash in between is therefore reconciled as
+incomplete cleanup, never as a successfully registered worker. `--pin-root`
+and `--state-path` must be configured together to preserve this invariant.
+
 Pinned map schemas are validated strictly and incompatible maps fail startup.
 During pre-1.0 upgrades that add statistics slots, stop `qaffd`, unpin only the
 listener's `qaff_stats` map, and restart so it can be recreated. CID ownership,

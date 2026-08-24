@@ -239,8 +239,10 @@ On daemon restart:
 
 1. `qaffd` opens pinned maps from `--pin-root`.
 2. It reloads worker IDs and generation tombstones from `--state-path`, then
-   reconciles live generations from the pinned generation map. Tombstones take
-   precedence and trigger cleanup of any interrupted-unregistration residue.
+   validates the pinned generation map against that durable state. A nonzero
+   map generation absent from the snapshot, or one that disagrees with a
+   durable worker record, fails startup. Tombstones take precedence and trigger
+   cleanup of any interrupted registration or unregistration residue.
 3. It removes generation-stale exact entries and rebuilds ownership from the
    remaining pinned CID map into a hash index.
 4. Before accepting control traffic, it quarantines every restored worker by
@@ -266,10 +268,11 @@ unavailable, so health stays failed until that exact socket reclaims its ID.
 The cgroup egress learner is attached after state/map reconciliation and cannot
 learn for quarantined workers because their live generation is zero.
 
-The state snapshot is atomically replaced and synced, but is not stored in bpffs. Use a normal persistent location such as `/var/lib/quic-affinity/<listener-id>.state`.
-If `--state-path` is configured, `--pin-root` must also be configured.
-If CID profile v2 is enabled, both options are mandatory; qaffd rejects an
-ephemeral generation configuration before opening BPF state.
+The state snapshot is atomically replaced and synced, but is not stored in
+bpffs. Use a normal persistent location such as
+`/var/lib/quic-affinity/<listener-id>.state`. `--state-path` and `--pin-root`
+must be configured together, so pinned routes always have a matching durable
+transaction record.
 During pre-release development, qaffd accepts only the current snapshot format
 and rejects older or ambiguous records instead of attempting migration.
 

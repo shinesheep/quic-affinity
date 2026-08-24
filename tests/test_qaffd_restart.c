@@ -169,6 +169,45 @@ static int connect_retry(const char *socket_path, int attempts) {
   return -1;
 }
 
+static int state_has_record(const char *state_path,
+                            const char *kind,
+                            uint32_t worker_id,
+                            uint32_t generation) {
+  char expected[64];
+  int expected_len = snprintf(expected,
+                              sizeof(expected),
+                              "%s %u %u\n",
+                              kind,
+                              worker_id,
+                              generation);
+  if (expected_len < 0 || (size_t)expected_len >= sizeof(expected)) {
+    errno = EOVERFLOW;
+    return -1;
+  }
+
+  FILE *state = fopen(state_path, "r");
+  if (state == NULL) {
+    return -1;
+  }
+  char line[128];
+  int found = 0;
+  while (fgets(line, sizeof(line), state) != NULL) {
+    if (strcmp(line, expected) == 0) {
+      found = 1;
+      break;
+    }
+  }
+  int saved_errno = errno;
+  if (ferror(state)) {
+    found = -1;
+  }
+  if (fclose(state) != 0 && found >= 0) {
+    return -1;
+  }
+  errno = saved_errno;
+  return found;
+}
+
 static pid_t start_qaffd(const char *qaffd_path,
                          const char *socket_path,
                          const char *bpf_path,
@@ -466,6 +505,23 @@ static int freeze_pinned_map(const char *pin_root, const char *name) {
   return rc;
 }
 
+static int set_pinned_worker_generation(const char *pin_root,
+                                        uint32_t worker_id,
+                                        uint32_t generation) {
+  int map_fd = open_pinned_map(pin_root, "qaff_worker_generations");
+  if (map_fd < 0) {
+    return -1;
+  }
+  int rc = bpf_map_update_elem(map_fd,
+                               &worker_id,
+                               &generation,
+                               BPF_ANY);
+  int saved_errno = errno;
+  close(map_fd);
+  errno = saved_errno;
+  return rc;
+}
+
 static int inject_interrupted_unregistration(const char *pin_root,
                                              uint32_t worker_id,
                                              int worker_fd,
@@ -690,6 +746,54 @@ int main(int argc, char **argv) {
 
   if (stop_qaffd(socket_path, daemon_pid) != 0) {
     perror("stop_qaffd first");
+    return 1;
+  }
+
+  if (set_pinned_worker_generation(pin_root,
+                                   3,
+                                   QAFF_WORKER_GENERATION_DEFAULT) != 0) {
+    perror("inject map-only worker generation");
+    return 1;
+  }
+  daemon_pid = start_qaffd(qaffd_path,
+                           socket_path,
+                           bpf_path,
+                           pin_root,
+                           state_path);
+  if (daemon_pid < 0) {
+    perror("fork qaffd map-only generation");
+    return 1;
+  }
+  int map_only_status = 0;
+  int map_only_exited = 0;
+  const struct timespec startup_rejection_delay = {
+    .tv_sec = 0,
+    .tv_nsec = 20 * 1000 * 1000,
+  };
+  for (int attempt = 0; attempt < 100; attempt++) {
+    pid_t waited = waitpid(daemon_pid, &map_only_status, WNOHANG);
+    if (waited == daemon_pid) {
+      map_only_exited = 1;
+      break;
+    }
+    if (waited < 0) {
+      perror("waitpid map-only generation");
+      return 1;
+    }
+    nanosleep(&startup_rejection_delay, NULL);
+  }
+  if (!map_only_exited) {
+    kill(daemon_pid, SIGTERM);
+    waitpid(daemon_pid, NULL, 0);
+  }
+  if (!map_only_exited || !WIFEXITED(map_only_status) ||
+      WEXITSTATUS(map_only_status) == 0) {
+    fprintf(stderr,
+            "qaffd accepted a worker generation absent from durable state\n");
+    return 1;
+  }
+  if (set_pinned_worker_generation(pin_root, 3, 0) != 0) {
+    perror("clear map-only worker generation");
     return 1;
   }
 
@@ -1175,6 +1279,14 @@ int main(int argc, char **argv) {
       cid_config.worker_cleanup_error_count <=
           cleanup_errors_before_registration) {
     fprintf(stderr, "failed registration rollback was not quarantined\n");
+    return 1;
+  }
+  if (state_has_record(state_path,
+                       "generation",
+                       3,
+                       QAFF_WORKER_GENERATION_DEFAULT) != 1) {
+    fprintf(stderr,
+            "failed registration had no durable generation tombstone\n");
     return 1;
   }
   struct qaff_control_worker_info cleanup_workers[4];

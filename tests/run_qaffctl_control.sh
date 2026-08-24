@@ -84,6 +84,34 @@ grep -q '^qaffd: CID profile v2 requires --pin-root and --state-path$' \
   "$validation_log"
 grep -q '^Usage: qaffd ' "$validation_log"
 
+set +e
+"$qaffd_bin" --socket "$sock" --bpf "$bpf_obj" --short-cid-len 8 \
+  --reuseport-bpf-policy replace \
+  --pin-root /tmp/qaffctl-control-$$.pins >"$validation_log" 2>&1
+validation_rc=$?
+set -e
+if [ "$validation_rc" -ne 2 ]; then
+  cat "$validation_log" >&2 || true
+  echo "qaffd accepted pinned maps without a durable state path" >&2
+  exit 1
+fi
+grep -q '^qaffd: --pin-root and --state-path must be configured together$' \
+  "$validation_log"
+
+set +e
+"$qaffd_bin" --socket "$sock" --bpf "$bpf_obj" --short-cid-len 8 \
+  --reuseport-bpf-policy replace \
+  --state-path /tmp/qaffctl-control-$$.state >"$validation_log" 2>&1
+validation_rc=$?
+set -e
+if [ "$validation_rc" -ne 2 ]; then
+  cat "$validation_log" >&2 || true
+  echo "qaffd accepted durable state without pinned maps" >&2
+  exit 1
+fi
+grep -q '^qaffd: --pin-root and --state-path must be configured together$' \
+  "$validation_log"
+
 "$qaffd_bin" --socket "$sock" --bpf "$bpf_obj" --short-cid-len 8 \
   --reuseport-bpf-policy replace &
 daemon_pid=$!

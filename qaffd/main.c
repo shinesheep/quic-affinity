@@ -719,7 +719,7 @@ static void usage(FILE *out) {
           "Usage: qaffd --socket PATH --bpf PATH --short-cid-len N "
           "--reuseport-bpf-policy replace "
           "[--fallback-worker ID] [--fallback-mode fixed|kernel] "
-          "[--pin-root PATH] [--state-path PATH] "
+          "[--pin-root PATH --state-path PATH] "
           "[--egress-cgroup PATH] "
           "[--cid-profile-v2-key HEX32 | --cid-profile-v2-key-file PATH] "
           "[--cid-profile-v2-config-id ID] "
@@ -1006,7 +1006,9 @@ static int parse_args(int argc, char **argv, struct qaffd_options *options) {
             QAFFD_MAX_WORKERS);
     return -1;
   }
-  if (options->state_path != NULL && options->pin_root == NULL) {
+  if ((options->pin_root == NULL) != (options->state_path == NULL)) {
+    fprintf(stderr,
+            "qaffd: --pin-root and --state-path must be configured together\n");
     return -1;
   }
   if (options->cid_profile_v2_enabled &&
@@ -1387,14 +1389,14 @@ static int load_state(struct qaffd_state *state) {
                                 now_ms());
 }
 
-static int recover_workers_from_generation_map(struct qaffd_state *state) {
+static int validate_workers_against_generation_map(
+    const struct qaffd_state *state) {
   int map_fd = qaff_get_worker_generation_map_fd(state->ctx);
   if (map_fd < 0) {
     errno = EINVAL;
     return -1;
   }
 
-  uint64_t recovered_at = now_ms();
   for (uint32_t worker_id = 0; worker_id < QAFFD_MAX_WORKERS; worker_id++) {
     uint32_t generation = 0;
     if (bpf_map_lookup_elem(map_fd, &worker_id, &generation) != 0) {
@@ -1410,11 +1412,18 @@ static int recover_workers_from_generation_map(struct qaffd_state *state) {
     if (worker_is_tombstoned(state, worker_id)) {
       continue;
     }
-    state->worker_registered[worker_id] = 1;
-    state->worker_generations[worker_id] = generation;
-    if (state->worker_registered_at_ms[worker_id] == 0) {
-      state->worker_registered_at_ms[worker_id] = recovered_at;
-      state->worker_last_seen_ms[worker_id] = recovered_at;
+    if (!state->worker_registered[worker_id] ||
+        state->worker_generations[worker_id] != generation) {
+      fprintf(stderr,
+              "qaffd: pinned worker generation disagrees with durable state "
+              "worker_id=%u map_generation=%u state_registered=%u "
+              "state_generation=%u\n",
+              worker_id,
+              generation,
+              state->worker_registered[worker_id] ? 1u : 0u,
+              state->worker_generations[worker_id]);
+      errno = EUCLEAN;
+      return -1;
     }
   }
   return 0;
@@ -1797,11 +1806,33 @@ static int handle_register_worker(struct qaffd_state *state,
   }
 
   uint32_t generation = state->worker_generations[request->worker_id];
+  uint32_t previous_generation = generation;
   if (!same_socket &&
       next_worker_generation(state->worker_generations[request->worker_id],
                              &generation) != 0) {
     reset_empty_listener_after_registration_failure(state);
     return -1;
+  }
+  if (!same_socket) {
+    /*
+     * Persist the allocated generation as a tombstone before publishing it to
+     * BPF. If qaffd exits before the final worker record is committed, startup
+     * must clean the pinned route rather than recover an uncommitted worker.
+     */
+    state->worker_generations[request->worker_id] = generation;
+    if (save_state(state) != 0) {
+      int saved_errno = errno ? errno : EIO;
+      state->worker_generations[request->worker_id] = previous_generation;
+      audit_event("worker_registration_intent_failed",
+                  peer,
+                  "worker_id=%u generation=%u errno=%d",
+                  request->worker_id,
+                  generation,
+                  saved_errno);
+      reset_empty_listener_after_registration_failure(state);
+      errno = saved_errno;
+      return -1;
+    }
   }
   struct qaffd_worker_snapshot snapshot;
   snapshot_worker(state, request->worker_id, &snapshot);
@@ -3225,8 +3256,8 @@ int main(int argc, char **argv) {
     close(state.instance_lock_fd);
     return 1;
   }
-  if (recover_workers_from_generation_map(&state) != 0) {
-    perror("recover_workers_from_generation_map");
+  if (validate_workers_against_generation_map(&state) != 0) {
+    perror("validate_workers_against_generation_map");
     qaff_bpf_object_close(state.bpf);
     qaff_close(state.ctx);
     qaffd_cid_index_destroy(&state.cid_index);
