@@ -51,6 +51,9 @@
 - Add an application-readiness gate so passive egress learning is active before
   the first server response. (Implemented with synchronous, fail-closed
   qaff-agent startup readiness hooks and explicit withdrawal failures.)
+- Validate the complete zero-source-change path with a real QUIC stack.
+  (Implemented with two qaff-agent-managed black-box quiche workers, kernel
+  fallback, egress learning, rebinding, daemon restart, and worker replacement.)
 - Require durable worker generations when the CID profile is enabled.
   (Implemented: qaffd requires both pinned maps and a state snapshot.)
 - Keep a single generation-bound routable profile with no internal protocol

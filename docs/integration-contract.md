@@ -290,6 +290,21 @@ advances from 1 to 2, and proves the old profile CID increments
 `cid_profile_reject` while a new CID retained by `quiche_accept()` routes
 successfully.
 
+## Zero-Source-Change quiche Smoke
+
+`qaff_quiche_blackbox` is a test fixture that links only quiche, not qaffinity,
+and contains no quic-affinity control calls. `quiche_agent_blackbox_smoke`
+starts two instances through `qaff-agent run` and validates the complete
+non-invasive path with kernel fallback and cgroup egress learning. Acceptance
+requires a real source-port-rebound QUIC packet to return to the server process
+that emitted its SCID, with `passive_egress_learn`, `passive_hit`, and
+`fallback` all increasing.
+
+The gate also keeps both servers alive across qaffd restart, verifies readiness
+withdrawal and restoration, replaces the selected worker, confirms its
+generation advances, checks the old CID falls back without a passive hit, and
+then relearns affinity from a fresh real connection.
+
 ## CID Registration
 
 When the QUIC stack creates or advertises a server-side CID, it must register that CID before packets using it are expected to arrive:

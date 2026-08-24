@@ -175,6 +175,14 @@ It also detects listener close/replacement by socket cookie, revokes the stale
 lease, and discovers and registers the replacement. Kernel-default fallback
 and sliding passive TTLs are also implemented for black-box deployments.
 
+The `quiche_agent_blackbox_smoke` gate now validates the combined path with a
+fixture that includes no quic-affinity headers and does not link qaffinity. Two
+independent quiche server processes are discovered exclusively through
+`qaff-agent run`. The test covers kernel fallback, egress learning, UDP source
+rebinding, qaffd restart readiness withdrawal/restoration, worker replacement,
+stale-CID fallback, generation advancement, and learning a fresh connection on
+the replacement process.
+
 Remaining protocol boundary: an external observer cannot decrypt
 `NEW_CONNECTION_ID` frames. A connection that first uses an unseen server CID
 at the same moment it migrates to a new path still needs explicit CID hooks or
@@ -184,8 +192,8 @@ a routable CID profile for a hard guarantee.
 
 The original implementation sequence is complete: restart/stale-entry tests,
 real quiche egress learning, lifecycle cleanup, observability, packaging,
-egress counters, conservative policy defaults, and zero-source-change worker
-onboarding are all covered above.
+egress counters, conservative policy defaults, and a real zero-source-change
+quiche onboarding/lifecycle gate are all covered above.
 
 The remaining conditional work is ingress-only hardening. If ingress-only
 learning is introduced, design and test per-source or per-prefix rate limits,

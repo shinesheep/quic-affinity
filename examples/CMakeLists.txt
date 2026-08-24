@@ -49,6 +49,21 @@ if(QAFF_BUILD_EXAMPLES AND QAFF_BUILD_QUICHE_EXAMPLES AND
     VERBATIM)
   target_compile_options(qaff_quiche_udp_smoke PRIVATE
     -Wall -Wextra -Wpedantic)
+
+  add_executable(qaff_quiche_blackbox quiche_blackbox/main.c)
+  target_include_directories(qaff_quiche_blackbox PRIVATE
+    ${QAFF_QUICHE_INCLUDE_DIR})
+  target_link_libraries(qaff_quiche_blackbox PRIVATE
+    ${QAFF_QUICHE_LIBRARY})
+  set_target_properties(qaff_quiche_blackbox PROPERTIES
+    BUILD_RPATH "$ORIGIN;${PROJECT_SOURCE_DIR}/third_party/quiche/target/debug")
+  add_custom_command(TARGET qaff_quiche_blackbox POST_BUILD
+    COMMAND ${CMAKE_COMMAND} -E create_symlink
+      ${QAFF_QUICHE_LIBRARY}
+      $<TARGET_FILE_DIR:qaff_quiche_blackbox>/libquiche.so.0
+    VERBATIM)
+  target_compile_options(qaff_quiche_blackbox PRIVATE
+    -Wall -Wextra -Wpedantic)
 elseif(QAFF_BUILD_EXAMPLES AND QAFF_BUILD_QUICHE_EXAMPLES)
   message(STATUS
     "quiche integration example disabled; build quiche FFI under third_party/quiche to enable it")

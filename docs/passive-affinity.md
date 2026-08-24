@@ -147,6 +147,23 @@ service-discovery update and exit successfully. A failed `ready` command never
 advertises the worker. A failed `not-ready` command is fatal, but the external
 traffic state is necessarily outside qaff-agent's control and must be alerted.
 
+### Black-Box End-to-End Gate
+
+When quiche FFI and privileged eBPF tests are available,
+`quiche_agent_blackbox_smoke` launches two independent reuseport quiche server
+processes through `qaff-agent run`. The fixture neither includes
+quic-affinity headers nor links qaffinity. qaffd uses kernel fallback and the
+cgroup egress learner; a real client changes UDP source ports, and the test
+requires the migrated short-header packet to increment `passive_hit` and reach
+the worker that emitted the server SCID.
+
+The same gate restarts qaffd while both application processes remain alive and
+checks that each agent synchronously transitions `ready -> not-ready -> ready`
+around lease restoration. It then replaces the selected worker process,
+verifies its generation advances exactly once, proves the retired CID produces
+fallback rather than a passive hit, and establishes a fresh learned QUIC
+connection on the replacement.
+
 ## Fallback Selection
 
 Fallback selection is used for:
