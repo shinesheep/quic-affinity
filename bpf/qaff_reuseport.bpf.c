@@ -14,9 +14,7 @@
 #define QAFF_IPPROTO_MH 135
 #define QAFF_UDP_HEADER_LEN 8
 #define QAFF_QUIC_VERSION_1 0x00000001u
-#define QAFF_QUIC_VERSION_2 0x6b3343cfu
 #define QAFF_QUIC_LONG_TYPE_0RTT_V1 1u
-#define QAFF_QUIC_LONG_TYPE_0RTT_V2 2u
 #define QAFF_IPV6_MAX_EXTENSION_HEADERS 6
 
 #define QAFF_EGRESS_PARSE_MISS -1
@@ -223,22 +221,21 @@ static __always_inline __u32 qaff_profile_hash32(
   return h;
 }
 
-static __always_inline int qaff_profile_v2_worker(
+static __always_inline int qaff_profile_worker(
     const struct qaff_config_value *config,
     const struct qaff_cid_key *key,
     __u32 *worker_id) {
-  if (!config || !config->cid_profile_v2_enabled) {
+  if (!config || !config->cid_profile_enabled) {
     return 0;
   }
-  if (key->len != QAFF_CID_PROFILE_V2_LEN) {
+  if (key->len != QAFF_CID_PROFILE_LEN) {
     return 0;
   }
 
-  __u8 version = key->bytes[0] >> 4;
-  if (version != QAFF_CID_PROFILE_V2_VERSION) {
+  if (key->bytes[0] != QAFF_CID_PROFILE_MARKER) {
     return 0;
   }
-  if (key->bytes[1] != config->cid_profile_v2_config_id) {
+  if (key->bytes[1] != QAFF_CID_PROFILE_FLAGS_NONE) {
     return -1;
   }
 
@@ -454,15 +451,10 @@ static __always_inline int qaff_extract_long_scid(struct __sk_buff *skb,
                   ((__u32)*(__u8 *)(data + payload_offset + 3) << 8) |
                   (__u32)*(__u8 *)(data + payload_offset + 4);
   __u8 packet_type = (first >> 4) & 0x03u;
-  if (version == 0 ||
-      (version != QAFF_QUIC_VERSION_1 &&
-       version != QAFF_QUIC_VERSION_2)) {
+  if (version != QAFF_QUIC_VERSION_1) {
     return QAFF_EGRESS_REJECT_VERSION;
   }
-  if ((version == QAFF_QUIC_VERSION_1 &&
-       packet_type == QAFF_QUIC_LONG_TYPE_0RTT_V1) ||
-      (version == QAFF_QUIC_VERSION_2 &&
-       packet_type == QAFF_QUIC_LONG_TYPE_0RTT_V2)) {
+  if (packet_type == QAFF_QUIC_LONG_TYPE_0RTT_V1) {
     return QAFF_EGRESS_REJECT_TYPE;
   }
 
@@ -528,7 +520,7 @@ int qaff_select(struct sk_reuseport_md *ctx) {
       qaff_count(QAFF_STAT_WORKER_MISSING);
     } else {
       __u32 profile_worker = 0;
-      int profile_rc = qaff_profile_v2_worker(config, &key, &profile_worker);
+      int profile_rc = qaff_profile_worker(config, &key, &profile_worker);
       if (profile_rc > 0) {
         qaff_count(QAFF_STAT_CID_PROFILE_HIT);
         if (bpf_sk_select_reuseport(ctx,

@@ -71,16 +71,15 @@ fi
 set +e
 "$qaffd_bin" --socket "$sock" --bpf "$bpf_obj" --short-cid-len 12 \
   --reuseport-bpf-policy replace \
-  --cid-profile-v2-key-file "$key_file" \
-  --cid-profile-v2-config-id 7 >"$validation_log" 2>&1
+  --cid-profile-key-file "$key_file" >"$validation_log" 2>&1
 validation_rc=$?
 set -e
 if [ "$validation_rc" -ne 2 ]; then
   cat "$validation_log" >&2 || true
-  echo "qaffd accepted profile v2 without durable worker generations" >&2
+  echo "qaffd accepted CID profile without durable worker generations" >&2
   exit 1
 fi
-grep -q '^qaffd: CID profile v2 requires --pin-root and --state-path$' \
+grep -q '^qaffd: CID profile requires --pin-root and --state-path$' \
   "$validation_log"
 grep -q '^Usage: qaffd ' "$validation_log"
 
@@ -201,8 +200,7 @@ grep -q '^passive_cleanup_error_count=0$' /tmp/qaffctl-control-$$.health
 
 "$qaffctl_bin" config "$sock" >/tmp/qaffctl-control-$$.config
 grep -q '^short_cid_len=8$' /tmp/qaffctl-control-$$.config
-grep -q '^cid_profile_v2_enabled=0$' /tmp/qaffctl-control-$$.config
-grep -q '^cid_profile_v2_config_id=0$' /tmp/qaffctl-control-$$.config
+grep -q '^cid_profile_enabled=0$' /tmp/qaffctl-control-$$.config
 grep -q '^passive_affinity_enabled=1$' /tmp/qaffctl-control-$$.config
 grep -q '^passive_min_confidence=2$' /tmp/qaffctl-control-$$.config
 grep -q '^egress_attached=0$' /tmp/qaffctl-control-$$.config

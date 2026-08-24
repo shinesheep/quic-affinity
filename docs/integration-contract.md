@@ -54,16 +54,14 @@ options.short_cid_len = 8;
 
 For the stateful CID registry mode, every server-issued CID routed by `quic-affinity` must use this configured length once 1-RTT short headers are expected.
 
-For routable CID profile v2, set `short_cid_len` to
-`QAFF_CID_PROFILE_V2_LEN`, enable `cid_profile_v2_enabled`, set
-`cid_profile_v2_config_id`, and copy the 16-byte listener key into
-`cid_profile_key`. The dataplane checks the CID map first; on map miss, it
-validates the profile tag, config ID, and worker generation before routing to
+For the routable CID profile, set `short_cid_len` to
+`QAFF_CID_PROFILE_LEN`, enable `cid_profile_enabled`, and copy the 16-byte
+listener key into `cid_profile_key`. The dataplane checks the CID map first; on
+map miss, it validates the profile marker, flags, tag, and worker generation before routing to
 the embedded worker ID. qaffd requires both `--pin-root` and `--state-path`
-whenever profile v2 is enabled, so allocated generations and tombstones survive
+whenever the profile is enabled, so allocated generations and tombstones survive
 restart. Embedded users are responsible for an equivalent durable generation
-allocator. Generationless profile v1 is not supported because it cannot reject
-stale CIDs after worker-ID reuse.
+allocator.
 
 Zero-length server CIDs are incompatible with CID-based worker affinity.
 
@@ -161,7 +159,7 @@ differ only in who observes the application socket and holds the lease.
 | Lifecycle event | Invasive integration | Non-invasive `qaff-agent` / passive learning | Dataplane invariant |
 | --- | --- | --- | --- |
 | Initial registration | Application passes its UDP fd with `REGISTER_WORKER_LEASE` | Agent duplicates the exact target fd and registers the lease | Worker generation and sockarray entry become live together |
-| CID ownership | Application registers exact CIDs or emits profile-v2 CIDs | Egress observer learns server SCIDs into the passive map | Every route stores or embeds the live worker generation |
+| CID ownership | Application registers exact CIDs or emits profile CIDs | Egress observer learns server SCIDs into the passive map | Every route stores or embeds the live worker generation |
 | Process/lease exit | qaffd observes lease close or pidfd readability | Agent lease closes after target exit | Generation/socket withdraw first; exact and passive entries are then purged |
 | Socket rotation | Application drains, unregisters, and registers the replacement | Agent marks not-ready, revokes, rediscovers, and re-registers | Replacement receives the next generation; old CIDs cannot reactivate |
 | qaffd restart | Application reconnects and repeats leased registration | Agent automatically reconnects | Restored worker is quarantined until the exact cookie claims it |
@@ -251,7 +249,7 @@ The probe:
 1. Creates a real quiche server-side connection with `quiche_accept()`.
 2. Reads the connection source CID with `quiche_conn_source_id()`.
 3. Registers that source CID through `qaffd`.
-4. Generates and parses a generation-bound routable CID profile v2 CID for the registered worker.
+4. Generates and parses a generation-bound routable CID profile for the registered worker.
 5. Registers the profile CID through `qaffd`.
 6. Calls `quiche_conn_new_scid()` to provision an additional server CID.
 7. Registers the additional CID through `qaffd`.

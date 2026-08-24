@@ -89,8 +89,7 @@ struct qaffd_options {
   const char *pin_root;
   const char *state_path;
   uint8_t short_cid_len;
-  uint8_t cid_profile_v2_enabled;
-  uint8_t cid_profile_v2_config_id;
+  uint8_t cid_profile_enabled;
   uint8_t passive_affinity_enabled;
   uint8_t passive_min_confidence;
   uint8_t fallback_mode;
@@ -145,8 +144,7 @@ struct qaffd_state {
   const char *pin_root;
   const char *state_path;
   uint8_t short_cid_len;
-  uint8_t cid_profile_v2_enabled;
-  uint8_t cid_profile_v2_config_id;
+  uint8_t cid_profile_enabled;
   uint8_t passive_affinity_enabled;
   uint8_t passive_min_confidence;
   uint8_t fallback_mode;
@@ -604,8 +602,7 @@ static int read_passive_table_info(const struct qaffd_state *state,
 static void fill_config_reply(const struct qaffd_state *state,
                               struct qaff_control_msg *reply) {
   reply->config.short_cid_len = state->short_cid_len;
-  reply->config.cid_profile_v2_enabled = state->cid_profile_v2_enabled;
-  reply->config.cid_profile_v2_config_id = state->cid_profile_v2_config_id;
+  reply->config.cid_profile_enabled = state->cid_profile_enabled;
   reply->config.passive_affinity_enabled = state->passive_affinity_enabled;
   reply->config.passive_min_confidence = state->passive_min_confidence;
   reply->config.egress_attached = state->egress_attached ? 1 : 0;
@@ -731,8 +728,7 @@ static void usage(FILE *out) {
           "[--fallback-worker ID] [--fallback-mode fixed|kernel] "
           "[--pin-root PATH --state-path PATH] "
           "[--egress-cgroup PATH] "
-          "[--cid-profile-v2-key HEX32 | --cid-profile-v2-key-file PATH] "
-          "[--cid-profile-v2-config-id ID] "
+          "[--cid-profile-key HEX32 | --cid-profile-key-file PATH] "
           "[--passive-affinity] [--passive-min-confidence N] "
           "[--passive-scan-interval-ms N] "
           "[--worker-heartbeat-timeout-ms N] "
@@ -886,29 +882,21 @@ static int parse_args(int argc, char **argv, struct qaffd_options *options) {
       } else {
         return -1;
       }
-    } else if (strcmp(argv[i], "--cid-profile-v2-key") == 0 && i + 1 < argc) {
+    } else if (strcmp(argv[i], "--cid-profile-key") == 0 && i + 1 < argc) {
       if (parse_fixed_hex(argv[++i],
                           options->cid_profile_key,
                           sizeof(options->cid_profile_key)) != 0) {
         return -1;
       }
-      options->cid_profile_v2_enabled = 1;
-    } else if (strcmp(argv[i], "--cid-profile-v2-key-file") == 0 &&
+      options->cid_profile_enabled = 1;
+    } else if (strcmp(argv[i], "--cid-profile-key-file") == 0 &&
                i + 1 < argc) {
       if (read_profile_key_file(argv[++i],
                                 options->cid_profile_key,
                                 sizeof(options->cid_profile_key)) != 0) {
         return -1;
       }
-      options->cid_profile_v2_enabled = 1;
-    } else if (strcmp(argv[i], "--cid-profile-v2-config-id") == 0 &&
-               i + 1 < argc) {
-      char *end = NULL;
-      unsigned long value = strtoul(argv[++i], &end, 10);
-      if (end == argv[i] || *end != '\0' || value > UINT8_MAX) {
-        return -1;
-      }
-      options->cid_profile_v2_config_id = (uint8_t)value;
+      options->cid_profile_enabled = 1;
     } else if (strcmp(argv[i], "--passive-affinity") == 0) {
       options->passive_affinity_enabled = 1;
     } else if (strcmp(argv[i], "--passive-min-confidence") == 0 &&
@@ -1021,14 +1009,14 @@ static int parse_args(int argc, char **argv, struct qaffd_options *options) {
             "qaffd: --pin-root and --state-path must be configured together\n");
     return -1;
   }
-  if (options->cid_profile_v2_enabled &&
+  if (options->cid_profile_enabled &&
       (options->pin_root == NULL || options->state_path == NULL)) {
     fprintf(stderr,
-            "qaffd: CID profile v2 requires --pin-root and --state-path\n");
+            "qaffd: CID profile requires --pin-root and --state-path\n");
     return -1;
   }
-  if (options->cid_profile_v2_enabled &&
-      options->short_cid_len != QAFF_CID_PROFILE_V2_LEN) {
+  if (options->cid_profile_enabled &&
+      options->short_cid_len != QAFF_CID_PROFILE_LEN) {
     return -1;
   }
   if ((options->socket_mode & 0007) != 0) {
@@ -3308,8 +3296,7 @@ int main(int argc, char **argv) {
   state.pin_root = daemon_options.pin_root;
   state.state_path = daemon_options.state_path;
   state.short_cid_len = daemon_options.short_cid_len;
-  state.cid_profile_v2_enabled = daemon_options.cid_profile_v2_enabled;
-  state.cid_profile_v2_config_id = daemon_options.cid_profile_v2_config_id;
+  state.cid_profile_enabled = daemon_options.cid_profile_enabled;
   state.passive_affinity_enabled = daemon_options.passive_affinity_enabled;
   state.passive_min_confidence = daemon_options.passive_min_confidence;
   state.fallback_mode = daemon_options.fallback_mode;
@@ -3374,8 +3361,7 @@ int main(int argc, char **argv) {
   qaff_options_init(&options);
   options.pin_root = daemon_options.pin_root;
   options.short_cid_len = daemon_options.short_cid_len;
-  options.cid_profile_v2_enabled = daemon_options.cid_profile_v2_enabled;
-  options.cid_profile_v2_config_id = daemon_options.cid_profile_v2_config_id;
+  options.cid_profile_enabled = daemon_options.cid_profile_enabled;
   options.passive_affinity_enabled = daemon_options.passive_affinity_enabled;
   options.passive_min_confidence = daemon_options.passive_min_confidence;
   options.fallback_mode = daemon_options.fallback_mode;

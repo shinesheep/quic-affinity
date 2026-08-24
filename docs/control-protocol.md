@@ -16,7 +16,7 @@ Every multi-byte integer is unsigned big-endian unless noted otherwise.
 | Offset | Width | Field |
 | ---: | ---: | --- |
 | 0 | 4 | magic (`0x51414646`, `QAFF`) |
-| 4 | 2 | protocol version |
+| 4 | 2 | protocol schema identifier |
 | 6 | 2 | operation |
 | 8 | 4 | status (`0` in requests; errno value in replies) |
 | 12 | 4 | payload length |

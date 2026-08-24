@@ -426,8 +426,8 @@ static int run_case(const char *object_path, const struct test_case *test) {
   struct qaff_context *ctx = NULL;
   struct qaff_bpf_object *object = NULL;
   struct qaff_cid_profile_key key = profile_key();
-  uint8_t profile_cid[QAFF_CID_PROFILE_V2_LEN];
-  uint8_t tampered_profile_cid[QAFF_CID_PROFILE_V2_LEN];
+  uint8_t profile_cid[QAFF_CID_PROFILE_LEN];
+  uint8_t tampered_profile_cid[QAFF_CID_PROFILE_LEN];
 
   for (size_t i = 0; i < WORKER_COUNT; i++) {
     workers[i] = make_worker_socket(test->family, &port);
@@ -453,17 +453,15 @@ static int run_case(const char *object_path, const struct test_case *test) {
   options.short_cid_len = sizeof(k_dcid);
   options.fallback_worker_id = test->fallback_worker;
   options.fallback_mode = test->fallback_mode;
-  options.cid_profile_v2_enabled = 1;
-  options.cid_profile_v2_config_id = 7;
+  options.cid_profile_enabled = 1;
   options.passive_affinity_enabled = 1;
   options.passive_min_confidence = QAFF_PASSIVE_CONFIDENCE_HIGH;
   memcpy(options.cid_profile_key, key.bytes, sizeof(options.cid_profile_key));
 
-  if (qaff_cid_profile_v2_generate(&key, options.cid_profile_v2_config_id,
-                                   TARGET_WORKER,
-                                   QAFF_WORKER_GENERATION_DEFAULT, 0x010203,
-                                   profile_cid, sizeof(profile_cid)) != 0) {
-    perror("qaff_cid_profile_v2_generate");
+  if (qaff_cid_profile_generate(&key, TARGET_WORKER,
+                                QAFF_WORKER_GENERATION_DEFAULT, 0x010203,
+                                profile_cid, sizeof(profile_cid)) != 0) {
+    perror("qaff_cid_profile_generate");
     return 1;
   }
   memcpy(tampered_profile_cid, profile_cid, sizeof(tampered_profile_cid));
@@ -1040,8 +1038,7 @@ static int run_case(const char *object_path, const struct test_case *test) {
   peer_options.stats_map_fd = qaff_get_stats_map_fd(ctx);
   peer_options.config_map_fd = qaff_get_config_map_fd(ctx);
   peer_options.short_cid_len = options.short_cid_len;
-  peer_options.cid_profile_v2_enabled = options.cid_profile_v2_enabled;
-  peer_options.cid_profile_v2_config_id = options.cid_profile_v2_config_id;
+  peer_options.cid_profile_enabled = options.cid_profile_enabled;
   peer_options.passive_affinity_enabled = options.passive_affinity_enabled;
   peer_options.passive_min_confidence = options.passive_min_confidence;
   peer_options.fallback_mode = options.fallback_mode;
@@ -1263,10 +1260,10 @@ int main(int argc, char **argv) {
   }
   qaff_options_init(&invalid_options);
   invalid_options.short_cid_len = 8;
-  invalid_options.cid_profile_v2_enabled = 1;
+  invalid_options.cid_profile_enabled = 1;
   errno = 0;
   if (qaff_open(&invalid_options, &invalid_context) == 0 || errno != EINVAL) {
-    fprintf(stderr, "accepted profile v2 with an incompatible CID length\n");
+    fprintf(stderr, "accepted CID profile with an incompatible CID length\n");
     qaff_close(invalid_context);
     return 1;
   }

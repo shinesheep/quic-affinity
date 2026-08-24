@@ -3,8 +3,7 @@
 #include <errno.h>
 #include <string.h>
 
-#define QAFF_CID_PROFILE_V2_CONFIG_MAX 0xffu
-#define QAFF_CID_PROFILE_V2_NONCE_MAX 0xffffffu
+#define QAFF_CID_PROFILE_NONCE_MAX 0xffffffu
 
 static uint32_t profile_hash32(const struct qaff_cid_profile_key *key,
                                const uint8_t *cid_prefix,
@@ -28,26 +27,24 @@ static uint32_t profile_hash32(const struct qaff_cid_profile_key *key,
   return h;
 }
 
-int qaff_cid_profile_v2_generate(const struct qaff_cid_profile_key *key,
-                                  uint32_t config_id,
-                                  uint32_t worker_id,
-                                  uint32_t generation,
-                                  uint32_t nonce,
-                                  uint8_t *out,
-                                  size_t out_len) {
+int qaff_cid_profile_generate(const struct qaff_cid_profile_key *key,
+                              uint32_t worker_id,
+                              uint32_t generation,
+                              uint32_t nonce,
+                              uint8_t *out,
+                              size_t out_len) {
   if (key == NULL || out == NULL ||
-      out_len < QAFF_CID_PROFILE_V2_LEN ||
-      config_id > QAFF_CID_PROFILE_V2_CONFIG_MAX ||
+      out_len < QAFF_CID_PROFILE_LEN ||
       worker_id >= QAFF_WORKER_CAPACITY ||
       generation == 0 ||
       generation > QAFF_WORKER_GENERATION_MAX ||
-      nonce > QAFF_CID_PROFILE_V2_NONCE_MAX) {
+      nonce > QAFF_CID_PROFILE_NONCE_MAX) {
     errno = EINVAL;
     return -1;
   }
 
-  out[0] = (uint8_t)(QAFF_CID_PROFILE_V2_VERSION << 4);
-  out[1] = (uint8_t)config_id;
+  out[0] = QAFF_CID_PROFILE_MARKER;
+  out[1] = QAFF_CID_PROFILE_FLAGS_NONE;
   out[2] = (uint8_t)(worker_id >> 8);
   out[3] = (uint8_t)worker_id;
   out[4] = (uint8_t)generation;
@@ -63,18 +60,18 @@ int qaff_cid_profile_v2_generate(const struct qaff_cid_profile_key *key,
   return 0;
 }
 
-int qaff_cid_profile_v2_parse(const struct qaff_cid_profile_key *key,
-                               const uint8_t *cid,
-                               size_t cid_len,
-                               struct qaff_cid_profile_v2_fields *out) {
+int qaff_cid_profile_parse(const struct qaff_cid_profile_key *key,
+                           const uint8_t *cid,
+                           size_t cid_len,
+                           struct qaff_cid_profile_fields *out) {
   if (key == NULL || cid == NULL || out == NULL ||
-      cid_len != QAFF_CID_PROFILE_V2_LEN) {
+      cid_len != QAFF_CID_PROFILE_LEN) {
     errno = EINVAL;
     return -1;
   }
 
-  uint8_t version = cid[0] >> 4;
-  if (version != QAFF_CID_PROFILE_V2_VERSION) {
+  if (cid[0] != QAFF_CID_PROFILE_MARKER ||
+      cid[1] != QAFF_CID_PROFILE_FLAGS_NONE) {
     errno = EPROTO;
     return -1;
   }
@@ -97,8 +94,6 @@ int qaff_cid_profile_v2_parse(const struct qaff_cid_profile_key *key,
   }
 
   memset(out, 0, sizeof(*out));
-  out->version = version;
-  out->config_id = cid[1];
   out->worker_id = worker_id;
   out->generation = generation;
   out->nonce = ((uint32_t)cid[5] << 16) |

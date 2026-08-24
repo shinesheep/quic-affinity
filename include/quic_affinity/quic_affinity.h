@@ -44,10 +44,8 @@ struct qaff_options {
   const char *pin_root;
   /** Fixed short-header DCID length used by the dataplane parser. */
   uint8_t short_cid_len;
-  /** Enable routable CID profile v2 validation in the dataplane. */
-  uint8_t cid_profile_v2_enabled;
-  /** Expected v2 config ID. */
-  uint8_t cid_profile_v2_config_id;
+  /** Enable routable CID profile validation in the dataplane. */
+  uint8_t cid_profile_enabled;
   /** Enable best-effort passive CID routing in the dataplane. */
   uint8_t passive_affinity_enabled;
   /** Minimum passive confidence accepted by the dataplane. */
@@ -148,7 +146,7 @@ int qaff_register_worker_socket(struct qaff_context *ctx,
 /**
  * Register a UDP worker socket with an explicit worker generation.
  *
- * Use this when routable CID profile v2 is enabled. Incrementing generation on
+ * Use this when the routable CID profile is enabled. Incrementing generation on
  * worker-ID reuse prevents stale profile CIDs from selecting a replacement
  * worker. The same socket-cookie ownership rules as the default-generation
  * helper apply. Re-registering the same live socket cannot lower its current

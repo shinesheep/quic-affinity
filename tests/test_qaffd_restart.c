@@ -238,10 +238,8 @@ static pid_t start_qaffd(const char *qaffd_path,
         "12",
         "--reuseport-bpf-policy",
         "replace",
-        "--cid-profile-v2-key",
+        "--cid-profile-key",
         "707172737475767778797a7b7c7d7e7f",
-        "--cid-profile-v2-config-id",
-        "7",
         "--passive-affinity",
         "--pin-root",
         pin_root,
@@ -766,12 +764,11 @@ int main(int argc, char **argv) {
 
   struct qaff_control_config listener_config;
   if (control_config(socket_path, &listener_config) != 0 ||
-      listener_config.short_cid_len != QAFF_CID_PROFILE_V2_LEN ||
-      !listener_config.cid_profile_v2_enabled ||
-      listener_config.cid_profile_v2_config_id != 7 ||
+      listener_config.short_cid_len != QAFF_CID_PROFILE_LEN ||
+      !listener_config.cid_profile_enabled ||
       strcmp(listener_config.pin_root, pin_root) != 0 ||
       strcmp(listener_config.state_path, state_path) != 0) {
-    fprintf(stderr, "profile v2 persistence config was not applied\n");
+    fprintf(stderr, "CID profile persistence config was not applied\n");
     return 1;
   }
   struct qaff_control_config cid_config;

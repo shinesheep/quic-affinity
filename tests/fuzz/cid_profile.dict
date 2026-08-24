@@ -1,4 +1,4 @@
-profile_v2="\x20"
+profile_marker="\xa5"
 zero_worker="\x00\x00"
 maximum_supported_worker="\x0f\xff"
 out_of_range_worker="\x10\x00"

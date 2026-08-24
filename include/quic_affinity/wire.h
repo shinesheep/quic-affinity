@@ -18,19 +18,22 @@
 /** Number of worker IDs supported by one listener and its BPF maps. */
 #define QAFF_WORKER_CAPACITY 4096u
 
-/** Length, in bytes, of routable CID profile v2. */
-#define QAFF_CID_PROFILE_V2_LEN 12u
+/** Length, in bytes, of the routable CID profile. */
+#define QAFF_CID_PROFILE_LEN 12u
 
 /** Length, in bytes, of the listener-local routable CID profile key. */
 #define QAFF_CID_PROFILE_KEY_LEN 16u
 
-/** Version nibble used by routable CID profile v2. */
-#define QAFF_CID_PROFILE_V2_VERSION 2u
+/** Fixed marker in byte zero of every routable profile CID. */
+#define QAFF_CID_PROFILE_MARKER 0xa5u
+
+/** Currently supported flags value in byte one of a routable profile CID. */
+#define QAFF_CID_PROFILE_FLAGS_NONE 0u
 
 /** Initial worker generation written when callers do not supply one. */
 #define QAFF_WORKER_GENERATION_DEFAULT 1u
 
-/** Highest worker generation encodable in routable CID profile v2. */
+/** Highest worker generation encodable in a routable CID profile. */
 #define QAFF_WORKER_GENERATION_MAX 255u
 
 /** Passive CID confidence levels used by black-box learning. */
@@ -122,22 +125,20 @@ struct qaff_passive_cid_value {
 struct qaff_config_value {
 #if defined(__KERNEL__) || defined(QAFF_BPF)
   __u8 short_cid_len;
-  __u8 cid_profile_v2_enabled;
-  __u8 cid_profile_v2_config_id;
+  __u8 cid_profile_enabled;
   __u8 passive_affinity_enabled;
   __u8 passive_min_confidence;
   __u8 fallback_mode;
-  __u8 reserved[2];
+  __u8 reserved[3];
   __u32 fallback_worker_id;
   __u8 cid_profile_key[QAFF_CID_PROFILE_KEY_LEN];
 #else
   uint8_t short_cid_len;
-  uint8_t cid_profile_v2_enabled;
-  uint8_t cid_profile_v2_config_id;
+  uint8_t cid_profile_enabled;
   uint8_t passive_affinity_enabled;
   uint8_t passive_min_confidence;
   uint8_t fallback_mode;
-  uint8_t reserved[2];
+  uint8_t reserved[3];
   uint32_t fallback_worker_id;
   uint8_t cid_profile_key[QAFF_CID_PROFILE_KEY_LEN];
 #endif

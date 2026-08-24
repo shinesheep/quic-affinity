@@ -159,8 +159,7 @@ static int put_config(struct qaff_writer *writer,
                       const struct qaff_control_config *config) {
   if (put_u8(writer, config->short_cid_len) != 0 ||
       put_u8(writer, config->attached) != 0 ||
-      put_u8(writer, config->cid_profile_v2_enabled) != 0 ||
-      put_u8(writer, config->cid_profile_v2_config_id) != 0 ||
+      put_u8(writer, config->cid_profile_enabled) != 0 ||
       put_u8(writer, config->passive_affinity_enabled) != 0 ||
       put_u8(writer, config->passive_min_confidence) != 0 ||
       put_u8(writer, config->egress_attached) != 0 ||
@@ -201,8 +200,7 @@ static int get_config(struct qaff_reader *reader,
                       struct qaff_control_config *config) {
   if (get_u8(reader, &config->short_cid_len) != 0 ||
       get_u8(reader, &config->attached) != 0 ||
-      get_u8(reader, &config->cid_profile_v2_enabled) != 0 ||
-      get_u8(reader, &config->cid_profile_v2_config_id) != 0 ||
+      get_u8(reader, &config->cid_profile_enabled) != 0 ||
       get_u8(reader, &config->passive_affinity_enabled) != 0 ||
       get_u8(reader, &config->passive_min_confidence) != 0 ||
       get_u8(reader, &config->egress_attached) != 0 ||
@@ -279,7 +277,7 @@ static int put_header(uint8_t *packet, size_t packet_cap, uint16_t op,
       .cap = QAFF_CONTROL_HEADER_SIZE,
   };
   return put_u32(&writer, QAFF_CONTROL_MAGIC) == 0 &&
-                 put_u16(&writer, QAFF_CONTROL_VERSION) == 0 &&
+                 put_u16(&writer, QAFF_CONTROL_SCHEMA) == 0 &&
                  put_u16(&writer, op) == 0 &&
                  put_u32(&writer, (uint32_t)status) == 0 &&
                  put_u32(&writer, (uint32_t)payload_len) == 0
@@ -302,7 +300,7 @@ static int get_header(const uint8_t *packet, size_t packet_len, uint16_t *op,
   if (get_u32(&reader, &magic) != 0 || get_u16(&reader, &version) != 0 ||
       get_u16(&reader, op) != 0 || get_u32(&reader, &encoded_status) != 0 ||
       get_u32(&reader, &payload_len) != 0 || magic != QAFF_CONTROL_MAGIC ||
-      version != QAFF_CONTROL_VERSION || encoded_status > INT32_MAX ||
+      version != QAFF_CONTROL_SCHEMA || encoded_status > INT32_MAX ||
       payload_len != packet_len - reader.pos) {
     errno = EPROTO;
     return -1;

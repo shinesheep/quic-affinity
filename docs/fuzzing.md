@@ -5,7 +5,7 @@ that consume compact, attacker-influenced byte strings:
 
 - `fuzz_quic_parser` exercises long- and short-header DCID parsing and canonical
   BPF map-key construction.
-- `fuzz_cid_profile` exercises profile-v2 validation plus generated-value round
+- `fuzz_cid_profile` exercises profile validation plus generated-value round
   trips.
 - `fuzz_control_protocol` exercises request and reply decoding, canonical
   re-encoding, and generated messages for every supported operation.

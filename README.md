@@ -68,10 +68,9 @@ The QUIC server uses a CID format that embeds a worker ID plus validation data.
 The eBPF program can route these CIDs without a per-CID map entry.
 
 This mode is useful for very high connection counts and restart recovery. It
-requires the QUIC server to adopt the profile format and manage key/config
-rotation. Profile v2 is the recommended profile: it adds a config ID, worker
-generation, nonce, and a 32-bit BPF-friendly keyed tag. The tag is a routing
-integrity check, not a cryptographic MAC.
+requires the QUIC server to adopt the profile format and manage key rotation.
+The profile embeds a worker generation, nonce, and a 32-bit BPF-friendly keyed
+tag. The tag is a routing integrity check, not a cryptographic MAC.
 
 The exact profile formats are documented in [docs/cid-profile.md](docs/cid-profile.md).
 
@@ -82,7 +81,7 @@ provide CID lifecycle hooks. Worker sockets can be registered by the
 application or discovered without source changes by `qaff-agent`. With
 `--passive-affinity --egress-cgroup PATH`, a cgroup v2 egress program observes
 server QUIC long headers, maps the sending socket cookie to a registered
-worker, and learns visible v1/v2 Initial, Handshake, and Retry server SCIDs as
+worker, and learns visible QUIC v1 Initial, Handshake, and Retry server SCIDs as
 high-confidence passive routes. Version Negotiation, server-side 0-RTT,
 malformed headers, and fragmented IP packets are never learned.
 
@@ -368,17 +367,17 @@ socket-cookie mapping exists, so passive learning may miss that server SCID.
 `watch` protects new traffic after registration; it cannot reconstruct server
 CIDs that were visible only before the agent started.
 
-## Routable CID Profile v2
+## Routable CID Profile
 
 Create a listener-local 16-byte key as 32 hex digits:
 
 ```sh
-install -m 0600 -D /dev/stdin /etc/quic-affinity/profile-v2.key <<EOF
+install -m 0600 -D /dev/stdin /etc/quic-affinity/profile.key <<EOF
 707172737475767778797a7b7c7d7e7f
 EOF
 ```
 
-Start `qaffd` with profile v2 enabled:
+Start `qaffd` with the profile enabled:
 
 ```sh
 build/qaffd \
@@ -388,13 +387,12 @@ build/qaffd \
   --reuseport-bpf-policy replace \
   --pin-root /sys/fs/bpf/quic-affinity/listeners/example \
   --state-path /var/lib/quic-affinity/example.state \
-  --cid-profile-v2-key-file /etc/quic-affinity/profile-v2.key \
-  --cid-profile-v2-config-id 7
+  --cid-profile-key-file /etc/quic-affinity/profile.key
 ```
 
-The exact CID map has priority. On a map miss, the BPF program validates the v2
-profile key tag, config ID, and worker generation. If all checks pass, it
-selects the embedded worker ID. qaffd rejects profile v2 unless both the pinned
+The exact CID map has priority. On a map miss, the BPF program validates the
+profile marker, flags, keyed tag, and worker generation. If all checks pass, it
+selects the embedded worker ID. qaffd rejects the profile unless both the pinned
 map root and durable state snapshot are configured; otherwise a daemon restart
 could reuse a generation and reactivate a stale CID.
 
@@ -449,7 +447,7 @@ build/qaffd \
 
 Pinned maps allow the dataplane state to survive a `qaffd` restart. The state
 snapshot preserves registered workers and generation tombstones so reusing a
-worker ID cannot reactivate a stale exact, profile-v2, or passive CID. Exact
+worker ID cannot reactivate a stale exact, profile, or passive CID. Exact
 map entries carry the generation they were registered against, and CID
 ownership is rebuilt from validated pinned entries into the daemon's hash
 index.
@@ -541,7 +539,7 @@ Implemented:
   routable CID profiles, control client, and BPF loader.
 - QUIC DCID parsing for long headers and configured-length short headers.
 - IPv4 and IPv6 reuseport dataplane tests.
-- Generation-bound stateful CID routing and profile v2 routing.
+- Generation-bound stateful CID routing and routable profile routing.
 - `qaffd` control plane with fd passing, map pinning, restart recovery,
   worker cleanup, authorization, audit logs, and observability.
 - Zero-source-change worker onboarding and real-process lifecycle tracking with

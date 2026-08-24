@@ -48,7 +48,7 @@ routable CID. `fixed` selects `fallback_worker_id`; that worker must register
 before non-fallback workers, health fails while it is absent, and fallback
 packets are dropped rather than hashed to another worker. `kernel` leaves
 selection to Linux's native reuseport hash and is always available.
-Profile v2 adds a config ID, worker generation, and a 32-bit keyed tag.
+The profile adds a worker generation, nonce, and a 32-bit keyed tag.
 
 qaffd requires `--reuseport-bpf-policy replace` at startup. Linux attach
 replaces any reuseport BPF program already owned by the group and offers no
@@ -61,7 +61,7 @@ so withdrawal immediately invalidates stale exact CIDs even if cleanup is
 interrupted. `qaffd` keeps a CID owner index so `UNREGISTER_WORKER` can
 bulk-retire CIDs owned by the removed worker. The QUIC stack should still drain
 and retire CIDs first when possible, so delayed packets are less likely to fall
-back. Profile-routed CIDs do not consume CID map entries. For profile v2, qaffd
+back. Profile-routed CIDs do not consume CID map entries. For the profile, qaffd
 increments a per-worker generation on replacement and BPF rejects stale CIDs
 whose generation no longer matches.
 
@@ -228,7 +228,7 @@ users. Existing pinned maps are schema-checked for type, key size, value size,
 and max entries before reuse. `qaffd --state-path PATH` persists the
 daemon-side worker list and every allocated worker generation, including
 generations of unregistered workers, in a regular filesystem snapshot. Keeping
-those generation tombstones prevents stale exact, profile-v2, and passive CIDs
+those generation tombstones prevents stale exact, profile, and passive CIDs
 from becoming valid when a worker ID is reused after restart. CID ownership is
 recovered only from pinned `qaff_cids` entries whose generation matches the
 durable registered worker; a zero live generation is accepted only as residue

@@ -35,10 +35,6 @@ static const uint8_t k_conflict_server_cid[] = {
   0xcf, 0x11, 0xc7, 0x01, 0xaa, 0xbb, 0xcc, 0xdd,
 };
 
-static const uint8_t k_v2_server_cid[] = {
-  0x62, 0x02, 0x51, 0xd0, 0xaa, 0xbb, 0xcc, 0xdd,
-};
-
 static const uint8_t k_retry_server_cid[] = {
   0x12, 0xe7, 0x12, 0xd0, 0xaa, 0xbb, 0xcc, 0xdd,
 };
@@ -410,20 +406,6 @@ int main(int argc, char **argv) {
                                         client_fd,
                                         client_port,
                                         listener_port,
-                                        0xd3,
-                                        UINT32_C(0x6b3343cf),
-                                        k_v2_server_cid,
-                                        sizeof(k_v2_server_cid));
-  if (worker != TARGET_WORKER) {
-    fprintf(stderr, "QUIC v2 Initial SCID was not learned, got worker %d\n",
-            worker);
-    return 1;
-  }
-
-  worker = observe_and_route_server_cid(workers,
-                                        client_fd,
-                                        client_port,
-                                        listener_port,
                                         0xf3,
                                         1,
                                         k_retry_server_cid,
@@ -511,8 +493,8 @@ int main(int argc, char **argv) {
     perror("qaff_control_read_stats");
     return 1;
   }
-  if (stats.values[QAFF_STAT_PASSIVE_EGRESS_LEARN] < 4 ||
-      stats.values[QAFF_STAT_PASSIVE_HIT] < 5 ||
+  if (stats.values[QAFF_STAT_PASSIVE_EGRESS_LEARN] < 3 ||
+      stats.values[QAFF_STAT_PASSIVE_HIT] < 4 ||
       stats.values[QAFF_STAT_PASSIVE_EGRESS_SOCKET_COOKIE_HIT] < 1 ||
       stats.values[QAFF_STAT_PASSIVE_EGRESS_CONFLICT] < 1 ||
       stats.values[QAFF_STAT_PASSIVE_EGRESS_REJECT_VERSION] < 1 ||

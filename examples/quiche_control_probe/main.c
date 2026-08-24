@@ -189,15 +189,14 @@ int main(int argc, char **argv) {
   }
 
   struct qaff_cid_profile_key key = profile_key();
-  uint8_t profile_cid[QAFF_CID_PROFILE_V2_LEN];
-  if (qaff_cid_profile_v2_generate(&key,
-                                   0,
-                                   WORKER_ID,
-                                   QAFF_WORKER_GENERATION_DEFAULT,
-                                   0x010203,
-                                   profile_cid,
-                                   sizeof(profile_cid)) != 0) {
-    perror("qaff_cid_profile_v2_generate");
+  uint8_t profile_cid[QAFF_CID_PROFILE_LEN];
+  if (qaff_cid_profile_generate(&key,
+                                WORKER_ID,
+                                QAFF_WORKER_GENERATION_DEFAULT,
+                                0x010203,
+                                profile_cid,
+                                sizeof(profile_cid)) != 0) {
+    perror("qaff_cid_profile_generate");
     quiche_conn_free(conn);
     quiche_config_free(config);
     close(worker_lease_fd);
@@ -205,13 +204,13 @@ int main(int argc, char **argv) {
     return 1;
   }
 
-  struct qaff_cid_profile_v2_fields profile_fields;
-  if (qaff_cid_profile_v2_parse(&key,
-                                profile_cid,
-                                sizeof(profile_cid),
-                                &profile_fields) != 0 ||
+  struct qaff_cid_profile_fields profile_fields;
+  if (qaff_cid_profile_parse(&key,
+                             profile_cid,
+                             sizeof(profile_cid),
+                             &profile_fields) != 0 ||
       profile_fields.worker_id != WORKER_ID) {
-    perror("qaff_cid_profile_v2_parse");
+    perror("qaff_cid_profile_parse");
     quiche_conn_free(conn);
     quiche_config_free(config);
     close(worker_lease_fd);

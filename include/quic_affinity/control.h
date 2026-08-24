@@ -38,10 +38,8 @@ struct qaff_control_config {
   uint8_t short_cid_len;
   /** Non-zero when the reuseport eBPF program has been attached. */
   uint8_t attached;
-  /** Non-zero when profile v2 routing is enabled. */
-  uint8_t cid_profile_v2_enabled;
-  /** Config ID expected for profile v2 CIDs. */
-  uint8_t cid_profile_v2_config_id;
+  /** Non-zero when routable CID profile routing is enabled. */
+  uint8_t cid_profile_enabled;
   /** Non-zero when passive CID routing is enabled. */
   uint8_t passive_affinity_enabled;
   /** Minimum passive confidence accepted by the dataplane. */

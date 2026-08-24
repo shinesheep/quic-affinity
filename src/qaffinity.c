@@ -41,8 +41,7 @@ struct qaff_context {
   int owns_config_map;
   const char *pin_root;
   uint8_t short_cid_len;
-  uint8_t cid_profile_v2_enabled;
-  uint8_t cid_profile_v2_config_id;
+  uint8_t cid_profile_enabled;
   uint8_t passive_affinity_enabled;
   uint8_t passive_min_confidence;
   uint8_t fallback_mode;
@@ -78,8 +77,7 @@ void qaff_options_init(struct qaff_options *options) {
   options->stats_map_fd = -1;
   options->config_map_fd = -1;
   options->pin_root = NULL;
-  options->cid_profile_v2_enabled = 0;
-  options->cid_profile_v2_config_id = 0;
+  options->cid_profile_enabled = 0;
   options->passive_affinity_enabled = 0;
   options->passive_min_confidence = QAFF_PASSIVE_CONFIDENCE_HIGH;
   options->fallback_mode = QAFF_FALLBACK_MODE_FIXED;
@@ -285,8 +283,7 @@ static int qaff_write_config(struct qaff_context *ctx) {
   struct qaff_config_value value;
   memset(&value, 0, sizeof(value));
   value.short_cid_len = ctx->short_cid_len;
-  value.cid_profile_v2_enabled = ctx->cid_profile_v2_enabled;
-  value.cid_profile_v2_config_id = ctx->cid_profile_v2_config_id;
+  value.cid_profile_enabled = ctx->cid_profile_enabled;
   value.passive_affinity_enabled = ctx->passive_affinity_enabled;
   value.passive_min_confidence = ctx->passive_min_confidence;
   value.fallback_mode = ctx->fallback_mode;
@@ -373,8 +370,7 @@ int qaff_open(const struct qaff_options *options, struct qaff_context **out) {
   ctx->config_map_fd = options->config_map_fd;
   ctx->pin_root = options->pin_root;
   ctx->short_cid_len = options->short_cid_len;
-  ctx->cid_profile_v2_enabled = options->cid_profile_v2_enabled;
-  ctx->cid_profile_v2_config_id = options->cid_profile_v2_config_id;
+  ctx->cid_profile_enabled = options->cid_profile_enabled;
   ctx->passive_affinity_enabled = options->passive_affinity_enabled;
   ctx->passive_min_confidence = options->passive_min_confidence;
   ctx->fallback_mode = options->fallback_mode;
@@ -383,8 +379,8 @@ int qaff_open(const struct qaff_options *options, struct qaff_context **out) {
     errno = EINVAL;
     goto fail;
   }
-  if (ctx->cid_profile_v2_enabled &&
-      ctx->short_cid_len != QAFF_CID_PROFILE_V2_LEN) {
+  if (ctx->cid_profile_enabled &&
+      ctx->short_cid_len != QAFF_CID_PROFILE_LEN) {
     errno = EINVAL;
     goto fail;
   }

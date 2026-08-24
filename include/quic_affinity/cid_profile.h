@@ -21,13 +21,9 @@ struct qaff_cid_profile_key {
   uint8_t bytes[QAFF_CID_PROFILE_KEY_LEN];
 };
 
-/** Decoded fields from a 12-byte routable CID profile v2. */
-struct qaff_cid_profile_v2_fields {
-  /** Profile version, currently QAFF_CID_PROFILE_V2_VERSION. */
-  uint8_t version;
-  /** Listener-selected key/config generation identifier. */
-  uint8_t config_id;
-  /** Embedded worker ID; v2 encodes 16 bits. */
+/** Decoded fields from a 12-byte routable CID profile. */
+struct qaff_cid_profile_fields {
+  /** Embedded worker ID; the profile encodes 16 bits. */
   uint32_t worker_id;
   /** Worker generation used to reject stale CIDs after worker-ID reuse. */
   uint32_t generation;
@@ -36,34 +32,32 @@ struct qaff_cid_profile_v2_fields {
 };
 
 /**
- * Generate a 12-byte routable CID profile v2.
+ * Generate a 12-byte routable CID profile.
  *
- * config_id must fit in 8 bits, worker_id must be below QAFF_WORKER_CAPACITY,
- * generation in 1..255, and nonce in 24 bits. The output buffer must be at least
- * QAFF_CID_PROFILE_V2_LEN bytes.
+ * worker_id must be below QAFF_WORKER_CAPACITY, generation in 1..255, and nonce
+ * in 24 bits. The output buffer must be at least QAFF_CID_PROFILE_LEN bytes.
  *
  * Returns 0 on success or -1 with errno set.
  */
-int qaff_cid_profile_v2_generate(const struct qaff_cid_profile_key *key,
-                                  uint32_t config_id,
-                                  uint32_t worker_id,
-                                  uint32_t generation,
-                                  uint32_t nonce,
-                                  uint8_t *out,
-                                  size_t out_len);
+int qaff_cid_profile_generate(const struct qaff_cid_profile_key *key,
+                              uint32_t worker_id,
+                              uint32_t generation,
+                              uint32_t nonce,
+                              uint8_t *out,
+                              size_t out_len);
 
 /**
- * Validate and decode a 12-byte routable CID profile v2.
+ * Validate and decode a 12-byte routable CID profile.
  *
  * The parser checks the profile tag but does not check the worker generation
  * against the live worker map; qaffd/BPF perform that deployment-time check.
  *
  * Returns 0 on success or -1 with errno set to EINVAL, EPROTO, or EBADMSG.
  */
-int qaff_cid_profile_v2_parse(const struct qaff_cid_profile_key *key,
-                               const uint8_t *cid,
-                               size_t cid_len,
-                               struct qaff_cid_profile_v2_fields *out);
+int qaff_cid_profile_parse(const struct qaff_cid_profile_key *key,
+                           const uint8_t *cid,
+                           size_t cid_len,
+                           struct qaff_cid_profile_fields *out);
 
 #ifdef __cplusplus
 }

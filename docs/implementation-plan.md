@@ -46,7 +46,7 @@
 - Add an application-readiness gate so passive egress learning is active before
   the first server response. (Implemented with synchronous, fail-closed
   qaff-agent startup readiness hooks and explicit withdrawal failures.)
-- Require durable worker generations when CID profile v2 is enabled.
+- Require durable worker generations when the CID profile is enabled.
   (Implemented: qaffd requires both pinned maps and a state snapshot.)
 - Remove the generationless routable profile path. (Implemented: profile v1 is
   unsupported; the production dataplane accepts only generation-bound v2.)
