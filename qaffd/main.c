@@ -5,6 +5,7 @@
 #include "control_protocol.h"
 #include "authorization.h"
 #include "cid_index.h"
+#include "qaffinity_internal.h"
 #include "state_store.h"
 #include "worker_registry.h"
 
@@ -1371,25 +1372,11 @@ static int reconcile_worker_tombstones(struct qaffd_state *state) {
     return -1;
   }
 
-  int generation_map_fd = qaff_get_worker_generation_map_fd(state->ctx);
-  if (generation_map_fd < 0) {
-    errno = EINVAL;
-    return -1;
-  }
   for (uint32_t worker_id = 0; worker_id < QAFFD_MAX_WORKERS; worker_id++) {
     if (!worker_is_tombstoned(state, worker_id)) {
       continue;
     }
-    uint32_t generation = 0;
-    if (bpf_map_lookup_elem(generation_map_fd,
-                            &worker_id,
-                            &generation) != 0) {
-      return -1;
-    }
-    if (generation == 0) {
-      continue;
-    }
-    if (qaff_unregister_worker_socket(state->ctx, worker_id) != 0 &&
+    if (qaff_unregister_worker_socket_only(state->ctx, worker_id) != 0 &&
         errno != ENOENT) {
       return -1;
     }
@@ -1429,7 +1416,7 @@ static int rollback_worker_maps(
   }
 
   if (!snapshot->worker.registered) {
-    if (qaff_unregister_worker_socket(state->ctx, worker_id) != 0 &&
+    if (qaff_unregister_worker_socket_only(state->ctx, worker_id) != 0 &&
         errno != ENOENT) {
       return -1;
     }
@@ -1445,7 +1432,7 @@ static int rollback_worker_maps(
     return 0;
   }
 
-  if (qaff_unregister_worker_socket(state->ctx, worker_id) != 0 &&
+  if (qaff_unregister_worker_socket_only(state->ctx, worker_id) != 0 &&
       errno != ENOENT) {
     return -1;
   }
@@ -1683,7 +1670,7 @@ static int unregister_worker_authorized(struct qaffd_state *state,
     return -1;
   }
 
-  if (qaff_unregister_worker_socket(state->ctx, worker_id) != 0 &&
+  if (qaff_unregister_worker_socket_only(state->ctx, worker_id) != 0 &&
       errno != ENOENT) {
     audit_event("worker_unregistration_incomplete",
                 peer,

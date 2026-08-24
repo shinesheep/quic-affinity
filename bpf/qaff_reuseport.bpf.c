@@ -278,15 +278,14 @@ static __always_inline int qaff_passive_worker(
     return -1;
   }
 
-  if (value->worker_generation != 0) {
-    __u32 *current_generation =
-        bpf_map_lookup_elem(&qaff_worker_generations, &value->worker_id);
-    if (!current_generation ||
-        *current_generation == 0 ||
-        *current_generation != value->worker_generation) {
-      qaff_count(QAFF_STAT_PASSIVE_REJECT_GENERATION);
-      return -1;
-    }
+  __u32 *current_generation =
+      bpf_map_lookup_elem(&qaff_worker_generations, &value->worker_id);
+  if (value->worker_generation == 0 ||
+      !current_generation ||
+      *current_generation == 0 ||
+      *current_generation != value->worker_generation) {
+    qaff_count(QAFF_STAT_PASSIVE_REJECT_GENERATION);
+    return -1;
   }
 
   if (value->expires_at_ns != 0) {
@@ -464,8 +463,11 @@ int qaff_select(struct sk_reuseport_md *ctx) {
   if (config && config->fallback_mode == QAFF_FALLBACK_MODE_KERNEL) {
     return SK_PASS;
   }
-  bpf_sk_select_reuseport(ctx, &qaff_workers, &fallback, 0);
-  return SK_PASS;
+  if (bpf_sk_select_reuseport(ctx, &qaff_workers, &fallback, 0) == 0) {
+    return SK_PASS;
+  }
+  qaff_count(QAFF_STAT_WORKER_MISSING);
+  return SK_DROP;
 }
 
 SEC("cgroup_skb/egress")
@@ -511,9 +513,11 @@ int qaff_egress_learn(struct __sk_buff *skb) {
   __builtin_memset(&value, 0, sizeof(value));
   value.worker_id = *worker_id;
   __u32 *generation = bpf_map_lookup_elem(&qaff_worker_generations, worker_id);
-  if (generation) {
-    value.worker_generation = *generation;
+  if (!generation || *generation == 0) {
+    qaff_count(QAFF_STAT_PASSIVE_EGRESS_NO_WORKER);
+    return 1;
   }
+  value.worker_generation = *generation;
   value.confidence = QAFF_PASSIVE_CONFIDENCE_HIGH;
   value.source = QAFF_PASSIVE_SOURCE_EGRESS;
   value.expires_at_ns = bpf_ktime_get_ns() + QAFF_PASSIVE_TTL_EGRESS_NS;

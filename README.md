@@ -284,6 +284,11 @@ New integrations should prefer leased worker registration. If the control
 connection closes unexpectedly, `qaffd` unregisters the worker, closes its
 duplicated socket fd, and retires CIDs owned by that worker.
 
+In embedded mode, CID registration is accepted only for live workers and
+`qaff_unregister_worker_socket()` removes all exact and passive routes owned by
+the worker before its ID can be reused. Active worker IDs cannot be replaced
+with a different socket; unregister the drained worker first.
+
 ## Zero-Source-Change Onboarding
 
 `qaff-agent` can launch an existing server and register its bound UDP
@@ -420,6 +425,9 @@ Current hardening:
   confidence routing requires an explicit policy change.
 - Passive entries are bounded by an LRU map, expire by monotonic TTL, and are
   purged when their worker is unregistered.
+- Fixed fallback is fail-closed: if its socket disappears, unknown traffic is
+  dropped and `worker_missing` increments instead of silently using kernel
+  reuseport hashing.
 
 ## Restart Recovery
 

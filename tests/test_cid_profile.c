@@ -118,7 +118,11 @@ static int rejects_invalid_bounds(void) {
   uint8_t cid[QAFF_CID_PROFILE_V1_LEN];
   uint8_t cid_v2[QAFF_CID_PROFILE_V2_LEN];
 
-  CHECK(qaff_cid_profile_v1_generate(&key, 0x10000, 1, cid, sizeof(cid)) != 0);
+  CHECK(qaff_cid_profile_v1_generate(&key,
+                                     QAFF_WORKER_CAPACITY,
+                                     1,
+                                     cid,
+                                     sizeof(cid)) != 0);
   CHECK(errno == EINVAL);
   CHECK(qaff_cid_profile_v1_generate(&key, 1, 0x1000000, cid, sizeof(cid)) != 0);
   CHECK(errno == EINVAL);
@@ -127,6 +131,14 @@ static int rejects_invalid_bounds(void) {
   CHECK(qaff_cid_profile_v2_generate(&key,
                                      0x100,
                                      1,
+                                     1,
+                                     1,
+                                     cid_v2,
+                                     sizeof(cid_v2)) != 0);
+  CHECK(errno == EINVAL);
+  CHECK(qaff_cid_profile_v2_generate(&key,
+                                     1,
+                                     QAFF_WORKER_CAPACITY,
                                      1,
                                      1,
                                      cid_v2,

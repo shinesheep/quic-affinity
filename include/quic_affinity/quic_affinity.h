@@ -76,7 +76,9 @@ void qaff_options_init(struct qaff_options *options);
  * The context validates map schemas, creates missing maps, optionally pins
  * them, and writes dataplane configuration. Existing map fds supplied in
  * options remain owned by the caller; internally opened/created fds are closed
- * by qaff_close().
+ * by qaff_close(). Mutation calls on one context are serialized. A pinned map
+ * set must have one lifecycle owner; use qaffd instead of mutating the same
+ * worker/CID maps concurrently from independent embedded contexts.
  *
  * Returns 0 on success or -1 with errno set.
  */
@@ -91,7 +93,8 @@ void qaff_close(struct qaff_context *ctx);
  * Packets whose DCID exactly matches cid are routed to worker_id before
  * user-space receives them. Registration is idempotent for the current owner.
  * A CID cannot be reassigned to another worker until it is retired; such an
- * attempt fails with EEXIST.
+ * attempt fails with EEXIST. worker_id must identify a currently registered
+ * worker; otherwise the call fails with EINVAL or ENOENT.
  *
  * Returns 0 on success or -1 with errno set.
  */
@@ -110,6 +113,8 @@ int qaff_retire_cid(struct qaff_context *ctx,
  *
  * Passive entries are best-effort black-box hints. Exact CID registrations and
  * routable profile validation take priority over this table in the dataplane.
+ * The target worker must be registered. A zero worker_generation is replaced
+ * with the live generation; a non-zero mismatch is rejected.
  */
 int qaff_register_passive_cid(struct qaff_context *ctx,
                               const uint8_t *cid,
@@ -128,6 +133,8 @@ int qaff_retire_passive_cid(struct qaff_context *ctx,
  * stores a reference to the socket in the REUSEPORT_SOCKARRAY map. Registration
  * also installs the socket-cookie mapping required by passive egress learning.
  * A socket cannot belong to multiple worker IDs; conflicts fail with EEXIST.
+ * Replacing an active worker ID with a different socket fails with EBUSY;
+ * unregister the old worker first.
  */
 int qaff_register_worker_socket(struct qaff_context *ctx,
                                 uint32_t worker_id,
@@ -139,7 +146,8 @@ int qaff_register_worker_socket(struct qaff_context *ctx,
  * Use this when routable CID profile v2 is enabled. Incrementing generation on
  * worker-ID reuse prevents stale profile CIDs from selecting a replacement
  * worker. The same socket-cookie ownership rules as the default-generation
- * helper apply.
+ * helper apply. Re-registering the same live socket cannot lower its current
+ * generation.
  *
  * Returns 0 on success or -1 with errno set.
  */
@@ -149,10 +157,12 @@ int qaff_register_worker_socket_generation(struct qaff_context *ctx,
                                            uint32_t generation);
 
 /**
- * Remove a worker socket, its socket-cookie mapping, and its generation entry.
+ * Remove a worker and all routes owned by it.
  *
- * CIDs that still point at worker_id should be retired before or immediately
- * after unregistering the worker.
+ * The operation first withdraws the worker generation, retires its exact and
+ * passive CIDs, then removes its socket and socket-cookie mappings. This keeps
+ * stale CIDs from becoming valid if the worker ID is reused. Callers should
+ * still drain and explicitly retire CIDs before unregistering when possible.
  */
 int qaff_unregister_worker_socket(struct qaff_context *ctx,
                                   uint32_t worker_id);

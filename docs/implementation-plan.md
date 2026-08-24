@@ -36,7 +36,8 @@
   atomic enforcement in the embedded API and cross-process enforcement in
   `qaffd`. (Implemented.)
 - Reject replacing an active worker socket while that worker owns exact CIDs;
-  preserve daemon restart recovery. (Implemented.)
+  preserve daemon restart recovery. (Implemented in both qaffd and the
+  embedded API; embedded unregistration also purges exact/passive routes.)
 - Enforce one worker ID per socket cookie and complete passive-egress cookie
   registration in embedded mode. (Implemented.)
 - Detect target socket close/replacement continuously in `qaff-agent` and
@@ -51,7 +52,8 @@
 - Validate fixed fallback targets and eliminate silent reuseport BPF
   replacement. (Implemented: fixed worker IDs are range-checked, non-fallback
   workers cannot register while a fixed fallback is absent, health exposes
-  fallback availability, and qaffd requires an explicit `replace` policy.
+  fallback availability, the dataplane drops when fixed selection fails, and
+  qaffd requires an explicit `replace` policy.
   Linux exposes no query/no-replace API for reuseport BPF attachment.)
 
 ## Pre-release Productionization

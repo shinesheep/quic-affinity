@@ -27,6 +27,7 @@ set(QAFF_BPF_SYSTEM_INCLUDE_DIR "" CACHE PATH
   "Directory containing architecture-specific asm headers for the BPF build")
 
 find_package(PkgConfig REQUIRED)
+find_package(Threads REQUIRED)
 pkg_check_modules(LIBBPF REQUIRED IMPORTED_TARGET libbpf)
 
 add_library(qaffinity
@@ -46,7 +47,8 @@ target_include_directories(qaffinity
 
 target_link_libraries(qaffinity
   PUBLIC
-    PkgConfig::LIBBPF)
+    PkgConfig::LIBBPF
+    Threads::Threads)
 
 target_compile_options(qaffinity PRIVATE -Wall -Wextra -Wpedantic)
 add_library(quic-affinity::qaffinity ALIAS qaffinity)

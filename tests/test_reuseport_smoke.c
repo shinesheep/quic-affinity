@@ -44,6 +44,10 @@ static const uint8_t k_passive_dcid[] = {
   0x70, 0x61, 0x73, 0x73, 0x01, 0x02, 0x03, 0x04,
 };
 
+static const uint8_t k_worker_lifecycle_dcid[] = {
+  0x6c, 0x69, 0x66, 0x65, 0x01, 0x02, 0x03, 0x04,
+};
+
 static struct qaff_cid_profile_key profile_key(void) {
   struct qaff_cid_profile_key key;
   for (uint8_t i = 0; i < QAFF_CID_PROFILE_KEY_LEN; i++) {
@@ -464,11 +468,86 @@ static int run_case(const char *object_path, const struct test_case *test) {
     return 1;
   }
 
+  struct qaff_passive_cid_value passive_value;
+  memset(&passive_value, 0, sizeof(passive_value));
+  passive_value.worker_id = TARGET_WORKER;
+  passive_value.confidence = QAFF_PASSIVE_CONFIDENCE_HIGH;
+  passive_value.source = QAFF_PASSIVE_SOURCE_EGRESS;
+  errno = 0;
+  if (qaff_register_cid(ctx,
+                        k_dcid,
+                        sizeof(k_dcid),
+                        TARGET_WORKER) == 0 ||
+      errno != ENOENT) {
+    fprintf(stderr, "%s: exact CID accepted an unregistered worker\n",
+            test->name);
+    return 1;
+  }
+  errno = 0;
+  if (qaff_register_passive_cid(ctx,
+                                k_passive_dcid,
+                                sizeof(k_passive_dcid),
+                                &passive_value) == 0 ||
+      errno != ENOENT) {
+    fprintf(stderr, "%s: passive CID accepted an unregistered worker\n",
+            test->name);
+    return 1;
+  }
+  errno = 0;
+  if (qaff_register_worker_socket(ctx,
+                                  QAFF_WORKER_CAPACITY,
+                                  workers[0]) == 0 ||
+      errno != EINVAL) {
+    fprintf(stderr, "%s: worker registration accepted an invalid ID\n",
+            test->name);
+    return 1;
+  }
+
   for (uint32_t i = 0; i < WORKER_COUNT; i++) {
     if (qaff_register_worker_socket(ctx, i, workers[i]) != 0) {
       perror("qaff_register_worker_socket");
       return 1;
     }
+  }
+  errno = 0;
+  if (qaff_register_cid(ctx,
+                        k_dcid,
+                        sizeof(k_dcid),
+                        QAFF_WORKER_CAPACITY) == 0 ||
+      errno != EINVAL) {
+    fprintf(stderr, "%s: exact CID accepted an invalid worker ID\n",
+            test->name);
+    return 1;
+  }
+  passive_value.worker_id = QAFF_WORKER_CAPACITY;
+  errno = 0;
+  if (qaff_register_passive_cid(ctx,
+                                k_passive_dcid,
+                                sizeof(k_passive_dcid),
+                                &passive_value) == 0 ||
+      errno != EINVAL) {
+    fprintf(stderr, "%s: passive CID accepted an invalid worker ID\n",
+            test->name);
+    return 1;
+  }
+  passive_value.worker_id = TARGET_WORKER;
+  passive_value.worker_generation = 2;
+  errno = 0;
+  if (qaff_register_passive_cid(ctx,
+                                k_passive_dcid,
+                                sizeof(k_passive_dcid),
+                                &passive_value) == 0 ||
+      errno != EINVAL) {
+    fprintf(stderr, "%s: passive CID accepted a stale generation\n",
+            test->name);
+    return 1;
+  }
+  passive_value.worker_generation = 0;
+  errno = 0;
+  if (qaff_unregister_worker_socket(ctx, 100) == 0 || errno != ENOENT) {
+    fprintf(stderr, "%s: unregistered worker was removed successfully\n",
+            test->name);
+    return 1;
   }
 
   uint64_t target_socket_cookie = 0;
@@ -487,6 +566,43 @@ static int run_case(const char *object_path, const struct test_case *test) {
     fprintf(stderr, "worker registration did not install socket-cookie map\n");
     return 1;
   }
+
+  int replacement_worker = make_worker_socket(test->family, &port);
+  if (replacement_worker < 0) {
+    perror("make replacement worker socket");
+    return 1;
+  }
+  errno = 0;
+  if (qaff_register_worker_socket(ctx,
+                                  TARGET_WORKER,
+                                  replacement_worker) == 0 ||
+      errno != EBUSY) {
+    fprintf(stderr, "%s: active worker socket was replaced\n", test->name);
+    return 1;
+  }
+  if (bpf_map_delete_elem(qaff_get_socket_worker_map_fd(ctx),
+                          &target_socket_cookie) != 0) {
+    perror("remove active worker socket-cookie mapping");
+    return 1;
+  }
+  errno = 0;
+  if (qaff_register_worker_socket(ctx,
+                                  TARGET_WORKER,
+                                  replacement_worker) == 0 ||
+      errno != EBUSY) {
+    fprintf(stderr,
+            "%s: active worker with missing cookie mapping was replaced\n",
+            test->name);
+    return 1;
+  }
+  if (bpf_map_update_elem(qaff_get_socket_worker_map_fd(ctx),
+                          &target_socket_cookie,
+                          &cookie_worker_id,
+                          BPF_NOEXIST) != 0) {
+    perror("restore active worker socket-cookie mapping");
+    return 1;
+  }
+  close(replacement_worker);
   errno = 0;
   if (qaff_register_worker_socket(ctx,
                                   FALLBACK_WORKER,
@@ -510,12 +626,7 @@ static int run_case(const char *object_path, const struct test_case *test) {
     fprintf(stderr, "live CID was reassigned to another worker\n");
     return 1;
   }
-  struct qaff_passive_cid_value passive_value;
-  memset(&passive_value, 0, sizeof(passive_value));
-  passive_value.worker_id = TARGET_WORKER;
-  passive_value.worker_generation = QAFF_WORKER_GENERATION_DEFAULT;
-  passive_value.confidence = QAFF_PASSIVE_CONFIDENCE_HIGH;
-  passive_value.source = QAFF_PASSIVE_SOURCE_EGRESS;
+  passive_value.worker_generation = 0;
   uint64_t passive_registered_ns = monotonic_ns();
   if (passive_registered_ns == 0) {
     perror("clock_gettime");
@@ -665,6 +776,12 @@ static int run_case(const char *object_path, const struct test_case *test) {
             test->name);
     return 1;
   }
+  if (refreshed_passive.worker_generation !=
+      QAFF_WORKER_GENERATION_DEFAULT) {
+    fprintf(stderr, "%s: passive CID did not inherit worker generation\n",
+            test->name);
+    return 1;
+  }
 
   if (send_quic_like_packet(senders[0].fd,
                             test->family,
@@ -733,12 +850,60 @@ static int run_case(const char *object_path, const struct test_case *test) {
     return 1;
   }
 
+  struct qaff_passive_cid_value generationless_passive = refreshed_passive;
+  generationless_passive.worker_generation = 0;
+  if (bpf_map_update_elem(qaff_get_passive_cid_map_fd(ctx),
+                          &passive_key,
+                          &generationless_passive,
+                          BPF_ANY) != 0 ||
+      send_quic_like_packet(senders[0].fd,
+                            test->family,
+                            port,
+                            0,
+                            k_passive_dcid,
+                            sizeof(k_passive_dcid)) != 0) {
+    perror("inject generationless passive CID");
+    return 1;
+  }
+  int generationless_fallback = receive_worker(workers, WORKER_COUNT, 1000);
+  if (generationless_fallback < 0 ||
+      (test->fallback_mode == QAFF_FALLBACK_MODE_FIXED &&
+       generationless_fallback != (int)test->fallback_worker) ||
+      expect_stat(ctx, QAFF_STAT_PASSIVE_REJECT_GENERATION, 1) != 0) {
+    fprintf(stderr, "%s: generationless passive CID was accepted\n",
+            test->name);
+    return 1;
+  }
+  if (qaff_register_passive_cid(ctx,
+                                k_passive_dcid,
+                                sizeof(k_passive_dcid),
+                                &passive_value) != 0) {
+    perror("restore passive CID generation");
+    return 1;
+  }
+
   if (qaff_retire_cid(ctx, k_dcid, sizeof(k_dcid)) != 0 ||
       qaff_register_cid(ctx,
                         k_dcid,
                         sizeof(k_dcid),
                         FALLBACK_WORKER) != 0) {
     perror("retire and reassign CID");
+    return 1;
+  }
+  if (qaff_register_cid(ctx,
+                        k_worker_lifecycle_dcid,
+                        sizeof(k_worker_lifecycle_dcid),
+                        TARGET_WORKER) != 0) {
+    perror("register worker lifecycle CID");
+    return 1;
+  }
+  uint32_t withdrawn_worker = TARGET_WORKER;
+  uint32_t withdrawn_generation = 0;
+  if (bpf_map_update_elem(qaff_get_worker_generation_map_fd(ctx),
+                          &withdrawn_worker,
+                          &withdrawn_generation,
+                          BPF_ANY) != 0) {
+    perror("inject interrupted worker withdrawal");
     return 1;
   }
   if (qaff_unregister_worker_socket(ctx, TARGET_WORKER) != 0) {
@@ -752,6 +917,110 @@ static int run_case(const char *object_path, const struct test_case *test) {
       errno != ENOENT) {
     fprintf(stderr, "worker unregister left a socket-cookie mapping\n");
     return 1;
+  }
+  struct qaff_cid_key lifecycle_key;
+  if (qaff_cid_key_from_bytes(k_worker_lifecycle_dcid,
+                              sizeof(k_worker_lifecycle_dcid),
+                              &lifecycle_key) != QAFF_PARSE_OK) {
+    fprintf(stderr, "%s: could not build lifecycle CID key\n", test->name);
+    return 1;
+  }
+  errno = 0;
+  if (bpf_map_lookup_elem(qaff_get_cid_map_fd(ctx),
+                          &lifecycle_key,
+                          &cookie_worker_id) == 0 ||
+      errno != ENOENT) {
+    fprintf(stderr, "%s: worker unregister left an exact CID\n", test->name);
+    return 1;
+  }
+  errno = 0;
+  if (bpf_map_lookup_elem(qaff_get_passive_cid_map_fd(ctx),
+                          &passive_key,
+                          &refreshed_passive) == 0 ||
+      errno != ENOENT) {
+    fprintf(stderr, "%s: worker unregister left a passive CID\n", test->name);
+    return 1;
+  }
+  errno = 0;
+  if (qaff_register_cid(ctx,
+                        k_worker_lifecycle_dcid,
+                        sizeof(k_worker_lifecycle_dcid),
+                        TARGET_WORKER) == 0 ||
+      errno != ENOENT) {
+    fprintf(stderr, "%s: removed worker accepted a CID\n", test->name);
+    return 1;
+  }
+  if (qaff_register_worker_socket_generation(ctx,
+                                             TARGET_WORKER,
+                                             workers[TARGET_WORKER],
+                                             2) != 0) {
+    perror("reuse worker ID with a new generation");
+    return 1;
+  }
+  errno = 0;
+  if (qaff_register_worker_socket(ctx,
+                                  TARGET_WORKER,
+                                  workers[TARGET_WORKER]) == 0 ||
+      errno != EINVAL) {
+    fprintf(stderr, "%s: worker generation regressed during registration\n",
+            test->name);
+    return 1;
+  }
+  errno = 0;
+  if (bpf_map_lookup_elem(qaff_get_cid_map_fd(ctx),
+                          &lifecycle_key,
+                          &cookie_worker_id) == 0 ||
+      errno != ENOENT) {
+    fprintf(stderr, "%s: worker ID reuse reactivated an exact CID\n",
+            test->name);
+    return 1;
+  }
+
+  if (test->fallback_mode == QAFF_FALLBACK_MODE_FIXED) {
+    drain_workers(workers, WORKER_COUNT);
+    if (send_quic_like_packet(senders[0].fd,
+                              test->family,
+                              port,
+                              0,
+                              k_worker_lifecycle_dcid,
+                              sizeof(k_worker_lifecycle_dcid)) != 0) {
+      perror("send retired lifecycle CID");
+      return 1;
+    }
+    int lifecycle_fallback = receive_worker(workers, WORKER_COUNT, 1000);
+    if (lifecycle_fallback != (int)test->fallback_worker) {
+      fprintf(stderr,
+              "%s: retired CID reached worker %d after ID reuse\n",
+              test->name,
+              lifecycle_fallback);
+      return 1;
+    }
+  }
+
+  if (test->fallback_mode == QAFF_FALLBACK_MODE_FIXED) {
+    if (qaff_unregister_worker_socket(ctx, test->fallback_worker) != 0) {
+      perror("qaff_unregister_worker_socket fallback");
+      return 1;
+    }
+    drain_workers(workers, WORKER_COUNT);
+    if (send_quic_like_packet(senders[0].fd,
+                              test->family,
+                              port,
+                              0,
+                              k_unknown_dcid,
+                              sizeof(k_unknown_dcid)) != 0) {
+      perror("send missing fallback packet");
+      return 1;
+    }
+    if (receive_worker(workers, WORKER_COUNT, 200) >= 0) {
+      fprintf(stderr, "%s: missing fixed fallback failed open\n", test->name);
+      return 1;
+    }
+    if (expect_stat(ctx, QAFF_STAT_WORKER_MISSING, 1) != 0) {
+      fprintf(stderr, "%s: missing fixed fallback was not counted\n",
+              test->name);
+      return 1;
+    }
   }
 
   qaff_bpf_object_close(object);

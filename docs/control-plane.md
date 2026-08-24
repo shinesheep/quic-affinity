@@ -45,8 +45,9 @@ The listener config includes `short_cid_len`, `fallback_mode`,
 settings. Fallback is used for unregistered opaque CIDs, invalid profile CIDs,
 parse failures, and the first client Initial before the server has issued a
 routable CID. `fixed` selects `fallback_worker_id`; that worker must register
-before non-fallback workers, and health fails while it is absent. `kernel`
-leaves selection to Linux's native reuseport hash and is always available.
+before non-fallback workers, health fails while it is absent, and fallback
+packets are dropped rather than hashed to another worker. `kernel` leaves
+selection to Linux's native reuseport hash and is always available.
 Profile v2 adds a config ID, worker generation, and a 32-bit keyed tag.
 
 qaffd requires `--reuseport-bpf-policy replace` at startup. Linux attach

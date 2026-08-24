@@ -3,10 +3,8 @@
 #include <errno.h>
 #include <string.h>
 
-#define QAFF_CID_PROFILE_V1_WORKER_MAX 0xffffu
 #define QAFF_CID_PROFILE_V1_NONCE_MAX 0xffffffu
 #define QAFF_CID_PROFILE_V2_CONFIG_MAX 0xffu
-#define QAFF_CID_PROFILE_V2_WORKER_MAX 0xffffu
 #define QAFF_CID_PROFILE_V2_NONCE_MAX 0xffffffu
 
 static uint32_t profile_hash32(const struct qaff_cid_profile_key *key,
@@ -44,7 +42,7 @@ int qaff_cid_profile_v1_generate(const struct qaff_cid_profile_key *key,
                                   size_t out_len) {
   if (key == NULL || out == NULL ||
       out_len < QAFF_CID_PROFILE_V1_LEN ||
-      worker_id > QAFF_CID_PROFILE_V1_WORKER_MAX ||
+      worker_id >= QAFF_WORKER_CAPACITY ||
       nonce > QAFF_CID_PROFILE_V1_NONCE_MAX) {
     errno = EINVAL;
     return -1;
@@ -86,9 +84,15 @@ int qaff_cid_profile_v1_parse(const struct qaff_cid_profile_key *key,
     return -1;
   }
 
+  uint32_t worker_id = (uint32_t)(((uint32_t)cid[1] << 8) | cid[2]);
+  if (worker_id >= QAFF_WORKER_CAPACITY) {
+    errno = EINVAL;
+    return -1;
+  }
+
   memset(out, 0, sizeof(*out));
   out->version = version;
-  out->worker_id = (uint32_t)(((uint32_t)cid[1] << 8) | cid[2]);
+  out->worker_id = worker_id;
   out->nonce = ((uint32_t)cid[3] << 16) |
                ((uint32_t)cid[4] << 8) |
                (uint32_t)cid[5];
@@ -105,7 +109,7 @@ int qaff_cid_profile_v2_generate(const struct qaff_cid_profile_key *key,
   if (key == NULL || out == NULL ||
       out_len < QAFF_CID_PROFILE_V2_LEN ||
       config_id > QAFF_CID_PROFILE_V2_CONFIG_MAX ||
-      worker_id > QAFF_CID_PROFILE_V2_WORKER_MAX ||
+      worker_id >= QAFF_WORKER_CAPACITY ||
       generation == 0 ||
       generation > QAFF_WORKER_GENERATION_MAX ||
       nonce > QAFF_CID_PROFILE_V2_NONCE_MAX) {
@@ -156,11 +160,18 @@ int qaff_cid_profile_v2_parse(const struct qaff_cid_profile_key *key,
     return -1;
   }
 
+  uint32_t worker_id = ((uint32_t)cid[2] << 8) | (uint32_t)cid[3];
+  uint32_t generation = cid[4];
+  if (worker_id >= QAFF_WORKER_CAPACITY || generation == 0) {
+    errno = EINVAL;
+    return -1;
+  }
+
   memset(out, 0, sizeof(*out));
   out->version = version;
   out->config_id = cid[1];
-  out->worker_id = ((uint32_t)cid[2] << 8) | (uint32_t)cid[3];
-  out->generation = cid[4];
+  out->worker_id = worker_id;
+  out->generation = generation;
   out->nonce = ((uint32_t)cid[5] << 16) |
                ((uint32_t)cid[6] << 8) |
                (uint32_t)cid[7];

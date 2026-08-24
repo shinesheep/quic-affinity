@@ -278,7 +278,8 @@ Mitigations:
 
 - Maintain worker epochs or generations.
 - Store the generation in each passive entry.
-- Reject entries whose generation no longer matches the worker table.
+- Reject entries with no generation or whose generation no longer matches the
+  worker table.
 - Flush all entries for a worker on unregister.
 
 ### CID Retirement Blindness

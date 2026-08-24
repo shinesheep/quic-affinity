@@ -55,7 +55,7 @@
 #define QAFF_PASSIVE_TTL_HIGH_NS (15ULL * 60ULL * 1000000000ULL)
 #define QAFF_PASSIVE_TTL_EGRESS_NS (60ULL * 60ULL * 1000000000ULL)
 
-/** Always direct fallback traffic to fallback_worker_id. */
+/** Direct fallback traffic to fallback_worker_id or drop if it is unavailable. */
 #define QAFF_FALLBACK_MODE_FIXED 0u
 /** Leave fallback traffic to the kernel's native SO_REUSEPORT hash. */
 #define QAFF_FALLBACK_MODE_KERNEL 1u
@@ -147,7 +147,7 @@ enum qaff_stat_index {
   QAFF_STAT_PARSE_ERROR = 3,
   /** Long-header packets with a zero-length DCID. */
   QAFF_STAT_ZERO_LENGTH_CID = 4,
-  /** Packets whose selected worker socket was not registered. */
+  /** Packets whose selected worker or fixed fallback was not registered. */
   QAFF_STAT_WORKER_MISSING = 5,
   /** IPv4 packets seen by the reuseport program. */
   QAFF_STAT_IPV4 = 6,

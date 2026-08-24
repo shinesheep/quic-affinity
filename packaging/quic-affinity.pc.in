@@ -8,4 +8,5 @@ Description: @PROJECT_DESCRIPTION@
 Version: @PROJECT_VERSION@
 Requires: libbpf
 Libs: -L${libdir} -lqaffinity
+Libs.private: -pthread
 Cflags: -I${includedir}

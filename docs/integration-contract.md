@@ -84,8 +84,11 @@ The expected startup sequence is:
 
 The BPF program applies to the reuseport group after attachment.
 Worker registration populates both the reuseport sockarray and the
-socket-cookie reverse map. Call `qaff_unregister_worker_socket()` before
-reusing a socket under another worker ID.
+socket-cookie reverse map. A live worker ID cannot be replaced with a different
+socket. `qaff_unregister_worker_socket()` withdraws its generation, purges its
+exact and passive CIDs, and removes the socket mappings before the ID can be
+reused. Embedded mutation calls are serialized per context; do not let multiple
+embedded contexts independently own the same pinned lifecycle maps.
 
 ## qaffd Startup Sequence
 
@@ -235,17 +238,20 @@ Retirement should be conservative. A CID should remain registered while delayed 
 
 ## Worker Lifecycle
 
-Workers must use stable worker IDs while any registered CID can still route to them. In daemon-controlled mode:
+Workers must use stable worker IDs while any registered CID can still route to them:
 
 1. Register the worker socket before registering CIDs for that worker.
 2. Stop assigning new connections to a draining worker.
 3. Retire or let expire CIDs owned by that worker where the QUIC stack can do so cleanly.
-4. Call `UNREGISTER_WORKER` after the worker is drained.
+4. Call `qaff_unregister_worker_socket()` or `UNREGISTER_WORKER` after the
+   worker is drained.
 
-`qaffd` rejects new CID registrations for unregistered worker IDs. It keeps a daemon-side reverse index from worker ID to CID for CIDs registered through the control API, and bulk-retires those CIDs during worker unregistration.
-It also rejects replacing an active worker's socket with `EBUSY` while that
-worker owns exact CIDs. Unregister the drained worker first if the worker ID
-must be reused with a different socket.
+Both integration modes reject CID registrations for unregistered worker IDs,
+reject replacing an active worker's socket with `EBUSY`, and bulk-retire exact
+and passive CIDs during worker unregistration. qaffd uses its daemon-side CID
+index; the embedded control path scans its maps while mutations on that context
+are locked. Unregister the drained worker first if the worker ID must be reused
+with a different socket.
 
 ## Packet Routing Semantics
 
@@ -281,6 +287,10 @@ register before any non-fallback worker. If it later disappears, qaffd rejects
 new non-fallback registrations until it returns. `qaffctl health` fails and
 prints `fallback_available=0` while the fixed fallback is absent; `qaffctl
 config` exposes the same state. Kernel fallback is always reported available.
+If the fixed fallback selection fails in the dataplane, the packet is dropped
+and `worker_missing` increments. Existing exact/profile routes to other live
+workers continue to operate, while unknown traffic and new Initials fail
+closed until the fallback returns.
 
 `qaffd --fallback-mode kernel` skips explicit socket selection on a fallback,
 so Linux applies its normal SO_REUSEPORT 4-tuple hash. This is recommended for

@@ -427,7 +427,12 @@ static int inject_interrupted_unregistration(const char *pin_root,
     goto out;
   }
 
-  uint32_t generation = QAFF_WORKER_GENERATION_DEFAULT;
+  /*
+   * Model a crash after the generation was withdrawn but before the socket
+   * and reverse-cookie maps were cleaned. Restart reconciliation must finish
+   * the transaction instead of treating generation zero as fully removed.
+   */
+  uint32_t generation = 0;
   uint64_t socket_cookie = 0;
   socklen_t cookie_len = sizeof(socket_cookie);
   if (getsockopt(worker_fd,

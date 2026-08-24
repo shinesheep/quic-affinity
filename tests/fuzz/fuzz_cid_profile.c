@@ -20,7 +20,7 @@ static void verify_v1_parse(const struct qaff_cid_profile_key *key,
     return;
   }
   if (fields.version != QAFF_CID_PROFILE_V1_VERSION ||
-      fields.worker_id > UINT32_C(0xffff) ||
+      fields.worker_id >= QAFF_WORKER_CAPACITY ||
       fields.nonce > UINT32_C(0xffffff)) {
     abort();
   }
@@ -43,7 +43,7 @@ static void verify_v2_parse(const struct qaff_cid_profile_key *key,
     return;
   }
   if (fields.version != QAFF_CID_PROFILE_V2_VERSION ||
-      fields.worker_id > UINT32_C(0xffff) || fields.generation == 0 ||
+      fields.worker_id >= QAFF_WORKER_CAPACITY || fields.generation == 0 ||
       fields.generation > QAFF_WORKER_GENERATION_MAX ||
       fields.nonce > UINT32_C(0xffffff)) {
     abort();
@@ -75,7 +75,7 @@ int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size) {
   uint32_t hash = input_hash(data, size);
   uint8_t v1[QAFF_CID_PROFILE_V1_LEN];
   struct qaff_cid_profile_v1_fields v1_fields;
-  if (qaff_cid_profile_v1_generate(&key, hash & UINT32_C(0xffff),
+  if (qaff_cid_profile_v1_generate(&key, hash % QAFF_WORKER_CAPACITY,
                                    hash & UINT32_C(0xffffff), v1,
                                    sizeof(v1)) != 0 ||
       qaff_cid_profile_v1_parse(&key, v1, sizeof(v1), &v1_fields) != 0) {
@@ -86,7 +86,7 @@ int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size) {
   struct qaff_cid_profile_v2_fields v2_fields;
   uint32_t generation = hash % QAFF_WORKER_GENERATION_MAX + 1;
   if (qaff_cid_profile_v2_generate(
-          &key, hash & UINT32_C(0xff), hash & UINT32_C(0xffff), generation,
+          &key, hash & UINT32_C(0xff), hash % QAFF_WORKER_CAPACITY, generation,
           hash & UINT32_C(0xffffff), v2, sizeof(v2)) != 0 ||
       qaff_cid_profile_v2_parse(&key, v2, sizeof(v2), &v2_fields) != 0 ||
       v2_fields.generation != generation) {

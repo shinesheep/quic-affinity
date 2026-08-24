@@ -48,8 +48,8 @@ struct qaff_cid_profile_v2_fields {
 /**
  * Generate an 8-byte routable CID profile v1.
  *
- * worker_id must fit in 16 bits and nonce must fit in 24 bits. The output
- * buffer must be at least QAFF_CID_PROFILE_V1_LEN bytes.
+ * worker_id must be below QAFF_WORKER_CAPACITY and nonce must fit in 24 bits.
+ * The output buffer must be at least QAFF_CID_PROFILE_V1_LEN bytes.
  *
  * Returns 0 on success or -1 with errno set.
  */
@@ -72,8 +72,8 @@ int qaff_cid_profile_v1_parse(const struct qaff_cid_profile_key *key,
 /**
  * Generate a 12-byte routable CID profile v2.
  *
- * config_id must fit in 8 bits, worker_id in 16 bits, generation in 1..255, and
- * nonce in 24 bits. The output buffer must be at least
+ * config_id must fit in 8 bits, worker_id must be below QAFF_WORKER_CAPACITY,
+ * generation in 1..255, and nonce in 24 bits. The output buffer must be at least
  * QAFF_CID_PROFILE_V2_LEN bytes.
  *
  * Returns 0 on success or -1 with errno set.
