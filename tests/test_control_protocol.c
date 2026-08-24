@@ -83,6 +83,7 @@ static int test_config_reply(void) {
   input.config.state_persistence_degraded = 1;
   input.config.worker_cleanup_degraded = 1;
   input.config.cid_consistency_degraded = 1;
+  input.config.passive_cleanup_degraded = 1;
   input.config.worker_count = 73;
   input.config.recovering_worker_count = 4;
   input.config.fallback_worker_id = 42;
@@ -92,6 +93,7 @@ static int test_config_reply(void) {
   input.config.state_persistence_retry_count = 11;
   input.config.worker_cleanup_error_count = 23;
   input.config.worker_cleanup_retry_count = 19;
+  input.config.passive_cleanup_retry_count = 29;
   input.config.passive_scan_interval_ms = 30000;
   input.config.worker_recovery_timeout_ms = 5000;
   strcpy(input.config.pin_root, "/sys/fs/bpf/qaff");
@@ -127,6 +129,9 @@ static int test_config_reply(void) {
                        "worker cleanup health round trip") == 0 &&
                  check(output.config.cid_consistency_degraded == 1,
                        "CID consistency health round trip") == 0 &&
+                 check(output.config.passive_cleanup_degraded == 1 &&
+                           output.config.passive_cleanup_retry_count == 29,
+                       "passive cleanup health round trip") == 0 &&
                  check(output.config.cid_map_count ==
                            UINT64_C(0x0102030405060708),
                        "config u64 round trip") == 0 &&

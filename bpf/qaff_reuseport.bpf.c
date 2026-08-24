@@ -71,6 +71,24 @@ static __always_inline void qaff_count(__u32 index) {
   }
 }
 
+static __always_inline int qaff_drop_stale_egress_learning(
+    const struct qaff_cid_key *key,
+    const struct qaff_passive_cid_value *learned,
+    const __u32 *live_generation) {
+  if (*live_generation == learned->worker_generation) {
+    return 0;
+  }
+
+  struct qaff_passive_cid_value *current =
+      bpf_map_lookup_elem(&qaff_passive_cids, key);
+  if (current && current->worker_id == learned->worker_id &&
+      current->worker_generation == learned->worker_generation) {
+    bpf_map_delete_elem(&qaff_passive_cids, key);
+  }
+  qaff_count(QAFF_STAT_PASSIVE_EGRESS_NO_WORKER);
+  return 1;
+}
+
 static __always_inline int qaff_copy_dcid(struct qaff_cid_key *key,
                                           void *data,
                                           void *data_end,
@@ -501,10 +519,52 @@ int qaff_egress_learn(struct __sk_buff *skb) {
   value.source = QAFF_PASSIVE_SOURCE_EGRESS;
   value.expires_at_ns = bpf_ktime_get_ns() + QAFF_PASSIVE_TTL_EGRESS_NS;
 
-  if (bpf_map_update_elem(&qaff_passive_cids, &key, &value, BPF_ANY) == 0) {
+  struct qaff_passive_cid_value *existing =
+      bpf_map_lookup_elem(&qaff_passive_cids, &key);
+  if (existing) {
+    if (existing->worker_id != value.worker_id ||
+        existing->worker_generation != value.worker_generation) {
+      qaff_count(QAFF_STAT_PASSIVE_EGRESS_CONFLICT);
+      return 1;
+    }
+
+    /* Same-owner egress observation may strengthen and refresh the record. */
+    existing->confidence = QAFF_PASSIVE_CONFIDENCE_HIGH;
+    existing->source = QAFF_PASSIVE_SOURCE_EGRESS;
+    existing->expires_at_ns = value.expires_at_ns;
+    if (qaff_drop_stale_egress_learning(&key, &value, generation)) {
+      return 1;
+    }
     qaff_count(QAFF_STAT_PASSIVE_EGRESS_LEARN);
-  } else {
-    qaff_count(QAFF_STAT_PASSIVE_EGRESS_MAP_UPDATE_ERROR);
+    return 1;
   }
+
+  if (bpf_map_update_elem(&qaff_passive_cids,
+                          &key,
+                          &value,
+                          BPF_NOEXIST) != 0) {
+    /* Resolve a concurrent insert without ever replacing its owner. */
+    existing = bpf_map_lookup_elem(&qaff_passive_cids, &key);
+    if (existing && existing->worker_id == value.worker_id &&
+        existing->worker_generation == value.worker_generation) {
+      existing->confidence = QAFF_PASSIVE_CONFIDENCE_HIGH;
+      existing->source = QAFF_PASSIVE_SOURCE_EGRESS;
+      existing->expires_at_ns = value.expires_at_ns;
+      if (!qaff_drop_stale_egress_learning(&key, &value, generation)) {
+        qaff_count(QAFF_STAT_PASSIVE_EGRESS_LEARN);
+      }
+    } else if (existing) {
+      qaff_count(QAFF_STAT_PASSIVE_EGRESS_CONFLICT);
+    } else {
+      qaff_count(QAFF_STAT_PASSIVE_EGRESS_MAP_UPDATE_ERROR);
+    }
+    return 1;
+  }
+
+  /* Do not leave an in-flight observation behind after worker withdrawal. */
+  if (qaff_drop_stale_egress_learning(&key, &value, generation)) {
+    return 1;
+  }
+  qaff_count(QAFF_STAT_PASSIVE_EGRESS_LEARN);
   return 1;
 }

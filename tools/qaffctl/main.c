@@ -196,6 +196,7 @@ static int cmd_health(int argc, char **argv) {
   unsigned int healthy = config.fallback_available &&
                          !config.state_persistence_degraded &&
                          !config.worker_cleanup_degraded &&
+                         !config.passive_cleanup_degraded &&
                          !config.cid_consistency_degraded &&
                          config.cid_index_mismatch == 0;
   printf("ok=%u\n", healthy);
@@ -213,6 +214,10 @@ static int cmd_health(int argc, char **argv) {
          (unsigned long long)config.worker_cleanup_error_count);
   printf("worker_cleanup_retry_count=%llu\n",
          (unsigned long long)config.worker_cleanup_retry_count);
+  printf("passive_cleanup_degraded=%u\n",
+         config.passive_cleanup_degraded);
+  printf("passive_cleanup_retry_count=%llu\n",
+         (unsigned long long)config.passive_cleanup_retry_count);
   printf("cid_consistency_degraded=%u\n",
          config.cid_consistency_degraded);
   printf("attached=%u\n", config.attached);
@@ -284,6 +289,10 @@ static void print_config(const struct qaff_control_config *config) {
          (unsigned long long)config->passive_expiry_initialized_count);
   printf("passive_cleanup_error_count=%llu\n",
          (unsigned long long)config->passive_cleanup_error_count);
+  printf("passive_cleanup_degraded=%u\n",
+         config->passive_cleanup_degraded);
+  printf("passive_cleanup_retry_count=%llu\n",
+         (unsigned long long)config->passive_cleanup_retry_count);
   printf("passive_scan_interval_ms=%llu\n",
          (unsigned long long)config->passive_scan_interval_ms);
   printf("worker_recovery_timeout_ms=%llu\n",

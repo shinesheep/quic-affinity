@@ -186,6 +186,8 @@ grep -q '^worker_cleanup_degraded=0$' /tmp/qaffctl-control-$$.health
 grep -q '^worker_cleanup_pending_count=0$' /tmp/qaffctl-control-$$.health
 grep -q '^worker_cleanup_error_count=0$' /tmp/qaffctl-control-$$.health
 grep -q '^worker_cleanup_retry_count=0$' /tmp/qaffctl-control-$$.health
+grep -q '^passive_cleanup_degraded=0$' /tmp/qaffctl-control-$$.health
+grep -q '^passive_cleanup_retry_count=0$' /tmp/qaffctl-control-$$.health
 grep -q '^cid_consistency_degraded=0$' /tmp/qaffctl-control-$$.health
 grep -q '^attached=0$' /tmp/qaffctl-control-$$.health
 grep -q '^worker_count=0$' /tmp/qaffctl-control-$$.health
@@ -227,6 +229,8 @@ grep -q '^passive_expired_count=0$' /tmp/qaffctl-control-$$.config
 grep -q '^passive_worker_purged_count=0$' /tmp/qaffctl-control-$$.config
 grep -q '^passive_expiry_initialized_count=0$' /tmp/qaffctl-control-$$.config
 grep -q '^passive_cleanup_error_count=0$' /tmp/qaffctl-control-$$.config
+grep -q '^passive_cleanup_degraded=0$' /tmp/qaffctl-control-$$.config
+grep -q '^passive_cleanup_retry_count=0$' /tmp/qaffctl-control-$$.config
 grep -q '^passive_scan_interval_ms=30000$' /tmp/qaffctl-control-$$.config
 grep -q '^worker_recovery_timeout_ms=5000$' /tmp/qaffctl-control-$$.config
 grep -q '^pin_root=$' /tmp/qaffctl-control-$$.config
@@ -269,6 +273,7 @@ grep -q '^passive_egress_socket_cookie_hit=0$' /tmp/qaffctl-control-$$.out
 grep -q '^passive_egress_socket_cookie_miss=0$' /tmp/qaffctl-control-$$.out
 grep -q '^passive_egress_map_update_error=0$' /tmp/qaffctl-control-$$.out
 grep -q '^cid_map_reject_generation=0$' /tmp/qaffctl-control-$$.out
+grep -q '^passive_egress_conflict=0$' /tmp/qaffctl-control-$$.out
 
 "$qaffctl_bin" stop "$sock"
 wait "$daemon_pid"

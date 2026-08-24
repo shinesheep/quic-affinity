@@ -473,6 +473,7 @@ The application should read dataplane counters through `qaff_read_stats()` and a
 - `passive_egress_parse_miss`
 - `passive_egress_socket_cookie_miss`
 - `passive_egress_map_update_error`
+- `passive_egress_conflict`
 
 ## Minimal API Surface
 

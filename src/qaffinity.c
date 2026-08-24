@@ -840,15 +840,59 @@ int qaff_register_passive_cid(struct qaff_context *ctx,
 
   struct qaff_passive_cid_value stored = *value;
   stored.worker_generation = generation;
-  rc = bpf_map_update_elem(ctx->passive_cid_map_fd, &key, &stored, BPF_ANY);
-  if (rc == 0 &&
-      qaff_worker_generation_matches(ctx,
-                                     stored.worker_id,
-                                     stored.worker_generation) != 0) {
-    rc = -1;
+  if (bpf_map_update_elem(ctx->passive_cid_map_fd,
+                          &key,
+                          &stored,
+                          BPF_NOEXIST) == 0) {
+    if (qaff_worker_generation_matches(ctx,
+                                       stored.worker_id,
+                                       stored.worker_generation) != 0) {
+      int saved_errno = errno ? errno : ESTALE;
+      struct qaff_passive_cid_value removed;
+      if (bpf_map_lookup_and_delete_elem(ctx->passive_cid_map_fd,
+                                         &key,
+                                         &removed) == 0 &&
+          (removed.worker_id != stored.worker_id ||
+           removed.worker_generation != stored.worker_generation)) {
+        (void)bpf_map_update_elem(ctx->passive_cid_map_fd,
+                                  &key,
+                                  &removed,
+                                  BPF_NOEXIST);
+      }
+      qaff_unlock_mutations(ctx);
+      errno = saved_errno;
+      return -1;
+    }
+    qaff_unlock_mutations(ctx);
+    return 0;
   }
+  if (errno != EEXIST) {
+    qaff_unlock_mutations(ctx);
+    return -1;
+  }
+
+  /*
+   * Passive CID ownership is immutable until explicit retirement or cleanup.
+   * A duplicate registration by the live owner is idempotent; metadata and
+   * TTL refreshes are deliberately left to dataplane observation so a racing
+   * cleanup cannot turn an innocent refresh into a cross-owner overwrite.
+   */
+  struct qaff_passive_cid_value existing;
+  if (bpf_map_lookup_elem(ctx->passive_cid_map_fd, &key, &existing) != 0) {
+    qaff_unlock_mutations(ctx);
+    return -1;
+  }
+  if (existing.worker_id == stored.worker_id &&
+      existing.worker_generation == stored.worker_generation) {
+    rc = qaff_worker_generation_matches(ctx,
+                                        stored.worker_id,
+                                        stored.worker_generation);
+    qaff_unlock_mutations(ctx);
+    return rc;
+  }
+  errno = EEXIST;
   qaff_unlock_mutations(ctx);
-  return rc;
+  return -1;
 }
 
 int qaff_retire_passive_cid(struct qaff_context *ctx,
@@ -1134,10 +1178,22 @@ static int qaff_delete_passive_worker_routes(struct qaff_context *ctx,
 
     struct qaff_passive_cid_value value;
     if (bpf_map_lookup_elem(ctx->passive_cid_map_fd, &current, &value) == 0) {
-      if (value.worker_id == worker_id &&
-          bpf_map_delete_elem(ctx->passive_cid_map_fd, &current) != 0 &&
-          errno != ENOENT) {
-        return -1;
+      if (value.worker_id == worker_id) {
+        struct qaff_passive_cid_value removed;
+        if (bpf_map_lookup_and_delete_elem(ctx->passive_cid_map_fd,
+                                           &current,
+                                           &removed) == 0) {
+          if (removed.worker_id != worker_id &&
+              bpf_map_update_elem(ctx->passive_cid_map_fd,
+                                  &current,
+                                  &removed,
+                                  BPF_NOEXIST) != 0 &&
+              errno != EEXIST) {
+            return -1;
+          }
+        } else if (errno != ENOENT) {
+          return -1;
+        }
       }
     } else if (errno != ENOENT) {
       return -1;
@@ -1365,6 +1421,8 @@ const char *qaff_stat_name(uint32_t index) {
     return "passive_egress_map_update_error";
   case QAFF_STAT_CID_MAP_REJECT_GENERATION:
     return "cid_map_reject_generation";
+  case QAFF_STAT_PASSIVE_EGRESS_CONFLICT:
+    return "passive_egress_conflict";
   default:
     return "unknown";
   }

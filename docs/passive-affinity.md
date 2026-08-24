@@ -335,7 +335,14 @@ passive_egress_too_long_scid
 passive_egress_socket_cookie_hit
 passive_egress_socket_cookie_miss
 passive_egress_map_update_error
+passive_egress_conflict
 ```
+
+A passive CID keeps its worker and generation owner until it is retired or
+cleaned up. Re-registering it for the same live owner is idempotent. Egress
+observation may refresh that owner's confidence and TTL, but an observation
+from another worker or generation is rejected and counted as
+`passive_egress_conflict`; it never changes the route.
 
 `qaffctl config` and `qaffctl health` expose:
 
@@ -344,6 +351,7 @@ passive_egress_map_update_error
 - cleanup scan interval
 - expiry and worker-purge totals
 - cleanup errors
+- cleanup degraded state and retry attempts
 - top-level health status without printing CID bytes by default
 
 ## Recommended Rollout

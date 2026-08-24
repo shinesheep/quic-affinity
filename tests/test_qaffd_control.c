@@ -1214,6 +1214,27 @@ static int run_case(const char *qaffd_path,
     perror("qaff_control_register_passive_cid");
     return 1;
   }
+  if (control_call_register_passive_cid(socket_path,
+                                        TARGET_WORKER,
+                                        k_passive_dcid,
+                                        QAFF_PASSIVE_CONFIDENCE_HIGH,
+                                        QAFF_PASSIVE_SOURCE_EGRESS,
+                                        0) != 0) {
+    perror("qaff_control_register_passive_cid idempotent");
+    return 1;
+  }
+  errno = 0;
+  if (control_call_register_passive_cid(socket_path,
+                                        FALLBACK_WORKER,
+                                        k_passive_dcid,
+                                        QAFF_PASSIVE_CONFIDENCE_HIGH,
+                                        QAFF_PASSIVE_SOURCE_EGRESS,
+                                        0) == 0 ||
+      errno != EEXIST) {
+    fprintf(stderr, "%s: passive CID owner was silently replaced\n",
+            test->name);
+    return 1;
+  }
   if (send_quic_like_packet(senders[0].fd,
                             test->family,
                             port,
@@ -1344,7 +1365,9 @@ static int run_case(const char *qaffd_path,
       cid_config.passive_expired_count != 1 ||
       cid_config.passive_worker_purged_count != 1 ||
       cid_config.passive_expiry_initialized_count != 0 ||
+      cid_config.passive_cleanup_degraded != 0 ||
       cid_config.passive_cleanup_error_count != 0 ||
+      cid_config.passive_cleanup_retry_count != 0 ||
       cid_config.passive_scan_interval_ms != 20) {
     fprintf(stderr,
             "%s: unexpected CID counts after worker unregister\n",

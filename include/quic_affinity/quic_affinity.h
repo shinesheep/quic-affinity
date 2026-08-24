@@ -111,6 +111,11 @@ int qaff_retire_cid(struct qaff_context *ctx,
 /**
  * Register a passive CID routing entry.
  *
+ * Ownership is immutable until the CID is retired or cleaned up. Repeating a
+ * registration for the same live worker generation is idempotent and does not
+ * replace its metadata; a different worker or generation fails with EEXIST.
+ * Dataplane egress observation may strengthen and refresh a same-owner entry.
+ *
  * Passive entries are best-effort black-box hints. Exact CID registrations and
  * routable profile validation take priority over this table in the dataplane.
  * The target worker must be registered. A zero worker_generation is replaced

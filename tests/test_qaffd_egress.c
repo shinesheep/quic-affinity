@@ -19,6 +19,7 @@
 
 #define WORKER_COUNT 3
 #define TARGET_WORKER 2
+#define CONFLICT_WORKER 1
 #define TEST_SKIP 77
 
 static const uint8_t k_client_cid[] = {
@@ -27,6 +28,10 @@ static const uint8_t k_client_cid[] = {
 
 static const uint8_t k_server_cid[] = {
   0x5e, 0x12, 0x51, 0xd0, 0xaa, 0xbb, 0xcc, 0xdd,
+};
+
+static const uint8_t k_conflict_server_cid[] = {
+  0xcf, 0x11, 0xc7, 0x01, 0xaa, 0xbb, 0xcc, 0xdd,
 };
 
 static int set_nonblocking(int fd) {
@@ -189,6 +194,27 @@ static int read_stats(const char *socket_path, struct qaff_stats *stats) {
   return rc;
 }
 
+static int register_passive_cid(const char *socket_path,
+                                uint32_t worker_id,
+                                const uint8_t *cid,
+                                size_t cid_len) {
+  int control_fd = qaff_control_connect(socket_path);
+  if (control_fd < 0) {
+    return -1;
+  }
+  struct qaff_passive_cid_value value;
+  memset(&value, 0, sizeof(value));
+  value.worker_id = worker_id;
+  value.confidence = QAFF_PASSIVE_CONFIDENCE_HIGH;
+  value.source = QAFF_PASSIVE_SOURCE_EGRESS;
+  int rc = qaff_control_register_passive_cid(control_fd,
+                                             cid,
+                                             cid_len,
+                                             &value);
+  close(control_fd);
+  return rc;
+}
+
 int main(int argc, char **argv) {
   if (argc != 2) {
     fprintf(stderr, "usage: %s QAFFD_SOCKET\n", argv[0]);
@@ -262,6 +288,48 @@ int main(int argc, char **argv) {
     return 1;
   }
 
+  if (register_passive_cid(socket_path,
+                           CONFLICT_WORKER,
+                           k_conflict_server_cid,
+                           sizeof(k_conflict_server_cid)) != 0) {
+    perror("qaff_control_register_passive_cid conflict");
+    return 1;
+  }
+  packet_len = make_long_packet(packet,
+                                sizeof(packet),
+                                k_client_cid,
+                                sizeof(k_client_cid),
+                                k_conflict_server_cid,
+                                sizeof(k_conflict_server_cid));
+  if (packet_len == 0 ||
+      send_packet_to_port(workers[TARGET_WORKER],
+                          client_port,
+                          packet,
+                          packet_len) != 0) {
+    perror("send conflicting server packet");
+    return 1;
+  }
+
+  packet_len = make_long_packet(packet,
+                                sizeof(packet),
+                                k_conflict_server_cid,
+                                sizeof(k_conflict_server_cid),
+                                k_client_cid,
+                                sizeof(k_client_cid));
+  if (packet_len == 0 ||
+      send_packet_to_port(client_fd, listener_port, packet, packet_len) != 0) {
+    perror("send conflicting client packet");
+    return 1;
+  }
+  worker = receive_worker(workers);
+  if (worker != CONFLICT_WORKER) {
+    fprintf(stderr,
+            "egress learning replaced passive owner %d with worker %d\n",
+            CONFLICT_WORKER,
+            worker);
+    return 1;
+  }
+
   struct qaff_stats stats;
   if (read_stats(socket_path, &stats) != 0) {
     perror("qaff_control_read_stats");
@@ -270,13 +338,16 @@ int main(int argc, char **argv) {
   if (stats.values[QAFF_STAT_PASSIVE_EGRESS_LEARN] < 1 ||
       stats.values[QAFF_STAT_PASSIVE_HIT] < 1 ||
       stats.values[QAFF_STAT_PASSIVE_EGRESS_SOCKET_COOKIE_HIT] < 1 ||
+      stats.values[QAFF_STAT_PASSIVE_EGRESS_CONFLICT] < 1 ||
       stats.values[QAFF_STAT_PASSIVE_EGRESS_MAP_UPDATE_ERROR] != 0) {
     fprintf(stderr,
-            "unexpected egress stats learn=%llu hit=%llu cookie_hit=%llu update_error=%llu\n",
+            "unexpected egress stats learn=%llu hit=%llu cookie_hit=%llu conflict=%llu update_error=%llu\n",
             (unsigned long long)stats.values[QAFF_STAT_PASSIVE_EGRESS_LEARN],
             (unsigned long long)stats.values[QAFF_STAT_PASSIVE_HIT],
             (unsigned long long)
                 stats.values[QAFF_STAT_PASSIVE_EGRESS_SOCKET_COOKIE_HIT],
+            (unsigned long long)
+                stats.values[QAFF_STAT_PASSIVE_EGRESS_CONFLICT],
             (unsigned long long)
                 stats.values[QAFF_STAT_PASSIVE_EGRESS_MAP_UPDATE_ERROR]);
     return 1;

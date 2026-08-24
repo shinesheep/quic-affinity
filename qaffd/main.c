@@ -40,6 +40,7 @@
 #define QAFFD_WORKER_RECOVERY_TIMEOUT_MS_DEFAULT 5000u
 #define QAFFD_STATE_PERSISTENCE_RETRY_MS 1000u
 #define QAFFD_WORKER_CLEANUP_RETRY_MS 1000u
+#define QAFFD_PASSIVE_CLEANUP_RETRY_MS 1000u
 
 #ifndef SO_REUSEPORT
 #define SO_REUSEPORT 15
@@ -159,6 +160,9 @@ struct qaffd_state {
   uint64_t passive_worker_purged_count;
   uint64_t passive_expiry_initialized_count;
   uint64_t passive_cleanup_error_count;
+  uint64_t passive_cleanup_retry_count;
+  uint64_t passive_cleanup_retry_at_ms;
+  uint8_t passive_cleanup_degraded;
   uint8_t state_persistence_degraded;
   uint64_t state_persistence_error_count;
   uint64_t state_persistence_retry_count;
@@ -615,6 +619,8 @@ static void fill_config_reply(const struct qaffd_state *state,
       state->state_persistence_degraded;
   reply->config.worker_cleanup_degraded =
       state->worker_cleanup_retry.pending_count != 0;
+  reply->config.passive_cleanup_degraded =
+      state->passive_cleanup_degraded;
   reply->config.attached = state->attached ? 1 : 0;
   reply->config.worker_count = worker_count(state);
   reply->config.recovering_worker_count = recovering_worker_count(state);
@@ -628,6 +634,8 @@ static void fill_config_reply(const struct qaffd_state *state,
       state->passive_expiry_initialized_count;
   reply->config.passive_cleanup_error_count =
       state->passive_cleanup_error_count;
+  reply->config.passive_cleanup_retry_count =
+      state->passive_cleanup_retry_count;
   reply->config.state_persistence_error_count =
       state->state_persistence_error_count;
   reply->config.state_persistence_retry_count =
@@ -1298,6 +1306,30 @@ static uint64_t passive_default_ttl_ns(
   return QAFF_PASSIVE_TTL_HIGH_NS;
 }
 
+static int passive_value_should_delete(const struct qaffd_state *state,
+                                       const struct qaff_passive_cid_value *value,
+                                       uint64_t monotonic_now_ns,
+                                       int purge_worker,
+                                       uint32_t worker_id) {
+  if (purge_worker) {
+    return worker_id == UINT32_MAX
+               ? worker_is_tombstoned(state, value->worker_id)
+               : value->worker_id == worker_id;
+  }
+  return value->expires_at_ns != 0 &&
+         value->expires_at_ns <= monotonic_now_ns;
+}
+
+static int restore_passive_value(int map_fd,
+                                 const struct qaff_cid_key *key,
+                                 const struct qaff_passive_cid_value *value) {
+  if (bpf_map_update_elem(map_fd, key, value, BPF_NOEXIST) == 0 ||
+      errno == EEXIST) {
+    return 0;
+  }
+  return -1;
+}
+
 static int cleanup_passive_cids(struct qaffd_state *state,
                                 uint64_t monotonic_now_ns,
                                 int purge_worker,
@@ -1329,34 +1361,48 @@ static int cleanup_passive_cids(struct qaffd_state *state,
 
     struct qaff_passive_cid_value value;
     if (bpf_map_lookup_elem(map_fd, &current, &value) == 0) {
-      int should_delete = 0;
-      if (purge_worker) {
-        should_delete = worker_id == UINT32_MAX
-                            ? worker_is_tombstoned(state, value.worker_id)
-                            : value.worker_id == worker_id;
-      }
-      if (!purge_worker && value.expires_at_ns != 0 &&
-          value.expires_at_ns <= monotonic_now_ns) {
-        should_delete = 1;
-      }
-
-      if (should_delete) {
-        if (bpf_map_delete_elem(map_fd, &current) != 0 && errno != ENOENT) {
+      int should_delete = passive_value_should_delete(state,
+                                                       &value,
+                                                       monotonic_now_ns,
+                                                       purge_worker,
+                                                       worker_id);
+      int should_initialize =
+          !purge_worker && value.expires_at_ns == 0;
+      if (should_delete || should_initialize) {
+        /*
+         * Atomically take the current value, then re-evaluate it. A dataplane
+         * refresh or a concurrent owner change between lookup and deletion
+         * must not be discarded by this userspace scan.
+         */
+        struct qaff_passive_cid_value removed;
+        if (bpf_map_lookup_and_delete_elem(map_fd, &current, &removed) != 0) {
+          if (errno != ENOENT) {
+            return -1;
+          }
+        } else if (passive_value_should_delete(state,
+                                               &removed,
+                                               monotonic_now_ns,
+                                               purge_worker,
+                                               worker_id)) {
+          if (purge_worker) {
+            state->passive_worker_purged_count++;
+          } else {
+            state->passive_expired_count++;
+          }
+        } else if (!purge_worker && removed.expires_at_ns == 0) {
+          removed.expires_at_ns =
+              monotonic_now_ns + passive_default_ttl_ns(&removed);
+          if (bpf_map_update_elem(map_fd,
+                                  &current,
+                                  &removed,
+                                  BPF_NOEXIST) == 0) {
+            state->passive_expiry_initialized_count++;
+          } else if (errno != EEXIST) {
+            return -1;
+          }
+        } else if (restore_passive_value(map_fd, &current, &removed) != 0) {
           return -1;
         }
-        if (purge_worker) {
-          state->passive_worker_purged_count++;
-        } else {
-          state->passive_expired_count++;
-        }
-      } else if (!purge_worker && value.expires_at_ns == 0) {
-        value.expires_at_ns =
-            monotonic_now_ns + passive_default_ttl_ns(&value);
-        if (bpf_map_update_elem(map_fd, &current, &value, BPF_EXIST) != 0 &&
-            errno != ENOENT) {
-          return -1;
-        }
-        state->passive_expiry_initialized_count++;
       }
     } else if (errno != ENOENT) {
       return -1;
@@ -2595,6 +2641,7 @@ static void process_request(struct qaffd_state *state,
         reply->status = EHOSTDOWN;
       } else if (reply->config.state_persistence_degraded ||
                  reply->config.worker_cleanup_degraded ||
+                 reply->config.passive_cleanup_degraded ||
                  reply->config.cid_consistency_degraded ||
                  reply->config.cid_index_mismatch != 0) {
         reply->status = EUCLEAN;
@@ -3047,7 +3094,12 @@ static int expire_passive_cids_if_due(struct qaffd_state *state) {
   }
 
   uint64_t monotonic_now_ms = now_ms();
-  if (state->passive_last_scan_ms != 0 &&
+  if (state->passive_cleanup_degraded) {
+    if (monotonic_now_ms < state->passive_cleanup_retry_at_ms) {
+      return 0;
+    }
+    state->passive_cleanup_retry_count++;
+  } else if (state->passive_last_scan_ms != 0 &&
       elapsed_ms(monotonic_now_ms, state->passive_last_scan_ms) <
           state->passive_scan_interval_ms) {
     return 0;
@@ -3055,9 +3107,29 @@ static int expire_passive_cids_if_due(struct qaffd_state *state) {
 
   state->passive_last_scan_ms = monotonic_now_ms;
   if (cleanup_passive_cids(state, now_ns(), 0, 0) != 0) {
+    int saved_errno = errno ? errno : EIO;
+    state->passive_cleanup_degraded = 1;
     state->passive_cleanup_error_count++;
+    state->passive_cleanup_retry_at_ms =
+        monotonic_now_ms + QAFFD_PASSIVE_CLEANUP_RETRY_MS;
+    audit_event("passive_cleanup_degraded",
+                NULL,
+                "errno=%d error_count=%llu retry_ms=%u",
+                saved_errno,
+                (unsigned long long)state->passive_cleanup_error_count,
+                QAFFD_PASSIVE_CLEANUP_RETRY_MS);
+    errno = saved_errno;
     return -1;
   }
+  if (state->passive_cleanup_degraded) {
+    audit_event("passive_cleanup_recovered",
+                NULL,
+                "error_count=%llu retry_count=%llu",
+                (unsigned long long)state->passive_cleanup_error_count,
+                (unsigned long long)state->passive_cleanup_retry_count);
+  }
+  state->passive_cleanup_degraded = 0;
+  state->passive_cleanup_retry_at_ms = 0;
   return 0;
 }
 
@@ -3141,7 +3213,18 @@ static int passive_cleanup_poll_timeout(const struct qaffd_state *state) {
     return state->passive_affinity_enabled ? 0 : -1;
   }
 
-  uint64_t age = elapsed_ms(now_ms(), state->passive_last_scan_ms);
+  uint64_t now = now_ms();
+  if (state->passive_cleanup_degraded) {
+    if (now >= state->passive_cleanup_retry_at_ms) {
+      return 0;
+    }
+    uint64_t retry_remaining = state->passive_cleanup_retry_at_ms - now;
+    return retry_remaining > (uint64_t)INT_MAX
+               ? INT_MAX
+               : (int)retry_remaining;
+  }
+
+  uint64_t age = elapsed_ms(now, state->passive_last_scan_ms);
   if (age >= state->passive_scan_interval_ms) {
     return 0;
   }

@@ -197,8 +197,10 @@ enum qaff_stat_index {
   QAFF_STAT_PASSIVE_EGRESS_MAP_UPDATE_ERROR = 24,
   /** Exact CID entry generation did not match the live worker generation. */
   QAFF_STAT_CID_MAP_REJECT_GENERATION = 25,
+  /** Egress learning refused to overwrite another passive CID owner. */
+  QAFF_STAT_PASSIVE_EGRESS_CONFLICT = 26,
   /** Number of stats slots; always keep this last. */
-  QAFF_STAT_MAX = 26,
+  QAFF_STAT_MAX = 27,
 };
 
 #endif

@@ -58,6 +58,8 @@ struct qaff_control_config {
   uint8_t worker_cleanup_degraded;
   /** Non-zero when exact-CID consistency could not be inspected. */
   uint8_t cid_consistency_degraded;
+  /** Non-zero while periodic passive-map cleanup needs to be retried. */
+  uint8_t passive_cleanup_degraded;
   /** Number of durable worker records, including recovering workers. */
   uint32_t worker_count;
   /** Number of restored workers awaiting an exact-socket claim. */
@@ -84,6 +86,8 @@ struct qaff_control_config {
   uint64_t passive_expiry_initialized_count;
   /** Passive map cleanup operations that failed. */
   uint64_t passive_cleanup_error_count;
+  /** Background passive map cleanup retry attempts. */
+  uint64_t passive_cleanup_retry_count;
   /** Durable worker snapshot operations that failed or were not synced. */
   uint64_t state_persistence_error_count;
   /** Background durable worker snapshot retry attempts. */

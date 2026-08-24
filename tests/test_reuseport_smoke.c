@@ -631,6 +631,22 @@ static int run_case(const char *object_path, const struct test_case *test) {
     perror("qaff_register_passive_cid");
     return 1;
   }
+  if (qaff_register_passive_cid(ctx, k_passive_dcid, sizeof(k_passive_dcid),
+                                &passive_value) != 0) {
+    perror("qaff_register_passive_cid idempotent");
+    return 1;
+  }
+  struct qaff_passive_cid_value conflicting_passive = passive_value;
+  conflicting_passive.worker_id = FALLBACK_WORKER;
+  errno = 0;
+  if (qaff_register_passive_cid(ctx,
+                                k_passive_dcid,
+                                sizeof(k_passive_dcid),
+                                &conflicting_passive) == 0 ||
+      errno != EEXIST) {
+    fprintf(stderr, "live passive CID was reassigned to another worker\n");
+    return 1;
+  }
   if (qaff_register_passive_cid(ctx, tampered_profile_cid,
                                 sizeof(tampered_profile_cid),
                                 &passive_value) != 0) {
@@ -873,7 +889,10 @@ static int run_case(const char *object_path, const struct test_case *test) {
     }
   }
   passive_value.expires_at_ns = 0;
-  if (qaff_register_passive_cid(ctx, k_passive_dcid, sizeof(k_passive_dcid),
+  if (qaff_retire_passive_cid(ctx,
+                              k_passive_dcid,
+                              sizeof(k_passive_dcid)) != 0 ||
+      qaff_register_passive_cid(ctx, k_passive_dcid, sizeof(k_passive_dcid),
                                 &passive_value) != 0) {
     perror("restore passive CID generation");
     return 1;
