@@ -107,13 +107,22 @@ When using `qaffd`, the privileged daemon owns BPF setup:
 If the leased control connection closes unexpectedly, `qaffd` treats the worker as dead, unregisters it, closes qaffd's duplicated worker socket fd, and bulk-retires that worker's CIDs. `--worker-heartbeat-timeout-ms` also lets `qaffd` remove leased workers that keep the connection open but stop sending `WORKER_HEARTBEAT` messages; `0` disables heartbeat timeouts. The older one-shot `REGISTER_WORKER` operation remains available for compatibility, but it cannot detect worker process death on its own because fd passing gives `qaffd` a separate reference to the UDP socket.
 
 After qaffd restarts, persisted workers begin in a recovery quarantine rather
-than being considered live. Their generation is zero and their sockarray entry
-is absent until the exact socket cookie reclaims the worker ID. This makes old
+than being considered live. Their live BPF generation is zero and their
+sockarray entry is absent until the exact socket cookie reclaims the worker ID.
+This makes old
 exact/profile/passive routes and fixed fallback fail closed during the control
 plane recovery window. The default claim deadline is 5000 ms and can be tuned
 with `--worker-recovery-timeout-ms`; an unclaimed record is tombstoned and
 purged when the deadline expires. Native invasive integrations and
 `qaff-agent` must reconnect and repeat their leased registration.
+
+The agent also tolerates daemon/agent startup reordering and a socket rotation
+that overlaps qaffd downtime. It remains not-ready and retries registration
+while the target process still owns the discovered socket. If that socket
+changes during the retry window, the agent abandons the stale duplicate and
+restarts discovery instead of exiting or registering the wrong cookie.
+Authorization, invalid-configuration, and socket-cookie conflict errors remain
+terminal so deployment mistakes are reported instead of retried forever.
 
 `qaffd` records the registering process' Unix peer credentials and exposes them through `qaffctl workers`. For leased workers it also opens a pidfd when supported; pidfd readability is treated as worker death and triggers the same unregister cleanup as lease close. Existing worker IDs, worker CID registration, CID retirement, and worker unregistration can be mutated only by the original worker process or by the configured management identity. Deployments use `--allow-worker-uid` and `--allow-worker-gid` to restrict worker admission, and the independent `--allow-admin-uid` and `--allow-admin-gid` options to grant management authority. Group-accessible control sockets require an explicit management identity.
 

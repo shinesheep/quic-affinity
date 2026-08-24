@@ -309,7 +309,9 @@ leased worker with qaffd, sends optional heartbeats, restores the registration
 after qaffd restarts, and removes the lease when the real target exits. It also
 checks the target's socket cookie periodically; if the application closes or
 replaces the listener, the agent revokes the old lease, releases its duplicate,
-and discovers and registers the replacement.
+and discovers and registers the replacement. The agent may start before qaffd:
+it remains not-ready and retries registration while the target and discovered
+socket stay valid, including when daemon downtime overlaps socket rotation.
 File-descriptor aliases of one socket are deduplicated by socket cookie;
 multiple distinct matching sockets in one worker are rejected as ambiguous.
 `qaffctl workers` reports both the registering agent PID and its target PID.

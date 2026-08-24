@@ -121,6 +121,7 @@ struct qaffd_state {
   int instance_lock_fd;
   int worker_fds[QAFFD_MAX_WORKERS];
   int worker_lease_fds[QAFFD_MAX_WORKERS];
+  int worker_pending_lease_fds[QAFFD_MAX_WORKERS];
   int worker_pidfds[QAFFD_MAX_WORKERS];
   uint64_t worker_socket_cookies[QAFFD_MAX_WORKERS];
   int worker_registered[QAFFD_MAX_WORKERS];
@@ -341,6 +342,12 @@ static int worker_is_recovering(const struct qaffd_state *state,
   return worker_id < QAFFD_MAX_WORKERS &&
          state->worker_registered[worker_id] &&
          state->worker_fds[worker_id] < 0;
+}
+
+static int worker_has_pending_lease(const struct qaffd_state *state,
+                                    uint32_t worker_id) {
+  return worker_id < QAFFD_MAX_WORKERS &&
+         state->worker_pending_lease_fds[worker_id] >= 0;
 }
 
 static uint32_t worker_count(const struct qaffd_state *state) {
@@ -1432,27 +1439,36 @@ static int reconcile_worker_tombstones(struct qaffd_state *state) {
   return 0;
 }
 
-static int quarantine_recovered_workers(struct qaffd_state *state) {
+static int withdraw_worker_route(struct qaffd_state *state,
+                                 uint32_t worker_id) {
   int generation_map_fd = qaff_get_worker_generation_map_fd(state->ctx);
   int worker_map_fd = qaff_get_worker_sock_map_fd(state->ctx);
-  if (generation_map_fd < 0 || worker_map_fd < 0) {
+  if (generation_map_fd < 0 || worker_map_fd < 0 ||
+      worker_id >= QAFFD_MAX_WORKERS) {
     errno = EINVAL;
     return -1;
   }
 
+  uint32_t zero = 0;
+  if (bpf_map_update_elem(generation_map_fd,
+                          &worker_id,
+                          &zero,
+                          BPF_ANY) != 0 ||
+      (bpf_map_delete_elem(worker_map_fd, &worker_id) != 0 &&
+       errno != ENOENT)) {
+    return -1;
+  }
+  return 0;
+}
+
+static int quarantine_recovered_workers(struct qaffd_state *state) {
   uint64_t quarantined_at = now_ms();
   for (uint32_t worker_id = 0; worker_id < QAFFD_MAX_WORKERS; worker_id++) {
     if (!worker_is_recovering(state, worker_id)) {
       continue;
     }
 
-    uint32_t zero = 0;
-    if (bpf_map_update_elem(generation_map_fd,
-                            &worker_id,
-                            &zero,
-                            BPF_ANY) != 0 ||
-        (bpf_map_delete_elem(worker_map_fd, &worker_id) != 0 &&
-         errno != ENOENT)) {
+    if (withdraw_worker_route(state, worker_id) != 0) {
       return -1;
     }
     state->worker_registered_at_ms[worker_id] = quarantined_at;
@@ -1493,8 +1509,11 @@ static int rollback_worker_maps(
     const struct qaffd_worker_snapshot *snapshot,
     uint64_t new_socket_cookie,
     int same_socket) {
+  int recovered_same_socket = snapshot->worker.registered &&
+                              snapshot->worker.worker_fd < 0 && same_socket;
   if (new_socket_cookie != 0 &&
-      new_socket_cookie != snapshot->worker.socket_cookie) {
+      new_socket_cookie != snapshot->worker.socket_cookie &&
+      !recovered_same_socket) {
     unregister_socket_cookie(state, new_socket_cookie);
   }
 
@@ -1511,8 +1530,8 @@ static int rollback_worker_maps(
                                                   snapshot->worker.worker_fd,
                                                   snapshot->worker.generation);
   }
-  if (same_socket) {
-    return 0;
+  if (recovered_same_socket) {
+    return withdraw_worker_route(state, worker_id);
   }
 
   if (qaff_unregister_worker_socket_only(state->ctx, worker_id) != 0 &&
@@ -1535,6 +1554,14 @@ static int handle_register_worker(struct qaffd_state *state,
   if (validate_worker_peer(state, peer) != 0) {
     return -1;
   }
+  if (worker_has_pending_lease(state, request->worker_id)) {
+    audit_event("worker_registration_rejected",
+                peer,
+                "worker_id=%u reason=lease_reply_pending",
+                request->worker_id);
+    errno = EBUSY;
+    return -1;
+  }
   if (state->fallback_mode == QAFF_FALLBACK_MODE_FIXED &&
       request->worker_id != state->fallback_worker_id &&
       (!state->worker_registered[state->fallback_worker_id] ||
@@ -1549,8 +1576,15 @@ static int handle_register_worker(struct qaffd_state *state,
     return -1;
   }
   int recovered_worker = worker_is_recovering(state, request->worker_id);
-  if (state->worker_registered[request->worker_id] && !recovered_worker &&
-      authorize_worker_mutation(state, request->worker_id, peer) != 0) {
+  if (state->worker_registered[request->worker_id] && !recovered_worker) {
+    if (authorize_worker_mutation(state, request->worker_id, peer) != 0) {
+      return -1;
+    }
+    audit_event("worker_registration_rejected",
+                peer,
+                "worker_id=%u reason=worker_already_live",
+                request->worker_id);
+    errno = EBUSY;
     return -1;
   }
 
@@ -1586,17 +1620,6 @@ static int handle_register_worker(struct qaffd_state *state,
     state->attached = 1;
   }
 
-  if (state->worker_registered[request->worker_id] && !recovered_worker &&
-      !same_socket &&
-      qaffd_cid_index_has_worker(&state->cid_index, request->worker_id)) {
-    /*
-     * Exact CID entries contain only a worker ID, not a generation. Rebinding
-     * that ID while it owns live CIDs would silently move existing QUIC
-     * connections to the new socket.
-     */
-    errno = EBUSY;
-    return -1;
-  }
   uint32_t generation = state->worker_generations[request->worker_id];
   if (!same_socket &&
       next_worker_generation(state->worker_generations[request->worker_id],
@@ -1642,6 +1665,19 @@ static int handle_register_worker(struct qaffd_state *state,
                                      enable_pidfd ? request->target_pid : 0,
                                      now,
                                      peer) != 0) {
+    int saved_errno = errno ? errno : EIO;
+    if (rollback_worker_maps(state,
+                             request->worker_id,
+                             &snapshot,
+                             socket_cookie,
+                             same_socket) != 0) {
+      audit_event("worker_registration_rollback_failed",
+                  peer,
+                  "worker_id=%u stage=registry errno=%d",
+                  request->worker_id,
+                  errno);
+    }
+    errno = saved_errno;
     return -1;
   }
   if (enable_pidfd) {
@@ -2125,6 +2161,7 @@ static void process_request(struct qaffd_state *state,
         reply->status = errno ? errno : EIO;
       } else {
         *lease_worker_id = (int)request->worker_id;
+        state->worker_pending_lease_fds[request->worker_id] = client_fd;
         *received_fd = -1;
       }
       break;
@@ -2209,10 +2246,29 @@ static void init_client(struct qaffd_client *client) {
 static void drop_client(struct qaffd_state *state,
                         struct qaffd_client *client) {
   if (client->lease_worker_id >= 0) {
-    if (unregister_worker_id(state,
-                             (uint32_t)client->lease_worker_id) != 0 &&
-        errno != ENOENT) {
-      perror("rollback_worker_lease");
+    uint32_t worker_id = (uint32_t)client->lease_worker_id;
+    if (state->worker_pending_lease_fds[worker_id] == client->fd) {
+      state->worker_pending_lease_fds[worker_id] = -1;
+      if (unregister_worker_id(state, worker_id) != 0 && errno != ENOENT) {
+        int saved_errno = errno;
+        /*
+         * The registration was durably committed before its reply. If the
+         * rollback tombstone cannot be persisted, retain this connection as
+         * the lease so the committed worker never becomes an unowned one-shot
+         * registration. A closed peer will make it readable and retry normal
+         * lease cleanup.
+         */
+        if (state->worker_registered[worker_id]) {
+          install_worker_lease(state, worker_id, client->fd);
+          client->fd = -1;
+          audit_event("worker_lease_rollback_deferred",
+                      NULL,
+                      "worker_id=%u errno=%d",
+                      worker_id,
+                      saved_errno);
+        }
+        errno = saved_errno;
+      }
     }
   }
   if (client->received_fd >= 0) {
@@ -2339,10 +2395,14 @@ static int service_client(struct qaffd_state *state,
 static void complete_client(struct qaffd_state *state,
                             struct qaffd_client *client) {
   if (client->lease_worker_id >= 0) {
-    install_worker_lease(state,
-                         (uint32_t)client->lease_worker_id,
-                         client->fd);
-    client->fd = -1;
+    uint32_t worker_id = (uint32_t)client->lease_worker_id;
+    if (state->worker_pending_lease_fds[worker_id] == client->fd) {
+      state->worker_pending_lease_fds[worker_id] = -1;
+      if (state->worker_registered[worker_id]) {
+        install_worker_lease(state, worker_id, client->fd);
+        client->fd = -1;
+      }
+    }
     client->lease_worker_id = -1;
     drop_client(state, client);
     return;
@@ -2511,7 +2571,8 @@ static nfds_t build_pollfds(const struct qaffd_state *state,
   count++;
 
   for (uint32_t i = 0; i < QAFFD_MAX_WORKERS && count < cap; i++) {
-    if (state->worker_lease_fds[i] >= 0) {
+    if (state->worker_lease_fds[i] >= 0 &&
+        !worker_has_pending_lease(state, i)) {
       fds[count].fd = state->worker_lease_fds[i];
       fds[count].events = POLLIN;
       fds[count].revents = 0;
@@ -2519,7 +2580,8 @@ static nfds_t build_pollfds(const struct qaffd_state *state,
       sources[count] = QAFFD_POLL_WORKER_LEASE;
       count++;
     }
-    if (state->worker_pidfds[i] >= 0 && count < cap) {
+    if (state->worker_pidfds[i] >= 0 &&
+        !worker_has_pending_lease(state, i) && count < cap) {
       fds[count].fd = state->worker_pidfds[i];
       fds[count].events = POLLIN;
       fds[count].revents = 0;
@@ -2556,7 +2618,8 @@ static int expire_worker_heartbeat_timeouts(struct qaffd_state *state) {
   uint64_t now = now_ms();
   int rc = 0;
   for (uint32_t i = 0; i < QAFFD_MAX_WORKERS; i++) {
-    if (state->worker_lease_fds[i] < 0 || !state->worker_registered[i]) {
+    if (state->worker_lease_fds[i] < 0 || !state->worker_registered[i] ||
+        worker_has_pending_lease(state, i)) {
       continue;
     }
     if (elapsed_ms(now, state->worker_last_seen_ms[i]) <
@@ -2622,7 +2685,8 @@ static int worker_heartbeat_poll_timeout(const struct qaffd_state *state) {
   uint64_t now = now_ms();
   uint64_t min_remaining = UINT64_MAX;
   for (uint32_t i = 0; i < QAFFD_MAX_WORKERS; i++) {
-    if (state->worker_lease_fds[i] < 0 || !state->worker_registered[i]) {
+    if (state->worker_lease_fds[i] < 0 || !state->worker_registered[i] ||
+        worker_has_pending_lease(state, i)) {
       continue;
     }
     uint64_t age = elapsed_ms(now, state->worker_last_seen_ms[i]);
@@ -2802,6 +2866,11 @@ int main(int argc, char **argv) {
   if (qaffd_worker_registry_init(&state.worker_registry) != 0) {
     perror("qaffd_worker_registry_init");
     return 1;
+  }
+  for (uint32_t worker_id = 0;
+       worker_id < QAFFD_MAX_WORKERS;
+       worker_id++) {
+    state.worker_pending_lease_fds[worker_id] = -1;
   }
 
   state.instance_lock_fd = acquire_instance_lock(daemon_options.socket_path);

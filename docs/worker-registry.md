@@ -22,6 +22,13 @@ claim. A same-socket claim restores the prior generation; expiry of the
 recovery deadline clears the record while preserving its generation tombstone,
 so a replacement socket advances to the next generation.
 
+New leased registrations have a process-local pending-reply reservation. Until
+the success reply is delivered, the worker cannot be registered again and its
+new pidfd is not allowed to race reply completion by expiring the registration.
+Live worker IDs otherwise reject every re-registration with `EBUSY`; callers
+must explicitly finish the old lifecycle before starting the next one. This
+keeps lease, pidfd, worker fd, and BPF ownership single-valued.
+
 The implementation is in `qaffd/worker_registry.c`; deterministic lifecycle,
 rollback, bounds, and exhaustion tests are in
 `tests/test_qaffd_worker_registry.c`.

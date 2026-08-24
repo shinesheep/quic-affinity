@@ -181,6 +181,15 @@ UNREGISTER_WORKER(listener_id, worker_id)
 
 Worker socket registration needs `SCM_RIGHTS` fd passing. New integrations should prefer `REGISTER_WORKER_LEASE` and keep the control fd open for the lifetime of the worker. If heartbeat timeout is enabled, the worker must periodically send `WORKER_HEARTBEAT` on the lease fd. Do not send CID or management operations over the lease connection; open a separate short-lived control connection for those operations. The one-shot `REGISTER_WORKER` path remains for compatibility, but it cannot detect worker process death because `qaffd` owns a duplicated socket fd after registration.
 
+Live worker IDs cannot be implicitly replaced or have their lease transferred:
+another registration for the ID fails with `EBUSY`, even when it passes the
+same socket. Close the old lease or explicitly unregister the worker, wait for
+withdrawal, and then register the next lifecycle. The sole exception is a
+restart-recovery claim authenticated by the retained exact socket cookie.
+During a new leased registration, qaffd reserves the worker until its reply is
+delivered, so concurrent registration attempts cannot overwrite pending
+ownership. If reply delivery fails, rollback applies only to that reservation.
+
 ## Graceful Reload
 
 During reload:

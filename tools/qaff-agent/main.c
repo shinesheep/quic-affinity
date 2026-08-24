@@ -583,11 +583,30 @@ static int wait_for_reconnect_window(int pidfd) {
   return 0;
 }
 
-static int reconnect_control(int pidfd,
-                             int worker_fd,
-                             const struct agent_options *options,
-                             uint64_t worker_cookie,
-                             int *target_fd_number) {
+static int control_error_is_retryable(int error) {
+  switch (error) {
+  case ENOENT:
+  case ECONNREFUSED:
+  case ECONNRESET:
+  case ECONNABORTED:
+  case EPIPE:
+  case EAGAIN:
+  case ETIMEDOUT:
+  case EBUSY:
+  case EHOSTDOWN:
+  case EIO:
+    return 1;
+  default:
+    return 0;
+  }
+}
+
+static int register_control_with_retry(int pidfd,
+                                       int worker_fd,
+                                       const struct agent_options *options,
+                                       uint64_t worker_cookie,
+                                       int *target_fd_number,
+                                       int restoring_after_disconnect) {
   int last_error = 0;
   int reported_error = 0;
   for (;;) {
@@ -609,10 +628,12 @@ static int reconnect_control(int pidfd,
               options->worker_id,
               worker_fd,
               (uint32_t)options->target_pid) == 0) {
-        fprintf(stderr,
-                "qaff-agent: restored worker_id=%u lease after qaffd "
-                "disconnect\n",
-                options->worker_id);
+        if (restoring_after_disconnect) {
+          fprintf(stderr,
+                  "qaff-agent: restored worker_id=%u lease after qaffd "
+                  "disconnect\n",
+                  options->worker_id);
+        }
         return fd;
       }
       last_error = errno;
@@ -620,9 +641,13 @@ static int reconnect_control(int pidfd,
     } else {
       last_error = errno;
     }
+    if (!control_error_is_retryable(last_error)) {
+      errno = last_error;
+      return -1;
+    }
     if (last_error != reported_error) {
       fprintf(stderr,
-              "qaff-agent: qaffd disconnected; retrying worker_id=%u "
+              "qaff-agent: qaffd unavailable; retrying worker_id=%u "
               "registration: %s\n",
               options->worker_id,
               strerror(last_error));
@@ -718,11 +743,12 @@ static int monitor_target(int pidfd,
       *readiness_ready = 0;
       close(*control_fd);
       *control_fd =
-          reconnect_control(pidfd,
-                            worker_fd,
-                            options,
-                            worker_cookie,
-                            target_fd_number);
+          register_control_with_retry(pidfd,
+                                      worker_fd,
+                                      options,
+                                      worker_cookie,
+                                      target_fd_number,
+                                      1);
       if (*control_fd < 0) {
         if (errno == ESRCH) {
           return 0;
@@ -915,24 +941,28 @@ int main(int argc, char **argv) {
       break;
     }
 
-    control_fd = qaff_control_connect(options.control_socket);
+    control_fd = register_control_with_retry(pidfd,
+                                             worker_fd,
+                                             &options,
+                                             worker_cookie,
+                                             &target_fd_number,
+                                             0);
     if (control_fd < 0) {
-      monitor_rc = -1;
       monitor_errno = errno;
-      perror("qaff-agent: qaff_control_connect");
+      if (monitor_errno == ESTALE) {
+        close(worker_fd);
+        worker_fd = -1;
+        continue;
+      }
+      if (monitor_errno == ESRCH) {
+        monitor_rc = 0;
+      } else {
+        monitor_rc = -1;
+        perror("qaff-agent: register qaffd worker lease");
+      }
       break;
     }
     int replacing_socket = registered_once;
-    if (qaff_control_register_worker_lease_for_pid(
-            control_fd,
-            options.worker_id,
-            worker_fd,
-            (uint32_t)options.target_pid) != 0) {
-      monitor_rc = -1;
-      monitor_errno = errno;
-      perror("qaff-agent: qaff_control_register_worker_lease");
-      break;
-    }
     registered_once = 1;
     if (run_readiness_command(&options, "ready") != 0) {
       monitor_rc = -1;

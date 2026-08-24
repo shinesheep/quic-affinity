@@ -118,7 +118,8 @@ int qaff_control_connect(const char *socket_path);
  *
  * This registration is not tied to the control connection lifetime. New
  * integrations should prefer qaff_control_register_worker_lease().
- * Replacing an active worker socket while it owns exact CIDs fails with EBUSY.
+ * Registering an already-live worker ID fails with EBUSY; explicitly
+ * unregister it before beginning a new worker lifecycle.
  * Registering one socket under multiple worker IDs fails with EEXIST.
  */
 int qaff_control_register_worker(int control_fd,

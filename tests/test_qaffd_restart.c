@@ -735,6 +735,36 @@ int main(int argc, char **argv) {
   }
   close(mismatched_fallback);
 
+  char recovery_state_backup[4096];
+  int recovery_backup_len =
+      snprintf(recovery_state_backup,
+               sizeof(recovery_state_backup),
+               "%s.recovery-backup",
+               state_path);
+  if (recovery_backup_len < 0 ||
+      (size_t)recovery_backup_len >= sizeof(recovery_state_backup) ||
+      rename(state_path, recovery_state_backup) != 0 ||
+      mkdir(state_path, 0700) != 0) {
+    perror("block recovery claim snapshot");
+    return 1;
+  }
+  if (control_register_worker(socket_path,
+                              FALLBACK_WORKER,
+                              workers[FALLBACK_WORKER]) == 0 ||
+      control_cids(socket_path, &cid_config) != 0 ||
+      cid_config.recovering_worker_count != WORKER_COUNT ||
+      cid_config.fallback_available != 0 ||
+      send_quic_like_packet(sender, port, k_dcid) != 0 ||
+      receive_worker_timeout(workers, WORKER_COUNT, 100) >= 0) {
+    fprintf(stderr, "failed recovery claim escaped quarantine\n");
+    return 1;
+  }
+  if (rmdir(state_path) != 0 ||
+      rename(recovery_state_backup, state_path) != 0) {
+    perror("restore recovery claim snapshot");
+    return 1;
+  }
+
   if (stop_qaffd(socket_path, daemon_pid) != 0) {
     perror("stop qaffd while workers are quarantined");
     return 1;
@@ -974,15 +1004,15 @@ int main(int argc, char **argv) {
     perror("qaff_control_read_stats");
     return 1;
   }
-  if (stats.values[QAFF_STAT_PACKETS] != 10 ||
+  if (stats.values[QAFF_STAT_PACKETS] != 11 ||
       stats.values[QAFF_STAT_CID_MAP_HIT] != 3 ||
-      stats.values[QAFF_STAT_FALLBACK] != 4 ||
-      stats.values[QAFF_STAT_WORKER_MISSING] != 2 ||
-      stats.values[QAFF_STAT_IPV4] != 10 ||
+      stats.values[QAFF_STAT_FALLBACK] != 5 ||
+      stats.values[QAFF_STAT_WORKER_MISSING] != 3 ||
+      stats.values[QAFF_STAT_IPV4] != 11 ||
       stats.values[QAFF_STAT_PASSIVE_HIT] != 3 ||
       stats.values[QAFF_STAT_PASSIVE_MISS] != 1 ||
       stats.values[QAFF_STAT_PASSIVE_REJECT_GENERATION] != 2 ||
-      stats.values[QAFF_STAT_CID_MAP_REJECT_GENERATION] != 1) {
+      stats.values[QAFF_STAT_CID_MAP_REJECT_GENERATION] != 2) {
     fprintf(stderr,
             "unexpected restart stats packets=%llu cid_hit=%llu fallback=%llu "
             "worker_missing=%llu ipv4=%llu passive_hit=%llu "

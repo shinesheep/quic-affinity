@@ -836,6 +836,19 @@ static int run_case(const char *qaffd_path,
     return 1;
   }
 
+  int replacement_lease_fd = -1;
+  errno = 0;
+  if (control_call_register_worker_lease(socket_path,
+                                         0,
+                                         leased_worker,
+                                         &replacement_lease_fd) == 0 ||
+      errno != EBUSY ||
+      control_call_worker_heartbeat(lease_fd, 0) != 0) {
+    fprintf(stderr, "%s: duplicate live lease changed worker ownership\n",
+            test->name);
+    return 1;
+  }
+
   struct qaff_control_worker_info
       worker_infos[QAFF_CONTROL_WORKER_CAPACITY];
   size_t worker_infos_len = 0;
@@ -1016,10 +1029,10 @@ static int run_case(const char *qaffd_path,
   }
 
   errno = 0;
-  if (control_call_register_worker(socket_path, 1, workers[0]) == 0 ||
+  if (control_call_register_worker(socket_path, 10, workers[0]) == 0 ||
       errno != EEXIST) {
     fprintf(stderr,
-            "%s: one socket was registered under worker IDs 0 and 1\n",
+            "%s: one socket was registered under worker IDs 0 and 10\n",
             test->name);
     return 1;
   }
