@@ -1,5 +1,6 @@
 #include "quic_affinity/control.h"
-#include "quic_affinity/quic_affinity.h"
+#include "quic_affinity/qaffinity.h"
+#include "quic_parser.h"
 
 #include <ctype.h>
 #include <errno.h>

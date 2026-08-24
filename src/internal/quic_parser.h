@@ -4,7 +4,7 @@
 #include <stddef.h>
 #include <stdint.h>
 
-#include "quic_affinity/wire.h"
+#include "bpf_abi.h"
 
 #ifdef __cplusplus
 extern "C" {

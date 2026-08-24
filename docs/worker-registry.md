@@ -29,6 +29,6 @@ Live worker IDs otherwise reject every re-registration with `EBUSY`; callers
 must explicitly finish the old lifecycle before starting the next one. This
 keeps lease, pidfd, worker fd, and BPF ownership single-valued.
 
-The implementation is in `qaffd/worker_registry.c`; deterministic lifecycle,
+The implementation is in `src/daemon/worker_registry.c`; deterministic lifecycle,
 rollback, bounds, and exhaustion tests are in
 `tests/test_qaffd_worker_registry.c`.

@@ -1,4 +1,4 @@
-#include "quic_affinity/quic_parser.h"
+#include "quic_parser.h"
 
 #include <stddef.h>
 #include <stdint.h>

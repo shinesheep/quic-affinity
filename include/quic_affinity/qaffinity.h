@@ -1,11 +1,10 @@
-#ifndef QUIC_AFFINITY_QUIC_AFFINITY_H
-#define QUIC_AFFINITY_QUIC_AFFINITY_H
+#ifndef QUIC_AFFINITY_QAFFINITY_H
+#define QUIC_AFFINITY_QAFFINITY_H
 
 #include <stddef.h>
 #include <stdint.h>
 
-#include "quic_affinity/quic_parser.h"
-#include "quic_affinity/wire.h"
+#include "quic_affinity/types.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -169,27 +168,6 @@ int qaff_register_worker_socket_generation(struct qaff_context *ctx,
  */
 int qaff_unregister_worker_socket(struct qaff_context *ctx,
                                   uint32_t worker_id);
-
-/** Return the qaff_cids map fd, or -1 for a NULL context. */
-int qaff_get_cid_map_fd(const struct qaff_context *ctx);
-
-/** Return the qaff_passive_cids map fd, or -1 for a NULL context. */
-int qaff_get_passive_cid_map_fd(const struct qaff_context *ctx);
-
-/** Return the qaff_workers map fd, or -1 for a NULL context. */
-int qaff_get_worker_sock_map_fd(const struct qaff_context *ctx);
-
-/** Return the qaff_socket_workers map fd, or -1 for a NULL context. */
-int qaff_get_socket_worker_map_fd(const struct qaff_context *ctx);
-
-/** Return the qaff_worker_generations map fd, or -1 for a NULL context. */
-int qaff_get_worker_generation_map_fd(const struct qaff_context *ctx);
-
-/** Return the qaff_stats map fd, or -1 for a NULL context. */
-int qaff_get_stats_map_fd(const struct qaff_context *ctx);
-
-/** Return the qaff_config map fd, or -1 for a NULL context. */
-int qaff_get_config_map_fd(const struct qaff_context *ctx);
 
 /** Read all dataplane counters. Returns 0 on success or -1 with errno set. */
 int qaff_read_stats(struct qaff_context *ctx, struct qaff_stats *out);

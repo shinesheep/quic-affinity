@@ -1,5 +1,5 @@
-#ifndef QUIC_AFFINITY_WIRE_H
-#define QUIC_AFFINITY_WIRE_H
+#ifndef QUIC_AFFINITY_TYPES_H
+#define QUIC_AFFINITY_TYPES_H
 
 #if defined(__KERNEL__) || defined(QAFF_BPF)
 #include <linux/types.h>
@@ -58,39 +58,6 @@
 #define QAFF_FALLBACK_MODE_KERNEL 1u
 
 /**
- * Fixed-size BPF map key for a QUIC connection ID.
- *
- * The first len bytes of bytes[] contain the CID and the rest are zero-filled.
- * This exact layout is shared by user space and the eBPF program; changing it
- * changes the qaff_cids map ABI.
- */
-struct qaff_cid_key {
-#if defined(__KERNEL__) || defined(QAFF_BPF)
-  __u8 len;
-  __u8 bytes[QAFF_MAX_CID_LEN];
-#else
-  uint8_t len;
-  uint8_t bytes[QAFF_MAX_CID_LEN];
-#endif
-};
-
-/**
- * Exact CID routing entry.
- *
- * Binding every exact route to a worker generation prevents an entry left by
- * an interrupted cleanup from becoming valid when the worker ID is reused.
- */
-struct qaff_cid_value {
-#if defined(__KERNEL__) || defined(QAFF_BPF)
-  __u32 worker_id;
-  __u32 worker_generation;
-#else
-  uint32_t worker_id;
-  uint32_t worker_generation;
-#endif
-};
-
-/**
  * Passive CID routing entry.
  *
  * This is used for best-effort black-box affinity. The dataplane routes by this
@@ -113,34 +80,6 @@ struct qaff_passive_cid_value {
   uint8_t source;
   uint16_t flags;
   uint64_t expires_at_ns;
-#endif
-};
-
-/**
- * Runtime dataplane configuration stored in the qaff_config BPF map.
- *
- * The map has a single entry at key 0. qaff_open() writes this value before the
- * BPF object is loaded. The field layout is part of the BPF/user-space ABI.
- */
-struct qaff_config_value {
-#if defined(__KERNEL__) || defined(QAFF_BPF)
-  __u8 short_cid_len;
-  __u8 cid_profile_enabled;
-  __u8 passive_affinity_enabled;
-  __u8 passive_min_confidence;
-  __u8 fallback_mode;
-  __u8 reserved[3];
-  __u32 fallback_worker_id;
-  __u8 cid_profile_key[QAFF_CID_PROFILE_KEY_LEN];
-#else
-  uint8_t short_cid_len;
-  uint8_t cid_profile_enabled;
-  uint8_t passive_affinity_enabled;
-  uint8_t passive_min_confidence;
-  uint8_t fallback_mode;
-  uint8_t reserved[3];
-  uint32_t fallback_worker_id;
-  uint8_t cid_profile_key[QAFF_CID_PROFILE_KEY_LEN];
 #endif
 };
 

@@ -1,4 +1,4 @@
-#include "quic_affinity/quic_parser.h"
+#include "quic_parser.h"
 
 #include <string.h>
 
@@ -98,4 +98,3 @@ const char *qaff_parse_result_str(int result) {
     return "unknown";
   }
 }
-

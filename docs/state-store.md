@@ -93,5 +93,5 @@ map also contains no live worker generations.
 
 The implementation and deterministic fault tests for interrupted/short writes,
 zero-progress writes, file and directory sync failures, rename failures, and
-temporary-file cleanup are in `qaffd/state_store.c` and
+temporary-file cleanup are in `src/daemon/state_store.c` and
 `tests/test_qaffd_state_store.c`.

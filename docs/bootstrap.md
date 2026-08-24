@@ -219,20 +219,18 @@ The CLI should be able to show:
 ```text
 quic-affinity/
   bpf/
-  qaffd/
-  libqaffinity/
-  bindings/
-    rust/
-    go/
-    cpp/
+  include/quic_affinity/
+  src/
+    lib/
+    internal/
+    daemon/
+    tools/
   examples/
-    quiche/
-    quic-go/
   tests/
-    migration/
-  tools/
-    qaffctl/
   docs/
+  cmake/
+  packaging/
+  scripts/
 ```
 
 ## MVP

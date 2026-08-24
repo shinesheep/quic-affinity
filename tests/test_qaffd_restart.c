@@ -1,6 +1,8 @@
 #define _POSIX_C_SOURCE 200809L
 
 #include "quic_affinity/control.h"
+#include "bpf_abi.h"
+#include "quic_parser.h"
 
 #include <arpa/inet.h>
 #include <errno.h>

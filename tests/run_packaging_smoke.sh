@@ -29,8 +29,12 @@ test -x "$root/usr/bin/qaffctl"
 test -x "$root/usr/bin/qaff-agent"
 test -x "$root/usr/sbin/qaffd"
 find "$root/usr" -name libqaffinity.a -type f | grep -q .
-test -f "$root/usr/include/quic_affinity/quic_affinity.h"
+test -f "$root/usr/include/quic_affinity/qaffinity.h"
 test -f "$root/usr/include/quic_affinity/control.h"
+test -f "$root/usr/include/quic_affinity/cid_profile.h"
+test -f "$root/usr/include/quic_affinity/types.h"
+test ! -e "$root/usr/include/quic_affinity/wire.h"
+test ! -e "$root/usr/include/quic_affinity/quic_parser.h"
 find "$root/usr" -path '*/share/doc/*/docs/control-protocol.md' \
   -type f | grep -q .
 find "$root/usr" -path '*/share/doc/*/docs/cid-index.md' \

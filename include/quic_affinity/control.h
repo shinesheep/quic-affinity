@@ -4,8 +4,8 @@
 #include <stddef.h>
 #include <stdint.h>
 
-#include "quic_affinity/quic_affinity.h"
-#include "quic_affinity/wire.h"
+#include "quic_affinity/qaffinity.h"
+#include "quic_affinity/types.h"
 
 #ifdef __cplusplus
 extern "C" {

@@ -1,6 +1,8 @@
-#include "quic_affinity/quic_affinity.h"
+#include "quic_affinity/qaffinity.h"
 
+#include "bpf_abi.h"
 #include "qaffinity_internal.h"
+#include "quic_parser.h"
 
 #include <errno.h>
 #include <limits.h>

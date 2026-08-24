@@ -2,7 +2,7 @@
 
 #include "state_store.h"
 
-#include "quic_affinity/wire.h"
+#include "quic_affinity/types.h"
 
 #include <errno.h>
 #include <fcntl.h>

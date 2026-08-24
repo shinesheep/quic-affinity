@@ -36,5 +36,5 @@ and never returns positions that cannot be represented by `ptrdiff_t`.
 `qaffd_cid_index_check()` verifies the relationship between the dense array and
 hash table. Deterministic lifecycle, resizing, tombstone reuse, relocation, and
 randomized model tests live in `tests/test_qaffd_cid_index.c`. The implementation
-is in `qaffd/cid_index.c`; BPF map updates and transaction compensation remain
-in `qaffd/main.c`.
+is in `src/daemon/cid_index.c`; BPF map updates and transaction compensation
+remain in `src/daemon/main.c`.

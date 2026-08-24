@@ -1,4 +1,5 @@
-#include "quic_affinity/quic_affinity.h"
+#include "quic_affinity/qaffinity.h"
+#include "qaffinity_internal.h"
 
 #include <errno.h>
 #include <stdlib.h>

@@ -1,7 +1,7 @@
 #ifndef QAFFD_CID_INDEX_H
 #define QAFFD_CID_INDEX_H
 
-#include "quic_affinity/wire.h"
+#include "bpf_abi.h"
 
 #include <stddef.h>
 #include <stdint.h>

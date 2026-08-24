@@ -7,6 +7,7 @@
 #include "cid_index.h"
 #include "cleanup_retry.h"
 #include "qaffinity_internal.h"
+#include "quic_parser.h"
 #include "state_store.h"
 #include "worker_registry.h"
 

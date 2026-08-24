@@ -5,6 +5,14 @@
 
 struct qaff_context;
 
+int qaff_get_cid_map_fd(const struct qaff_context *ctx);
+int qaff_get_passive_cid_map_fd(const struct qaff_context *ctx);
+int qaff_get_worker_sock_map_fd(const struct qaff_context *ctx);
+int qaff_get_socket_worker_map_fd(const struct qaff_context *ctx);
+int qaff_get_worker_generation_map_fd(const struct qaff_context *ctx);
+int qaff_get_stats_map_fd(const struct qaff_context *ctx);
+int qaff_get_config_map_fd(const struct qaff_context *ctx);
+
 /*
  * Remove only worker-map state. qaffd owns CID cleanup and uses this helper
  * for rollback and crash recovery; embedded callers must use the public

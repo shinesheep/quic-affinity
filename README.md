@@ -41,11 +41,13 @@ UDP packet
 Main components:
 
 - `bpf/qaff_reuseport.bpf.c`: `BPF_PROG_TYPE_SK_REUSEPORT` dataplane.
-- `qaffd`: privileged control-plane daemon for BPF setup, worker registration,
+- `src/daemon/`: privileged `qaffd` control-plane daemon for BPF setup, worker registration,
   CID lifecycle, cleanup, restart recovery, authorization, and audit logs.
-- `qaff-agent`: zero-source-change socket discovery and lifecycle wrapper for
+- `src/tools/qaff-agent/`: zero-source-change socket discovery and lifecycle wrapper for
   existing UDP `SO_REUSEPORT` workers.
-- `qaffctl`: diagnostic and management CLI.
+- `src/tools/qaffctl/`: diagnostic and management CLI.
+- `src/lib/`: installed library implementation.
+- `src/internal/`: process-local parser, control codec, and BPF map ABI.
 - `include/quic_affinity/`: public C API.
 - `examples/`: minimal embedded/control-plane examples and optional quiche
   probes.
@@ -535,8 +537,8 @@ ctest --test-dir build --output-on-failure -R 'quiche_control_probe|quiche_udp_s
 
 Implemented:
 
-- Public C API for parser, worker socket registration, CID registration,
-  routable CID profiles, control client, and BPF loader.
+- Public C API for worker socket registration, CID registration, routable CID
+  profiles, control client, and BPF loader.
 - QUIC DCID parsing for long headers and configured-length short headers.
 - IPv4 and IPv6 reuseport dataplane tests.
 - Generation-bound stateful CID routing and routable profile routing.

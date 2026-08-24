@@ -1,6 +1,6 @@
 #include "worker_registry.h"
 
-#include "quic_affinity/wire.h"
+#include "quic_affinity/types.h"
 
 #include <errno.h>
 #include <stdint.h>

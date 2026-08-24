@@ -1,7 +1,10 @@
 #define _POSIX_C_SOURCE 200809L
 
 #include "quic_affinity/cid_profile.h"
-#include "quic_affinity/quic_affinity.h"
+#include "quic_affinity/qaffinity.h"
+#include "bpf_abi.h"
+#include "qaffinity_internal.h"
+#include "quic_parser.h"
 
 #include <arpa/inet.h>
 #include <errno.h>

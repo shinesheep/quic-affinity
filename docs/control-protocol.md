@@ -33,6 +33,6 @@ cursor, total count, page count, and explicitly encoded worker records. Config
 paths use a two-byte length and un-terminated path bytes. Error replies have no
 payload.
 
-The codec lives in `src/control_protocol.c`, with its process-local semantic
-message type in `internal/control_protocol.h`. The decoded structure is not a
+The codec and its process-local semantic message type live in
+`src/internal/control_protocol.c` and `src/internal/control_protocol.h`. The decoded structure is not a
 wire ABI and must never be sent or received directly.
