@@ -106,10 +106,14 @@ worker even if the client address or UDP port changed.
 
 The initial implementation uses an optional cgroup skb egress program. Start
 `qaffd` with `--egress-cgroup PATH` where `PATH` is a cgroup v2 directory. The
-egress learner parses QUIC v1 and v2 long headers and learns server Source
+egress learner currently parses QUIC v1 long headers and learns server Source
 Connection IDs from Initial, Handshake, and Retry packets. It rejects Version
-Negotiation, unknown versions, server-side 0-RTT, malformed fixed bits, and IP
-fragments instead of turning ambiguous bytes into high-confidence ownership.
+Negotiation, QUIC v2 and other unsupported versions, server-side 0-RTT,
+malformed fixed bits, and IP fragments instead of turning ambiguous bytes into
+high-confidence ownership. Ingress DCID routing is version-independent and can
+still route QUIC v1 and v2 packets when the CID was registered explicitly or
+uses the routable profile; adding QUIC v2 packet-type handling to passive
+egress learning remains future work.
 IPv4 options and a bounded chain of IPv6 hop-by-hop, routing, destination,
 mobility, and AH extension headers are supported. Encrypted short-header frames
 such as `NEW_CONNECTION_ID` remain outside the black-box dataplane's reliable

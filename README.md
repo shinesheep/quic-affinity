@@ -11,6 +11,13 @@ The project is QUIC-stack neutral. It is designed so NGINX, quiche, quic-go,
 MsQuic, ngtcp2, and custom servers can share one Linux dataplane and control
 plane instead of each stack carrying its own reuseport eBPF router.
 
+> [!IMPORTANT]
+> `quic-affinity` is currently an **alpha / developer preview**. The core
+> routing and lifecycle invariants are covered by unit, integration, privileged
+> eBPF, restart, and real-quiche tests. It is ready for evaluation and
+> integration work, but the project does not yet claim production readiness or
+> a stable pre-1.0 API.
+
 ## Why
 
 Linux `SO_REUSEPORT` normally distributes UDP packets without understanding
@@ -75,7 +82,7 @@ The profile embeds a worker generation, nonce, and a 64-bit SipHash-2-4 tag.
 The tag provides listener-local routing integrity while keeping the dataplane
 implementation bounded and BPF-verifier friendly.
 
-The exact profile formats are documented in [docs/cid-profile.md](docs/cid-profile.md).
+The exact profile format is documented in [docs/cid-profile.md](docs/cid-profile.md).
 
 ### Passive Affinity
 
@@ -106,10 +113,18 @@ The first client Initial normally uses a client-generated DCID. The server has
 not issued a routable or registered CID yet, so that packet must use fallback
 routing. `--fallback-mode kernel` preserves Linux's normal reuseport 4-tuple
 hash for this traffic and avoids concentrating new connections on one worker.
-The legacy-compatible default is `fixed`, controlled by `--fallback-worker`.
+The default is `fixed`, controlled by `--fallback-worker`.
 After the server creates its own Source Connection ID and registers it, uses a
 routable profile, or exposes it to passive egress learning, later packets can
 be steered to the owning worker even if the client's address or port changes.
+
+## QUIC Protocol Coverage
+
+Ingress routing extracts the DCID from the version-independent long-header
+layout, so QUIC v1 and v2 use the same routing path; short headers use the
+configured CID length. Passive egress learning currently recognizes QUIC v1
+long headers only. `qaffd` does not terminate or decrypt QUIC; application-layer
+QUIC and HTTP/3 behavior remains the responsibility of the integrated stack.
 
 ## Compared With NGINX `quic_bpf`
 
@@ -360,7 +375,8 @@ The supplied `qaff-agent@.service` is a privileged `watch` template using
 The address must exactly match `getsockname()` on the socket: use `0.0.0.0` or
 `::` for wildcard binds. The target must expose exactly one distinct matching
 UDP `SO_REUSEPORT` socket and remain in the foreground in `run` mode. Start
-qaffd before qaff-agent. If qaffd uses `--allow-worker-uid` or
+qaffd first when possible; qaff-agent can also wait for it while remaining
+not-ready. If qaffd uses `--allow-worker-uid` or
 `--allow-worker-gid`, configure the agent's identity—not merely the target
 process identity—as the allowed registration identity. qaffd, qaff-agent, and
 the target should share the relevant network namespace; the target must also
@@ -508,8 +524,12 @@ schema change.
   socket API.
 - `qaff_quiche_control_probe`: optional quiche FFI probe that validates the CID
   lifecycle hook points against a real quiche server connection.
-- `qaff_quiche_udp_smoke`: optional real UDP quiche smoke that changes the
-  client source port and verifies a dataplane CID-map hit.
+- `qaff_quiche_udp_smoke`: optional real UDP quiche fixture used to validate
+  exact, routable-profile, and passive-egress routing across a real client
+  source-port rebind.
+- `qaff_quiche_blackbox`: optional quiche-only fixture with no quic-affinity
+  headers, library linkage, or control calls. Together with `qaff-agent`, it
+  validates the zero-source-change onboarding path.
 
 The quiche examples are built only when quiche FFI artifacts exist under
 `third_party/quiche`. `third_party/` is ignored by Git and is not part of the
@@ -523,7 +543,9 @@ cargo build --manifest-path third_party/quiche/quiche/Cargo.toml \
   --features ffi
 cmake -B build -S .
 cmake --build build
-ctest --test-dir build --output-on-failure -R 'quiche_control_probe|quiche_udp_smoke'
+quiche_tests='quiche_control_probe|quiche_udp_smoke|quiche_profile_smoke'
+quiche_tests="${quiche_tests}|quiche_passive_egress_smoke|quiche_agent_blackbox_smoke"
+ctest --test-dir build --output-on-failure -R "${quiche_tests}"
 ```
 
 ## Documentation
@@ -532,34 +554,53 @@ ctest --test-dir build --output-on-failure -R 'quiche_control_probe|quiche_udp_s
 - Integration contract: [docs/integration-contract.md](docs/integration-contract.md)
 - Control plane: [docs/control-plane.md](docs/control-plane.md)
 - CID profile: [docs/cid-profile.md](docs/cid-profile.md)
+- Passive affinity: [docs/passive-affinity.md](docs/passive-affinity.md)
+- Passive affinity validation plan:
+  [docs/passive-affinity-next-steps.md](docs/passive-affinity-next-steps.md)
 - Implementation plan: [docs/implementation-plan.md](docs/implementation-plan.md)
 - Contributing: [CONTRIBUTING.md](CONTRIBUTING.md)
 - Security policy: [SECURITY.md](SECURITY.md)
 - Code of conduct: [CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md)
 
-## Current Status
+## Maturity and Roadmap
 
 Implemented:
 
 - Public C API for worker socket registration, CID registration, routable CID
   profiles, control client, and BPF loader.
-- QUIC DCID parsing for long headers and configured-length short headers.
+- Version-independent DCID parsing for long headers, including QUIC v1/v2, and
+  configured-length short-header parsing.
 - IPv4 and IPv6 reuseport dataplane tests.
-- Generation-bound stateful CID routing and routable profile routing.
+- Generation-bound stateful CID routing and a single 16-byte routable CID
+  profile protected by SipHash-2-4.
 - `qaffd` control plane with fd passing, map pinning, restart recovery,
   worker cleanup, authorization, audit logs, and observability.
 - Zero-source-change worker onboarding and real-process lifecycle tracking with
   `qaff-agent`.
+- Real quiche gates for exact registration, profile-only routing, passive
+  egress learning, client source-port rebinding, worker replacement, daemon
+  restart, and zero-source-change agent onboarding.
 - `qaffctl` diagnostics for health, config, stats, workers, and CID counts.
 - systemd deployment templates.
 
-Not implemented yet:
+Before a production-ready claim, the project still needs:
 
+- Multi-connection and multi-worker concurrency stress, including online
+  worker replacement and daemon restart races.
+- Passive-map pressure, TTL, eviction, and conflicting-observation load tests.
+- Published throughput, latency, CPU, and map-memory benchmarks.
+- A broader privileged kernel/distribution validation matrix and an independent
+  security review.
+
+Additional roadmap items:
+
+- QUIC v2 support in the passive egress learner.
 - Distro-native `.deb`/`.rpm` packages.
 - Direct pinned-map inspection by `qaffctl`.
 - Language bindings beyond C.
 
-APIs may still change before a 1.0 release.
+See [docs/implementation-plan.md](docs/implementation-plan.md) for the working
+plan. APIs and operational contracts may still change before a 1.0 release.
 
 ## License
 
