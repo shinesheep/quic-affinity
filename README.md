@@ -450,6 +450,14 @@ map entries carry the generation they were registered against, and CID
 ownership is rebuilt from validated pinned entries into the daemon's hash
 index.
 
+Restored workers are quarantined until the exact socket cookie reclaims the
+worker ID: qaffd withdraws their live generation and sockarray entry, so stale
+processes cannot receive exact, profile, passive, or fixed-fallback traffic.
+The prior generation is restored on a successful same-socket claim. Unclaimed
+workers are tombstoned after `--worker-recovery-timeout-ms` (5000 ms by
+default); `qaffctl config` exposes `recovering_worker_count` and `qaffctl
+workers` prints `recovering=1` while a claim is pending.
+
 Worker unregistration commits its generation tombstone before removing live
 routing. Snapshot failures leave the worker intact, while restart recovery
 uses a committed tombstone to finish any interrupted BPF cleanup.

@@ -57,6 +57,18 @@ fi
 grep -q '^qaffd: --fallback-worker must be less than 4096$' "$validation_log"
 
 set +e
+"$qaffd_bin" --socket "$sock" --bpf "$bpf_obj" --short-cid-len 8 \
+  --reuseport-bpf-policy replace \
+  --worker-recovery-timeout-ms 0 >"$validation_log" 2>&1
+validation_rc=$?
+set -e
+if [ "$validation_rc" -ne 2 ]; then
+  cat "$validation_log" >&2 || true
+  echo "qaffd accepted a zero worker recovery timeout" >&2
+  exit 1
+fi
+
+set +e
 "$qaffd_bin" --socket "$sock" --bpf "$bpf_obj" --short-cid-len 12 \
   --reuseport-bpf-policy replace \
   --cid-profile-v2-key-file "$key_file" \
@@ -141,6 +153,7 @@ grep -q '^ok=1$' /tmp/qaffctl-control-$$.health
 grep -q '^fallback_available=1$' /tmp/qaffctl-control-$$.health
 grep -q '^attached=0$' /tmp/qaffctl-control-$$.health
 grep -q '^worker_count=0$' /tmp/qaffctl-control-$$.health
+grep -q '^recovering_worker_count=0$' /tmp/qaffctl-control-$$.health
 grep -q '^cid_map_count=0$' /tmp/qaffctl-control-$$.health
 grep -q '^cid_owner_count=0$' /tmp/qaffctl-control-$$.health
 grep -q '^cid_index_mismatch=0$' /tmp/qaffctl-control-$$.health
@@ -157,6 +170,7 @@ grep -q '^passive_min_confidence=2$' /tmp/qaffctl-control-$$.config
 grep -q '^egress_attached=0$' /tmp/qaffctl-control-$$.config
 grep -q '^attached=0$' /tmp/qaffctl-control-$$.config
 grep -q '^worker_count=0$' /tmp/qaffctl-control-$$.config
+grep -q '^recovering_worker_count=0$' /tmp/qaffctl-control-$$.config
 grep -q '^fallback_mode=kernel$' /tmp/qaffctl-control-$$.config
 grep -q '^fallback_worker_id=1$' /tmp/qaffctl-control-$$.config
 grep -q '^fallback_available=1$' /tmp/qaffctl-control-$$.config
@@ -170,6 +184,7 @@ grep -q '^passive_worker_purged_count=0$' /tmp/qaffctl-control-$$.config
 grep -q '^passive_expiry_initialized_count=0$' /tmp/qaffctl-control-$$.config
 grep -q '^passive_cleanup_error_count=0$' /tmp/qaffctl-control-$$.config
 grep -q '^passive_scan_interval_ms=30000$' /tmp/qaffctl-control-$$.config
+grep -q '^worker_recovery_timeout_ms=5000$' /tmp/qaffctl-control-$$.config
 grep -q '^pin_root=$' /tmp/qaffctl-control-$$.config
 grep -q '^state_path=$' /tmp/qaffctl-control-$$.config
 

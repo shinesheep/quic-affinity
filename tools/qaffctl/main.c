@@ -197,6 +197,7 @@ static int cmd_health(int argc, char **argv) {
   printf("fallback_available=%u\n", config.fallback_available);
   printf("attached=%u\n", config.attached);
   printf("worker_count=%u\n", config.worker_count);
+  printf("recovering_worker_count=%u\n", config.recovering_worker_count);
   printf("cid_map_count=%llu\n",
          (unsigned long long)config.cid_map_count);
   printf("cid_owner_count=%llu\n",
@@ -222,6 +223,7 @@ static void print_config(const struct qaff_control_config *config) {
   printf("egress_attached=%u\n", config->egress_attached);
   printf("attached=%u\n", config->attached);
   printf("worker_count=%u\n", config->worker_count);
+  printf("recovering_worker_count=%u\n", config->recovering_worker_count);
   printf("fallback_mode=%s\n",
          config->fallback_mode == QAFF_FALLBACK_MODE_KERNEL
              ? "kernel"
@@ -248,6 +250,8 @@ static void print_config(const struct qaff_control_config *config) {
          (unsigned long long)config->passive_cleanup_error_count);
   printf("passive_scan_interval_ms=%llu\n",
          (unsigned long long)config->passive_scan_interval_ms);
+  printf("worker_recovery_timeout_ms=%llu\n",
+         (unsigned long long)config->worker_recovery_timeout_ms);
   printf("pin_root=%s\n", config->pin_root);
   printf("state_path=%s\n", config->state_path);
 }
@@ -329,10 +333,12 @@ static int cmd_workers(int argc, char **argv) {
   for (size_t i = 0;
        i < workers_len && i < QAFF_CONTROL_WORKER_CAPACITY;
        i++) {
-    printf("worker=%u leased=%u has_cred=%u pidfd=%u pid=%u target_pid=%u "
+    printf("worker=%u leased=%u recovering=%u has_cred=%u pidfd=%u "
+           "pid=%u target_pid=%u "
            "uid=%u gid=%u registered_ms_ago=%llu last_seen_ms_ago=%llu\n",
            workers[i].worker_id,
            (workers[i].flags & QAFF_CONTROL_WORKER_FLAG_LEASED) ? 1u : 0u,
+           (workers[i].flags & QAFF_CONTROL_WORKER_FLAG_RECOVERING) ? 1u : 0u,
            (workers[i].flags & QAFF_CONTROL_WORKER_FLAG_CRED) ? 1u : 0u,
            (workers[i].flags & QAFF_CONTROL_WORKER_FLAG_PIDFD) ? 1u : 0u,
            workers[i].pid,

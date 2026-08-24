@@ -7,10 +7,12 @@ average lookup, insertion, reassignment, and removal. qaffd uses it to authorize
 CID retirement, retire every CID owned by a departing worker, recover ownership
 after restart, and report BPF/userspace consistency.
 
-Restart recovery accepts only entries whose worker ID is registered and whose
-stored generation equals the live worker generation. Stale or malformed exact
-entries are removed before the control socket opens. Runtime consistency checks
-compare the index owner, BPF owner, and generation together.
+Restart recovery accepts only entries whose worker ID is present in durable
+state and whose stored generation equals that durable worker generation. The
+pinned live generation must either match or be zero from a previous recovery
+quarantine. Stale or malformed exact entries are removed before the control
+socket opens. Runtime consistency checks compare the index owner, BPF owner,
+and generation together.
 
 The index combines a dense entry array with an open-addressed hash table. Hash
 slots store one-based array positions; zero denotes an unused slot and

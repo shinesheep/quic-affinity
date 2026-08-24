@@ -106,9 +106,38 @@ When using `qaffd`, the privileged daemon owns BPF setup:
 
 If the leased control connection closes unexpectedly, `qaffd` treats the worker as dead, unregisters it, closes qaffd's duplicated worker socket fd, and bulk-retires that worker's CIDs. `--worker-heartbeat-timeout-ms` also lets `qaffd` remove leased workers that keep the connection open but stop sending `WORKER_HEARTBEAT` messages; `0` disables heartbeat timeouts. The older one-shot `REGISTER_WORKER` operation remains available for compatibility, but it cannot detect worker process death on its own because fd passing gives `qaffd` a separate reference to the UDP socket.
 
+After qaffd restarts, persisted workers begin in a recovery quarantine rather
+than being considered live. Their generation is zero and their sockarray entry
+is absent until the exact socket cookie reclaims the worker ID. This makes old
+exact/profile/passive routes and fixed fallback fail closed during the control
+plane recovery window. The default claim deadline is 5000 ms and can be tuned
+with `--worker-recovery-timeout-ms`; an unclaimed record is tombstoned and
+purged when the deadline expires. Native invasive integrations and
+`qaff-agent` must reconnect and repeat their leased registration.
+
 `qaffd` records the registering process' Unix peer credentials and exposes them through `qaffctl workers`. For leased workers it also opens a pidfd when supported; pidfd readability is treated as worker death and triggers the same unregister cleanup as lease close. Existing worker IDs, worker CID registration, CID retirement, and worker unregistration can be mutated only by the original worker process or by the configured management identity. Deployments use `--allow-worker-uid` and `--allow-worker-gid` to restrict worker admission, and the independent `--allow-admin-uid` and `--allow-admin-gid` options to grant management authority. Group-accessible control sockets require an explicit management identity.
 
 The current MVP supports one listener per `qaffd` process.
+
+## Integration-mode lifecycle matrix
+
+Both integration modes use the same worker-generation state machine; they
+differ only in who observes the application socket and holds the lease.
+
+| Lifecycle event | Invasive integration | Non-invasive `qaff-agent` / passive learning | Dataplane invariant |
+| --- | --- | --- | --- |
+| Initial registration | Application passes its UDP fd with `REGISTER_WORKER_LEASE` | Agent duplicates the exact target fd and registers the lease | Worker generation and sockarray entry become live together |
+| CID ownership | Application registers exact CIDs or emits profile-v2 CIDs | Egress observer learns server SCIDs into the passive map | Every route stores or embeds the live worker generation |
+| Process/lease exit | qaffd observes lease close or pidfd readability | Agent lease closes after target exit | Generation/socket withdraw first; exact and passive entries are then purged |
+| Socket rotation | Application drains, unregisters, and registers the replacement | Agent marks not-ready, revokes, rediscovers, and re-registers | Replacement receives the next generation; old CIDs cannot reactivate |
+| qaffd restart | Application reconnects and repeats leased registration | Agent automatically reconnects | Restored worker is quarantined until the exact cookie claims it |
+| Same-socket recovery | Existing generation is restored | Existing generation is restored | Existing exact and passive connection affinity resumes |
+| Missing/different recovery socket | Claim cannot reactivate the recovered record | Agent retries while the old record is quarantined | Recovery timeout tombstones old state; replacement then advances generation |
+
+The egress learner is attached only after pinned maps and durable state have
+been reconciled. While a worker is quarantined its generation is zero, so
+egress packets cannot create passive ownership for an unclaimed worker even if
+the reverse socket-cookie entry is still retained for claim authentication.
 
 Linux replaces a reuseport group's current BPF program during attach and does
 not expose a query or no-replace operation for this attachment type. The

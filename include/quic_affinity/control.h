@@ -26,6 +26,9 @@ extern "C" {
 /** qaffd is monitoring the registering process with pidfd. */
 #define QAFF_CONTROL_WORKER_FLAG_PIDFD 0x4u
 
+/** Worker was restored from durable state and has not reclaimed its socket. */
+#define QAFF_CONTROL_WORKER_FLAG_RECOVERING 0x8u
+
 /** qaffd listener configuration and CID-index health summary. */
 struct qaff_control_config {
   /** Fixed short-header DCID length used by the dataplane parser. */
@@ -47,8 +50,10 @@ struct qaff_control_config {
   /** Non-zero when the configured fallback can currently accept traffic. */
   uint8_t fallback_available;
   uint8_t reserved[3];
-  /** Number of registered workers. */
+  /** Number of durable worker records, including recovering workers. */
   uint32_t worker_count;
+  /** Number of restored workers awaiting an exact-socket claim. */
+  uint32_t recovering_worker_count;
   /** Worker used for fallback when fallback_mode is FIXED. */
   uint32_t fallback_worker_id;
   /** Number of exact CID entries in qaffd's ownership index. */
@@ -71,6 +76,8 @@ struct qaff_control_config {
   uint64_t passive_cleanup_error_count;
   /** Interval between passive map cleanup scans. */
   uint64_t passive_scan_interval_ms;
+  /** Deadline for a restored worker to reclaim its exact socket. */
+  uint64_t worker_recovery_timeout_ms;
   /** bpffs pin root, if configured. */
   char pin_root[QAFF_CONTROL_MAX_PATH];
   /** qaffd restart snapshot path, if configured. */

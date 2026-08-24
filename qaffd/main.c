@@ -36,6 +36,7 @@
   (QAFFD_MAX_WORKERS * 2 + QAFFD_MAX_PENDING_CLIENTS + 1)
 #define QAFFD_CONTROL_DEADLINE_MS 1000u
 #define QAFFD_PASSIVE_SCAN_INTERVAL_MS_DEFAULT 30000u
+#define QAFFD_WORKER_RECOVERY_TIMEOUT_MS_DEFAULT 5000u
 
 #ifndef SO_REUSEPORT
 #define SO_REUSEPORT 15
@@ -92,6 +93,7 @@ struct qaffd_options {
   uint8_t cid_profile_key[QAFF_CID_PROFILE_KEY_LEN];
   uint32_t fallback_worker_id;
   uint64_t worker_heartbeat_timeout_ms;
+  uint64_t worker_recovery_timeout_ms;
   uint64_t passive_scan_interval_ms;
   int reuseport_bpf_replace_allowed;
   int allow_worker_uid_set;
@@ -140,6 +142,7 @@ struct qaffd_state {
   uint8_t cid_profile_key[QAFF_CID_PROFILE_KEY_LEN];
   uint32_t fallback_worker_id;
   uint64_t worker_heartbeat_timeout_ms;
+  uint64_t worker_recovery_timeout_ms;
   uint64_t passive_scan_interval_ms;
   uint64_t passive_last_scan_ms;
   uint64_t passive_expired_count;
@@ -333,8 +336,25 @@ static int open_pidfd_for_peer(const struct qaffd_peer_cred *peer) {
 #endif
 }
 
+static int worker_is_recovering(const struct qaffd_state *state,
+                                uint32_t worker_id) {
+  return worker_id < QAFFD_MAX_WORKERS &&
+         state->worker_registered[worker_id] &&
+         state->worker_fds[worker_id] < 0;
+}
+
 static uint32_t worker_count(const struct qaffd_state *state) {
   return qaffd_worker_registry_count(&state->worker_registry);
+}
+
+static uint32_t recovering_worker_count(const struct qaffd_state *state) {
+  uint32_t count = 0;
+  for (uint32_t worker_id = 0; worker_id < QAFFD_MAX_WORKERS; worker_id++) {
+    if (worker_is_recovering(state, worker_id)) {
+      count++;
+    }
+  }
+  return count;
 }
 
 static int worker_is_tombstoned(const struct qaffd_state *state,
@@ -566,9 +586,11 @@ static void fill_config_reply(const struct qaffd_state *state,
   reply->config.fallback_available =
       state->fallback_mode == QAFF_FALLBACK_MODE_KERNEL ||
       (state->fallback_worker_id < QAFFD_MAX_WORKERS &&
-       state->worker_registered[state->fallback_worker_id]);
+       state->worker_registered[state->fallback_worker_id] &&
+       !worker_is_recovering(state, state->fallback_worker_id));
   reply->config.attached = state->attached ? 1 : 0;
   reply->config.worker_count = worker_count(state);
+  reply->config.recovering_worker_count = recovering_worker_count(state);
   reply->config.fallback_worker_id = state->fallback_worker_id;
   reply->config.passive_expired_count = state->passive_expired_count;
   reply->config.passive_worker_purged_count =
@@ -579,6 +601,8 @@ static void fill_config_reply(const struct qaffd_state *state,
       state->passive_cleanup_error_count;
   reply->config.passive_scan_interval_ms =
       state->passive_scan_interval_ms;
+  reply->config.worker_recovery_timeout_ms =
+      state->worker_recovery_timeout_ms;
   copy_config_path(reply->config.pin_root,
                    sizeof(reply->config.pin_root),
                    state->pin_root);
@@ -619,6 +643,10 @@ static void fill_workers_reply(const struct qaffd_state *state,
     reply->worker_infos[written].worker_id = i;
     reply->worker_infos[written].flags =
         state->worker_lease_fds[i] >= 0 ? QAFF_CONTROL_WORKER_FLAG_LEASED : 0;
+    if (worker_is_recovering(state, i)) {
+      reply->worker_infos[written].flags |=
+          QAFF_CONTROL_WORKER_FLAG_RECOVERING;
+    }
     if (state->worker_creds[i].valid) {
       reply->worker_infos[written].flags |= QAFF_CONTROL_WORKER_FLAG_CRED;
       reply->worker_infos[written].pid = state->worker_creds[i].pid;
@@ -651,7 +679,8 @@ static void usage(FILE *out) {
           "[--cid-profile-v2-config-id ID] "
           "[--passive-affinity] [--passive-min-confidence N] "
           "[--passive-scan-interval-ms N] "
-          "[--worker-heartbeat-timeout-ms N] [--allow-worker-uid UID] "
+          "[--worker-heartbeat-timeout-ms N] "
+          "[--worker-recovery-timeout-ms N] [--allow-worker-uid UID] "
           "[--allow-worker-gid GID] [--allow-admin-uid UID] "
           "[--allow-admin-gid GID] [--socket-mode OCTAL] "
           "[--socket-gid GID]\n");
@@ -758,6 +787,8 @@ static int parse_args(int argc, char **argv, struct qaffd_options *options) {
   options->passive_min_confidence = QAFF_PASSIVE_CONFIDENCE_HIGH;
   options->passive_scan_interval_ms =
       QAFFD_PASSIVE_SCAN_INTERVAL_MS_DEFAULT;
+  options->worker_recovery_timeout_ms =
+      QAFFD_WORKER_RECOVERY_TIMEOUT_MS_DEFAULT;
 
   for (int i = 1; i < argc; i++) {
     if (strcmp(argv[i], "--socket") == 0 && i + 1 < argc) {
@@ -852,6 +883,15 @@ static int parse_args(int argc, char **argv, struct qaffd_options *options) {
         return -1;
       }
       options->worker_heartbeat_timeout_ms = (uint64_t)value;
+    } else if (strcmp(argv[i], "--worker-recovery-timeout-ms") == 0 &&
+               i + 1 < argc) {
+      char *end = NULL;
+      unsigned long long value = strtoull(argv[++i], &end, 10);
+      if (end == argv[i] || *end != '\0' || value == 0 ||
+          value > INT_MAX) {
+        return -1;
+      }
+      options->worker_recovery_timeout_ms = (uint64_t)value;
     } else if (strcmp(argv[i], "--allow-worker-uid") == 0 && i + 1 < argc) {
       char *end = NULL;
       unsigned long value = strtoul(argv[++i], &end, 10);
@@ -1336,11 +1376,11 @@ static int recover_cids_from_map(struct qaffd_state *state) {
       }
       valid = value.worker_id < QAFFD_MAX_WORKERS &&
               value.worker_generation != 0 &&
-              live_generation != 0 &&
-              live_generation == value.worker_generation &&
               state->worker_registered[value.worker_id] &&
               state->worker_generations[value.worker_id] ==
-                  value.worker_generation;
+                  value.worker_generation &&
+              (live_generation == 0 ||
+               live_generation == value.worker_generation);
     }
     if (!valid) {
       if (bpf_map_delete_elem(map_fd, &current) != 0 && errno != ENOENT) {
@@ -1388,6 +1428,41 @@ static int reconcile_worker_tombstones(struct qaffd_state *state) {
         errno != ENOENT) {
       return -1;
     }
+  }
+  return 0;
+}
+
+static int quarantine_recovered_workers(struct qaffd_state *state) {
+  int generation_map_fd = qaff_get_worker_generation_map_fd(state->ctx);
+  int worker_map_fd = qaff_get_worker_sock_map_fd(state->ctx);
+  if (generation_map_fd < 0 || worker_map_fd < 0) {
+    errno = EINVAL;
+    return -1;
+  }
+
+  uint64_t quarantined_at = now_ms();
+  for (uint32_t worker_id = 0; worker_id < QAFFD_MAX_WORKERS; worker_id++) {
+    if (!worker_is_recovering(state, worker_id)) {
+      continue;
+    }
+
+    uint32_t zero = 0;
+    if (bpf_map_update_elem(generation_map_fd,
+                            &worker_id,
+                            &zero,
+                            BPF_ANY) != 0 ||
+        (bpf_map_delete_elem(worker_map_fd, &worker_id) != 0 &&
+         errno != ENOENT)) {
+      return -1;
+    }
+    state->worker_registered_at_ms[worker_id] = quarantined_at;
+    state->worker_last_seen_ms[worker_id] = quarantined_at;
+    audit_event("worker_recovery_quarantined",
+                NULL,
+                "worker_id=%u generation=%u timeout_ms=%llu",
+                worker_id,
+                state->worker_generations[worker_id],
+                (unsigned long long)state->worker_recovery_timeout_ms);
   }
   return 0;
 }
@@ -1462,7 +1537,8 @@ static int handle_register_worker(struct qaffd_state *state,
   }
   if (state->fallback_mode == QAFF_FALLBACK_MODE_FIXED &&
       request->worker_id != state->fallback_worker_id &&
-      !state->worker_registered[state->fallback_worker_id]) {
+      (!state->worker_registered[state->fallback_worker_id] ||
+       worker_is_recovering(state, state->fallback_worker_id))) {
     audit_event("worker_registration_rejected",
                 peer,
                 "worker_id=%u reason=fixed_fallback_unavailable "
@@ -1472,10 +1548,7 @@ static int handle_register_worker(struct qaffd_state *state,
     errno = EHOSTDOWN;
     return -1;
   }
-  int recovered_worker =
-      state->worker_registered[request->worker_id] &&
-      state->worker_fds[request->worker_id] < 0 &&
-      !state->worker_creds[request->worker_id].valid;
+  int recovered_worker = worker_is_recovering(state, request->worker_id);
   if (state->worker_registered[request->worker_id] && !recovered_worker &&
       authorize_worker_mutation(state, request->worker_id, peer) != 0) {
     return -1;
@@ -1483,6 +1556,20 @@ static int handle_register_worker(struct qaffd_state *state,
 
   struct sockaddr_storage local_addr;
   if (validate_worker_socket(state, socket_fd, &local_addr) != 0) {
+    return -1;
+  }
+
+  int same_socket =
+      is_same_registered_socket(state, request->worker_id, socket_fd);
+  if (same_socket < 0) {
+    return -1;
+  }
+  if (recovered_worker && !same_socket) {
+    audit_event("worker_registration_rejected",
+                peer,
+                "worker_id=%u reason=recovery_socket_mismatch",
+                request->worker_id);
+    errno = EBUSY;
     return -1;
   }
 
@@ -1499,11 +1586,6 @@ static int handle_register_worker(struct qaffd_state *state,
     state->attached = 1;
   }
 
-  int same_socket =
-      is_same_registered_socket(state, request->worker_id, socket_fd);
-  if (same_socket < 0) {
-    return -1;
-  }
   if (state->worker_registered[request->worker_id] && !recovered_worker &&
       !same_socket &&
       qaffd_cid_index_has_worker(&state->cid_index, request->worker_id)) {
@@ -1660,32 +1742,38 @@ static int unregister_worker_authorized(struct qaffd_state *state,
     return -1;
   }
 
+  int cleanup_errno = 0;
+  if (qaff_unregister_worker_socket_only(state->ctx, worker_id) != 0 &&
+      errno != ENOENT) {
+    cleanup_errno = errno ? errno : EIO;
+    audit_event("worker_unregistration_incomplete",
+                peer,
+                "worker_id=%u stage=worker_maps errno=%d",
+                worker_id,
+                cleanup_errno);
+  }
   if (retire_worker_cids(state, worker_id) != 0) {
+    int stage_errno = errno ? errno : EIO;
+    if (cleanup_errno == 0) {
+      cleanup_errno = stage_errno;
+    }
     audit_event("worker_unregistration_incomplete",
                 peer,
                 "worker_id=%u stage=exact_cids errno=%d",
                 worker_id,
-                errno);
-    return -1;
+                stage_errno);
   }
   if (cleanup_passive_cids(state, now_ns(), 1, worker_id) != 0) {
+    int stage_errno = errno ? errno : EIO;
+    if (cleanup_errno == 0) {
+      cleanup_errno = stage_errno;
+    }
     state->passive_cleanup_error_count++;
     audit_event("worker_unregistration_incomplete",
                 peer,
                 "worker_id=%u stage=passive_cids errno=%d",
                 worker_id,
-                errno);
-    return -1;
-  }
-
-  if (qaff_unregister_worker_socket_only(state->ctx, worker_id) != 0 &&
-      errno != ENOENT) {
-    audit_event("worker_unregistration_incomplete",
-                peer,
-                "worker_id=%u stage=worker_maps errno=%d",
-                worker_id,
-                errno);
-    return -1;
+                stage_errno);
   }
 
   if (state->worker_fds[worker_id] >= 0) {
@@ -1715,6 +1803,10 @@ static int unregister_worker_authorized(struct qaffd_state *state,
                 "worker_id=%u remaining_workers=%u",
                 worker_id,
                 worker_count(state));
+  }
+  if (cleanup_errno != 0) {
+    errno = cleanup_errno;
+    return -1;
   }
   return 0;
 }
@@ -2478,6 +2570,29 @@ static int expire_worker_heartbeat_timeouts(struct qaffd_state *state) {
   return rc;
 }
 
+static int expire_recovered_workers(struct qaffd_state *state) {
+  uint64_t now = now_ms();
+  int rc = 0;
+  for (uint32_t worker_id = 0;
+       worker_id < QAFFD_MAX_WORKERS;
+       worker_id++) {
+    if (!worker_is_recovering(state, worker_id) ||
+        elapsed_ms(now, state->worker_registered_at_ms[worker_id]) <
+            state->worker_recovery_timeout_ms) {
+      continue;
+    }
+    audit_event("worker_recovery_expired",
+                NULL,
+                "worker_id=%u generation=%u",
+                worker_id,
+                state->worker_generations[worker_id]);
+    if (unregister_worker_id(state, worker_id) != 0 && errno != ENOENT) {
+      rc = -1;
+    }
+  }
+  return rc;
+}
+
 static int expire_passive_cids_if_due(struct qaffd_state *state) {
   if (!state->passive_affinity_enabled ||
       state->passive_scan_interval_ms == 0) {
@@ -2527,6 +2642,31 @@ static int worker_heartbeat_poll_timeout(const struct qaffd_state *state) {
     return INT_MAX;
   }
   return (int)min_remaining;
+}
+
+static int worker_recovery_poll_timeout(const struct qaffd_state *state) {
+  uint64_t now = now_ms();
+  uint64_t min_remaining = UINT64_MAX;
+  for (uint32_t worker_id = 0;
+       worker_id < QAFFD_MAX_WORKERS;
+       worker_id++) {
+    if (!worker_is_recovering(state, worker_id)) {
+      continue;
+    }
+    uint64_t age =
+        elapsed_ms(now, state->worker_registered_at_ms[worker_id]);
+    if (age >= state->worker_recovery_timeout_ms) {
+      return 0;
+    }
+    uint64_t remaining = state->worker_recovery_timeout_ms - age;
+    if (remaining < min_remaining) {
+      min_remaining = remaining;
+    }
+  }
+  if (min_remaining == UINT64_MAX) {
+    return -1;
+  }
+  return min_remaining > (uint64_t)INT_MAX ? INT_MAX : (int)min_remaining;
 }
 
 static int passive_cleanup_poll_timeout(const struct qaffd_state *state) {
@@ -2631,6 +2771,8 @@ int main(int argc, char **argv) {
   state.fallback_worker_id = daemon_options.fallback_worker_id;
   state.worker_heartbeat_timeout_ms =
       daemon_options.worker_heartbeat_timeout_ms;
+  state.worker_recovery_timeout_ms =
+      daemon_options.worker_recovery_timeout_ms;
   state.passive_scan_interval_ms =
       daemon_options.passive_scan_interval_ms;
   state.allow_worker_uid_set = daemon_options.allow_worker_uid_set;
@@ -2697,17 +2839,6 @@ int main(int argc, char **argv) {
     return 1;
   }
 
-  if (attach_egress_cgroup_if_configured(
-          state.bpf,
-          daemon_options.egress_cgroup_path) != 0) {
-    perror("attach_egress_cgroup");
-    qaff_bpf_object_close(state.bpf);
-    qaff_close(state.ctx);
-    close(state.instance_lock_fd);
-    return 1;
-  }
-  state.egress_attached = daemon_options.egress_cgroup_path != NULL;
-
   if (load_state(&state) != 0) {
     perror("load_state");
     qaff_bpf_object_close(state.bpf);
@@ -2740,10 +2871,31 @@ int main(int argc, char **argv) {
     close(state.instance_lock_fd);
     return 1;
   }
+  if (attach_egress_cgroup_if_configured(
+          state.bpf,
+          daemon_options.egress_cgroup_path) != 0) {
+    perror("attach_egress_cgroup");
+    qaff_bpf_object_close(state.bpf);
+    qaff_close(state.ctx);
+    qaffd_cid_index_destroy(&state.cid_index);
+    close(state.instance_lock_fd);
+    return 1;
+  }
+  state.egress_attached = daemon_options.egress_cgroup_path != NULL;
 
   int server_fd = make_server_socket(&state, daemon_options.socket_path);
   if (server_fd < 0) {
     perror("make_server_socket");
+    qaff_bpf_object_close(state.bpf);
+    qaff_close(state.ctx);
+    qaffd_cid_index_destroy(&state.cid_index);
+    close(state.instance_lock_fd);
+    return 1;
+  }
+  if (quarantine_recovered_workers(&state) != 0) {
+    perror("quarantine_recovered_workers");
+    close(server_fd);
+    unlink(daemon_options.socket_path);
     qaff_bpf_object_close(state.bpf);
     qaff_close(state.ctx);
     qaffd_cid_index_destroy(&state.cid_index);
@@ -2760,6 +2912,9 @@ int main(int argc, char **argv) {
   enum qaffd_poll_source poll_sources[QAFFD_MAX_POLLFDS];
 
   while (!state.stop && !g_stop_requested) {
+    if (expire_recovered_workers(&state) != 0) {
+      perror("expire_recovered_workers");
+    }
     if (expire_worker_heartbeat_timeouts(&state) != 0) {
       perror("expire_worker_heartbeat_timeouts");
     }
@@ -2776,7 +2931,10 @@ int main(int argc, char **argv) {
                                        poll_sources,
                                        QAFFD_MAX_POLLFDS);
     int poll_timeout = earlier_poll_timeout(
-        worker_heartbeat_poll_timeout(&state),
+        worker_recovery_poll_timeout(&state),
+        worker_heartbeat_poll_timeout(&state));
+    poll_timeout = earlier_poll_timeout(
+        poll_timeout,
         passive_cleanup_poll_timeout(&state));
     poll_timeout = earlier_poll_timeout(
         poll_timeout,

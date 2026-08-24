@@ -125,7 +125,9 @@ static int send_quic_like_packet(int fd, uint16_t port, const uint8_t *dcid) {
            : -1;
 }
 
-static int receive_worker(const int *workers, size_t count) {
+static int receive_worker_timeout(const int *workers,
+                                  size_t count,
+                                  int timeout_ms) {
   struct pollfd fds[WORKER_COUNT];
   for (size_t i = 0; i < count; i++) {
     fds[i].fd = workers[i];
@@ -133,7 +135,7 @@ static int receive_worker(const int *workers, size_t count) {
     fds[i].revents = 0;
   }
 
-  if (poll(fds, count, 1000) <= 0) {
+  if (poll(fds, count, timeout_ms) <= 0) {
     return -1;
   }
 
@@ -145,6 +147,10 @@ static int receive_worker(const int *workers, size_t count) {
     }
   }
   return -1;
+}
+
+static int receive_worker(const int *workers, size_t count) {
+  return receive_worker_timeout(workers, count, 1000);
 }
 
 static int connect_retry(const char *socket_path, int attempts) {
@@ -197,6 +203,8 @@ static pid_t start_qaffd(const char *qaffd_path,
         pin_root,
         "--state-path",
         state_path,
+        "--worker-recovery-timeout-ms",
+        "2000",
         "--allow-worker-uid",
         uid_arg,
         "--allow-worker-gid",
@@ -307,6 +315,40 @@ static int control_workers_len(const char *socket_path, size_t *workers_len) {
                                 workers_len);
   close(fd);
   return rc;
+}
+
+static int control_workers_info(
+    const char *socket_path,
+    struct qaff_control_worker_info *workers,
+    size_t workers_cap,
+    size_t *workers_len) {
+  int fd = qaff_control_connect(socket_path);
+  if (fd < 0) {
+    return -1;
+  }
+  int rc = qaff_control_workers_info(fd,
+                                     workers,
+                                     workers_cap,
+                                     workers_len);
+  close(fd);
+  return rc;
+}
+
+static int wait_workers_len(const char *socket_path, size_t expected) {
+  const struct timespec delay = {
+    .tv_sec = 0,
+    .tv_nsec = 20 * 1000 * 1000,
+  };
+  for (int attempt = 0; attempt < 200; attempt++) {
+    size_t workers_len = 0;
+    if (control_workers_len(socket_path, &workers_len) == 0 &&
+        workers_len == expected) {
+      return 0;
+    }
+    nanosleep(&delay, NULL);
+  }
+  errno = ETIMEDOUT;
+  return -1;
 }
 
 static int control_read_stats(const char *socket_path, struct qaff_stats *stats) {
@@ -603,6 +645,15 @@ int main(int argc, char **argv) {
     fprintf(stderr, "expected initial CID hit on worker %d\n", TARGET_WORKER);
     return 1;
   }
+  if (control_register_passive_cid(socket_path,
+                                   TARGET_WORKER,
+                                   k_passive_dcid) != 0 ||
+      send_quic_like_packet(sender, port, k_passive_dcid) != 0 ||
+      receive_worker(workers, WORKER_COUNT) != TARGET_WORKER) {
+    fprintf(stderr, "expected initial passive CID hit on worker %d\n",
+            TARGET_WORKER);
+    return 1;
+  }
 
   if (stop_qaffd(socket_path, daemon_pid) != 0) {
     perror("stop_qaffd first");
@@ -635,6 +686,24 @@ int main(int argc, char **argv) {
             restored_workers_len);
     return 1;
   }
+  struct qaff_control_worker_info restored_workers[WORKER_COUNT];
+  size_t restored_worker_infos_len = 0;
+  if (control_workers_info(socket_path,
+                           restored_workers,
+                           WORKER_COUNT,
+                           &restored_worker_infos_len) != 0 ||
+      restored_worker_infos_len != WORKER_COUNT) {
+    fprintf(stderr, "could not inspect recovering workers\n");
+    return 1;
+  }
+  for (size_t i = 0; i < restored_worker_infos_len; i++) {
+    if ((restored_workers[i].flags &
+         QAFF_CONTROL_WORKER_FLAG_RECOVERING) == 0) {
+      fprintf(stderr, "restored worker %u was not marked recovering\n",
+              restored_workers[i].worker_id);
+      return 1;
+    }
+  }
 
   struct qaff_control_config cid_config;
   if (control_cids(socket_path, &cid_config) != 0) {
@@ -643,28 +712,93 @@ int main(int argc, char **argv) {
   }
   if (cid_config.cid_map_count != 1 ||
       cid_config.cid_owner_count != 1 ||
-      cid_config.cid_index_mismatch != 0) {
+      cid_config.cid_index_mismatch != 0 ||
+      cid_config.passive_entry_count != 1 ||
+      cid_config.worker_count != WORKER_COUNT ||
+      cid_config.recovering_worker_count != WORKER_COUNT ||
+      cid_config.fallback_available != 0) {
     fprintf(stderr, "unexpected restored CID counts\n");
     return 1;
   }
 
+  int mismatched_fallback = make_worker_socket(&port);
+  if (mismatched_fallback < 0) {
+    perror("make mismatched recovery socket");
+    return 1;
+  }
+  if (control_register_worker(socket_path,
+                              FALLBACK_WORKER,
+                              mismatched_fallback) == 0) {
+    fprintf(stderr, "mismatched socket reclaimed a recovering worker\n");
+    close(mismatched_fallback);
+    return 1;
+  }
+  close(mismatched_fallback);
+
+  if (stop_qaffd(socket_path, daemon_pid) != 0) {
+    perror("stop qaffd while workers are quarantined");
+    return 1;
+  }
+  daemon_pid = start_qaffd(qaffd_path,
+                           socket_path,
+                           bpf_path,
+                           pin_root,
+                           state_path);
+  if (daemon_pid < 0) {
+    perror("restart qaffd from quarantined state");
+    return 1;
+  }
+  ready = wait_ready_or_skip(socket_path, daemon_pid);
+  if (ready != 0) {
+    return ready == TEST_SKIP ? TEST_SKIP : 1;
+  }
+  if (control_cids(socket_path, &cid_config) != 0 ||
+      cid_config.cid_map_count != 1 ||
+      cid_config.cid_owner_count != 1 ||
+      cid_config.passive_entry_count != 1 ||
+      cid_config.recovering_worker_count != WORKER_COUNT) {
+    fprintf(stderr, "repeated restart discarded quarantined routing state\n");
+    return 1;
+  }
+
   if (send_quic_like_packet(sender, port, k_dcid) != 0 ||
-      receive_worker(workers, WORKER_COUNT) != TARGET_WORKER) {
-    fprintf(stderr, "expected restarted qaffd CID hit on worker %d\n", TARGET_WORKER);
+      receive_worker_timeout(workers, WORKER_COUNT, 100) >= 0 ||
+      send_quic_like_packet(sender, port, k_passive_dcid) != 0 ||
+      receive_worker_timeout(workers, WORKER_COUNT, 100) >= 0) {
+    fprintf(stderr, "restored workers accepted traffic before reclaim\n");
     return 1;
   }
 
-  if (control_register_passive_cid(socket_path,
-                                   TARGET_WORKER,
-                                   k_passive_dcid) != 0) {
-    perror("qaff_control_register_passive_cid");
+  for (uint32_t i = 0; i < WORKER_COUNT; i++) {
+    if (control_register_worker(socket_path, i, workers[i]) != 0) {
+      perror("reclaim recovered worker socket");
+      return 1;
+    }
+  }
+  if (control_cids(socket_path, &cid_config) != 0 ||
+      cid_config.recovering_worker_count != 0 ||
+      cid_config.fallback_available != 1 ||
+      send_quic_like_packet(sender, port, k_dcid) != 0 ||
+      receive_worker(workers, WORKER_COUNT) != TARGET_WORKER ||
+      send_quic_like_packet(sender, port, k_passive_dcid) != 0 ||
+      receive_worker(workers, WORKER_COUNT) != TARGET_WORKER) {
+    fprintf(stderr, "reclaimed workers did not restore CID routing\n");
     return 1;
   }
-
-  if (send_quic_like_packet(sender, port, k_passive_dcid) != 0 ||
-      receive_worker(workers, WORKER_COUNT) != TARGET_WORKER) {
-    fprintf(stderr, "expected passive CID hit on worker %d\n", TARGET_WORKER);
+  if (control_workers_info(socket_path,
+                           restored_workers,
+                           WORKER_COUNT,
+                           &restored_worker_infos_len) != 0) {
+    perror("inspect reclaimed workers");
     return 1;
+  }
+  for (size_t i = 0; i < restored_worker_infos_len; i++) {
+    if ((restored_workers[i].flags &
+         QAFF_CONTROL_WORKER_FLAG_RECOVERING) != 0) {
+      fprintf(stderr, "worker %u remained recovering after reclaim\n",
+              restored_workers[i].worker_id);
+      return 1;
+    }
   }
 
   char state_backup[4096];
@@ -774,6 +908,26 @@ int main(int argc, char **argv) {
     return 1;
   }
 
+  if (control_register_worker(socket_path,
+                              FALLBACK_WORKER,
+                              workers[FALLBACK_WORKER]) != 0) {
+    perror("reclaim fallback after tombstone restart");
+    return 1;
+  }
+  if (wait_workers_len(socket_path, 1) != 0 ||
+      control_cids(socket_path, &cid_config) != 0 ||
+      cid_config.recovering_worker_count != 0) {
+    fprintf(stderr, "unclaimed recovered worker did not expire\n");
+    return 1;
+  }
+  close(workers[1]);
+  workers[1] = make_worker_socket(&port);
+  if (workers[1] < 0 ||
+      control_register_worker(socket_path, 1, workers[1]) != 0) {
+    perror("register replacement after recovery timeout");
+    return 1;
+  }
+
   close(workers[TARGET_WORKER]);
   workers[TARGET_WORKER] = make_worker_socket(&port);
   if (workers[TARGET_WORKER] < 0) {
@@ -820,26 +974,31 @@ int main(int argc, char **argv) {
     perror("qaff_control_read_stats");
     return 1;
   }
-  if (stats.values[QAFF_STAT_PACKETS] != 7 ||
+  if (stats.values[QAFF_STAT_PACKETS] != 10 ||
       stats.values[QAFF_STAT_CID_MAP_HIT] != 3 ||
-      stats.values[QAFF_STAT_FALLBACK] != 2 ||
-      stats.values[QAFF_STAT_WORKER_MISSING] != 0 ||
-      stats.values[QAFF_STAT_IPV4] != 7 ||
-      stats.values[QAFF_STAT_PASSIVE_HIT] != 2 ||
+      stats.values[QAFF_STAT_FALLBACK] != 4 ||
+      stats.values[QAFF_STAT_WORKER_MISSING] != 2 ||
+      stats.values[QAFF_STAT_IPV4] != 10 ||
+      stats.values[QAFF_STAT_PASSIVE_HIT] != 3 ||
       stats.values[QAFF_STAT_PASSIVE_MISS] != 1 ||
-      stats.values[QAFF_STAT_PASSIVE_REJECT_GENERATION] != 1) {
+      stats.values[QAFF_STAT_PASSIVE_REJECT_GENERATION] != 2 ||
+      stats.values[QAFF_STAT_CID_MAP_REJECT_GENERATION] != 1) {
     fprintf(stderr,
             "unexpected restart stats packets=%llu cid_hit=%llu fallback=%llu "
-            "ipv4=%llu passive_hit=%llu passive_miss=%llu "
-            "passive_reject_generation=%llu\n",
+            "worker_missing=%llu ipv4=%llu passive_hit=%llu "
+            "passive_miss=%llu passive_reject_generation=%llu "
+            "cid_reject_generation=%llu\n",
             (unsigned long long)stats.values[QAFF_STAT_PACKETS],
             (unsigned long long)stats.values[QAFF_STAT_CID_MAP_HIT],
             (unsigned long long)stats.values[QAFF_STAT_FALLBACK],
+            (unsigned long long)stats.values[QAFF_STAT_WORKER_MISSING],
             (unsigned long long)stats.values[QAFF_STAT_IPV4],
             (unsigned long long)stats.values[QAFF_STAT_PASSIVE_HIT],
             (unsigned long long)stats.values[QAFF_STAT_PASSIVE_MISS],
             (unsigned long long)
-                stats.values[QAFF_STAT_PASSIVE_REJECT_GENERATION]);
+                stats.values[QAFF_STAT_PASSIVE_REJECT_GENERATION],
+            (unsigned long long)
+                stats.values[QAFF_STAT_CID_MAP_REJECT_GENERATION]);
     stop_qaffd(socket_path, daemon_pid);
     return 1;
   }

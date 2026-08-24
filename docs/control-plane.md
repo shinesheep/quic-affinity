@@ -221,7 +221,10 @@ daemon-side worker list and every allocated worker generation, including
 generations of unregistered workers, in a regular filesystem snapshot. Keeping
 those generation tombstones prevents stale exact, profile-v2, and passive CIDs
 from becoming valid when a worker ID is reused after restart. CID ownership is
-recovered only from pinned `qaff_cids` entries whose generation is still live.
+recovered only from pinned `qaff_cids` entries whose generation matches the
+durable registered worker; a zero live generation is accepted only as residue
+of an earlier recovery quarantine and remains unroutable until exact-socket
+reclaim.
 
 On daemon restart:
 
@@ -231,12 +234,26 @@ On daemon restart:
    precedence and trigger cleanup of any interrupted-unregistration residue.
 3. It removes generation-stale exact entries and rebuilds ownership from the
    remaining pinned CID map into a hash index.
-4. Existing socket-group BPF attachment can continue using the pinned maps while worker sockets remain open.
-5. New control operations, including `UNREGISTER_WORKER`, operate on the recovered map and owner state.
-6. qaff-agent notices the control connection closing and retries its leased
-   registration. When the pinned socket-cookie map proves it is the same
-   socket, qaffd preserves the worker generation so passive entries remain
-   valid.
+4. Before accepting control traffic, it quarantines every restored worker by
+   setting its live generation to zero and removing it from the worker
+   sockarray. Exact, profile, and passive routes therefore cannot select an
+   unclaimed process after restart.
+5. `qaff-agent` or an invasive integration notices the control disconnect and
+   re-registers its socket. When the pinned socket-cookie map proves it is the
+   exact same socket, qaffd restores the prior generation, preserving exact and
+   passive connection affinity. A different socket cannot claim the worker ID
+   during this recovery window.
+6. A worker that does not reclaim the exact socket within
+   `--worker-recovery-timeout-ms` (default 5000 ms) is tombstoned and its exact,
+   passive, sockarray, and reverse-cookie state is removed. A replacement
+   socket can then register with the next generation.
+
+`qaffctl config` reports both `worker_count` (durable worker records, including
+quarantined records) and `recovering_worker_count`. `qaffctl workers` marks
+these records with `recovering=1`. A quarantined fixed fallback is reported as
+unavailable, so health stays failed until that exact socket reclaims its ID.
+The cgroup egress learner is attached after state/map reconciliation and cannot
+learn for quarantined workers because their live generation is zero.
 
 The state snapshot is atomically replaced and synced, but is not stored in bpffs. Use a normal persistent location such as `/var/lib/quic-affinity/<listener-id>.state`.
 If `--state-path` is configured, `--pin-root` must also be configured.

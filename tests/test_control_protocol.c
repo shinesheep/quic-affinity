@@ -81,9 +81,11 @@ static int test_config_reply(void) {
   input.config.passive_affinity_enabled = 1;
   input.config.fallback_available = 1;
   input.config.worker_count = 73;
+  input.config.recovering_worker_count = 4;
   input.config.fallback_worker_id = 42;
   input.config.cid_map_count = UINT64_C(0x0102030405060708);
   input.config.passive_scan_interval_ms = 30000;
+  input.config.worker_recovery_timeout_ms = 5000;
   strcpy(input.config.pin_root, "/sys/fs/bpf/qaff");
   strcpy(input.config.state_path, "/var/lib/qaff/state");
 
@@ -106,11 +108,15 @@ static int test_config_reply(void) {
                        "profile-v2 config round trip") == 0 &&
                  check(output.config.worker_count == 73,
                        "config u32 round trip") == 0 &&
+                 check(output.config.recovering_worker_count == 4,
+                       "recovering worker count round trip") == 0 &&
                  check(output.config.fallback_available == 1,
                        "fallback availability round trip") == 0 &&
                  check(output.config.cid_map_count ==
                            UINT64_C(0x0102030405060708),
                        "config u64 round trip") == 0 &&
+                 check(output.config.worker_recovery_timeout_ms == 5000,
+                       "worker recovery timeout round trip") == 0 &&
                  check(strcmp(output.config.pin_root, input.config.pin_root) ==
                            0,
                        "config pin path round trip") == 0 &&
@@ -140,7 +146,9 @@ static int test_workers_reply(void) {
   };
   input.worker_infos[1] = (struct qaff_control_worker_info){
       .worker_id = 4095,
-      .flags = QAFF_CONTROL_WORKER_FLAG_CRED | QAFF_CONTROL_WORKER_FLAG_PIDFD,
+      .flags = QAFF_CONTROL_WORKER_FLAG_CRED |
+               QAFF_CONTROL_WORKER_FLAG_PIDFD |
+               QAFF_CONTROL_WORKER_FLAG_RECOVERING,
       .registered_ms_ago = UINT64_MAX,
       .last_seen_ms_ago = UINT64_C(0x1020304050607080),
   };
@@ -165,6 +173,9 @@ static int test_workers_reply(void) {
                        "worker IDs derived from records") == 0 &&
                  check(output.worker_infos[0].last_seen_ms_ago == 106,
                        "worker metadata round trip") == 0 &&
+                 check((output.worker_infos[1].flags &
+                        QAFF_CONTROL_WORKER_FLAG_RECOVERING) != 0,
+                       "recovering worker flag round trip") == 0 &&
                  check(output.worker_infos[1].last_seen_ms_ago ==
                            UINT64_C(0x1020304050607080),
                        "worker u64 metadata round trip") == 0

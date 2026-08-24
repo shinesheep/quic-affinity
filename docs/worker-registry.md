@@ -15,6 +15,13 @@ The registry never wraps a generation: attempting to advance
 live metadata and descriptors but intentionally preserves its generation so a
 stale passive routing entry cannot become valid when the worker ID is reused.
 
+Records restored after qaffd restart have no live worker fd and are therefore
+reported as recovering. Startup withdraws their BPF generation and sockarray
+entry while retaining enough cookie ownership to authenticate an exact-socket
+claim. A same-socket claim restores the prior generation; expiry of the
+recovery deadline clears the record while preserving its generation tombstone,
+so a replacement socket advances to the next generation.
+
 The implementation is in `qaffd/worker_registry.c`; deterministic lifecycle,
 rollback, bounds, and exhaustion tests are in
 `tests/test_qaffd_worker_registry.c`.
