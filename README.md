@@ -461,8 +461,11 @@ default); `qaffctl config` exposes `recovering_worker_count` and `qaffctl
 workers` prints `recovering=1` while a claim is pending.
 
 Worker unregistration commits its generation tombstone before removing live
-routing. Snapshot failures leave the worker intact, while restart recovery
-uses a committed tombstone to finish any interrupted BPF cleanup.
+routing. Snapshot failures during an explicit management unregister leave the
+worker intact. Confirmed liveness loss instead fails closed by withdrawing the
+worker immediately, then retries the snapshot once per second; `qaffctl
+health` reports failure until persistence recovers. Restart recovery uses a
+committed tombstone to finish any interrupted BPF cleanup.
 
 Pinned map schemas are validated strictly and incompatible maps fail startup.
 During pre-1.0 upgrades that add statistics slots, stop `qaffd`, unpin only the

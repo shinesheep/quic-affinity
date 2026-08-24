@@ -80,10 +80,13 @@ static int test_config_reply(void) {
   input.config.cid_profile_v2_config_id = 9;
   input.config.passive_affinity_enabled = 1;
   input.config.fallback_available = 1;
+  input.config.state_persistence_degraded = 1;
   input.config.worker_count = 73;
   input.config.recovering_worker_count = 4;
   input.config.fallback_worker_id = 42;
   input.config.cid_map_count = UINT64_C(0x0102030405060708);
+  input.config.state_persistence_error_count = 17;
+  input.config.state_persistence_retry_count = 11;
   input.config.passive_scan_interval_ms = 30000;
   input.config.worker_recovery_timeout_ms = 5000;
   strcpy(input.config.pin_root, "/sys/fs/bpf/qaff");
@@ -112,9 +115,14 @@ static int test_config_reply(void) {
                        "recovering worker count round trip") == 0 &&
                  check(output.config.fallback_available == 1,
                        "fallback availability round trip") == 0 &&
+                 check(output.config.state_persistence_degraded == 1,
+                       "persistence health round trip") == 0 &&
                  check(output.config.cid_map_count ==
                            UINT64_C(0x0102030405060708),
                        "config u64 round trip") == 0 &&
+                 check(output.config.state_persistence_error_count == 17 &&
+                           output.config.state_persistence_retry_count == 11,
+                       "persistence counters round trip") == 0 &&
                  check(output.config.worker_recovery_timeout_ms == 5000,
                        "worker recovery timeout round trip") == 0 &&
                  check(strcmp(output.config.pin_root, input.config.pin_root) ==

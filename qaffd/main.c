@@ -37,6 +37,7 @@
 #define QAFFD_CONTROL_DEADLINE_MS 1000u
 #define QAFFD_PASSIVE_SCAN_INTERVAL_MS_DEFAULT 30000u
 #define QAFFD_WORKER_RECOVERY_TIMEOUT_MS_DEFAULT 5000u
+#define QAFFD_STATE_PERSISTENCE_RETRY_MS 1000u
 
 #ifndef SO_REUSEPORT
 #define SO_REUSEPORT 15
@@ -150,6 +151,10 @@ struct qaffd_state {
   uint64_t passive_worker_purged_count;
   uint64_t passive_expiry_initialized_count;
   uint64_t passive_cleanup_error_count;
+  uint8_t state_persistence_degraded;
+  uint64_t state_persistence_error_count;
+  uint64_t state_persistence_retry_count;
+  uint64_t state_persistence_retry_at_ms;
   int allow_worker_uid_set;
   int allow_worker_gid_set;
   int allow_admin_uid_set;
@@ -595,6 +600,8 @@ static void fill_config_reply(const struct qaffd_state *state,
       (state->fallback_worker_id < QAFFD_MAX_WORKERS &&
        state->worker_registered[state->fallback_worker_id] &&
        !worker_is_recovering(state, state->fallback_worker_id));
+  reply->config.state_persistence_degraded =
+      state->state_persistence_degraded;
   reply->config.attached = state->attached ? 1 : 0;
   reply->config.worker_count = worker_count(state);
   reply->config.recovering_worker_count = recovering_worker_count(state);
@@ -606,6 +613,10 @@ static void fill_config_reply(const struct qaffd_state *state,
       state->passive_expiry_initialized_count;
   reply->config.passive_cleanup_error_count =
       state->passive_cleanup_error_count;
+  reply->config.state_persistence_error_count =
+      state->state_persistence_error_count;
+  reply->config.state_persistence_retry_count =
+      state->state_persistence_retry_count;
   reply->config.passive_scan_interval_ms =
       state->passive_scan_interval_ms;
   reply->config.worker_recovery_timeout_ms =
@@ -1282,21 +1293,60 @@ static int cleanup_passive_cids(struct qaffd_state *state,
   return 0;
 }
 
-static int save_state(const struct qaffd_state *state) {
+static void mark_state_persistence_degraded(struct qaffd_state *state,
+                                            const char *stage,
+                                            int error) {
+  state->state_persistence_degraded = 1;
+  state->state_persistence_error_count++;
+  state->state_persistence_retry_at_ms =
+      now_ms() + QAFFD_STATE_PERSISTENCE_RETRY_MS;
+  audit_event("state_persistence_degraded",
+              NULL,
+              "stage=%s errno=%d error_count=%llu retry_ms=%u",
+              stage,
+              error,
+              (unsigned long long)state->state_persistence_error_count,
+              QAFFD_STATE_PERSISTENCE_RETRY_MS);
+}
+
+static int save_state(struct qaffd_state *state) {
   int result = qaffd_state_store_save(state->state_path,
                                       state->worker_registered,
                                       state->worker_generations,
                                       QAFFD_MAX_WORKERS);
   if (result == QAFFD_STATE_STORE_SAVE_COMMITTED_UNSYNCED) {
     int saved_errno = errno ? errno : EIO;
-    audit_event("state_persistence_degraded",
-                NULL,
-                "stage=parent_directory_sync errno=%d",
-                saved_errno);
+    mark_state_persistence_degraded(state,
+                                    "parent_directory_sync",
+                                    saved_errno);
     errno = saved_errno;
     return 0;
   }
+  if (result != 0) {
+    int saved_errno = errno ? errno : EIO;
+    mark_state_persistence_degraded(state, "snapshot_write", saved_errno);
+    errno = saved_errno;
+    return -1;
+  }
+  if (state->state_persistence_degraded) {
+    audit_event("state_persistence_recovered",
+                NULL,
+                "error_count=%llu retry_count=%llu",
+                (unsigned long long)state->state_persistence_error_count,
+                (unsigned long long)state->state_persistence_retry_count);
+  }
+  state->state_persistence_degraded = 0;
+  state->state_persistence_retry_at_ms = 0;
   return result;
+}
+
+static void retry_state_persistence_if_due(struct qaffd_state *state) {
+  if (!state->state_persistence_degraded ||
+      now_ms() < state->state_persistence_retry_at_ms) {
+    return;
+  }
+  state->state_persistence_retry_count++;
+  (void)save_state(state);
 }
 
 static int load_state(struct qaffd_state *state) {
@@ -1755,29 +1805,10 @@ static int handle_register_worker(struct qaffd_state *state,
   return 0;
 }
 
-static int unregister_worker_authorized(struct qaffd_state *state,
-                                        uint32_t worker_id,
-                                        const struct qaffd_peer_cred *peer) {
-  /*
-   * The durable tombstone is the transaction commit point. Temporarily expose
-   * the prospective registry state only to the synchronous snapshot writer;
-   * live in-memory and BPF routing remain unchanged if persistence fails.
-   */
-  int was_registered = state->worker_registered[worker_id];
-  state->worker_registered[worker_id] = 0;
-  int persist_rc = save_state(state);
-  int persist_errno = errno;
-  state->worker_registered[worker_id] = was_registered;
-  if (persist_rc != 0) {
-    audit_event("worker_unregistration_commit_failed",
-                peer,
-                "worker_id=%u stage=state_persist errno=%d",
-                worker_id,
-                persist_errno ? persist_errno : EIO);
-    errno = persist_errno ? persist_errno : EIO;
-    return -1;
-  }
-
+static int finalize_worker_unregistration(
+    struct qaffd_state *state,
+    uint32_t worker_id,
+    const struct qaffd_peer_cred *peer) {
   int cleanup_errno = 0;
   if (qaff_unregister_worker_socket_only(state->ctx, worker_id) != 0 &&
       errno != ENOENT) {
@@ -1845,6 +1876,32 @@ static int unregister_worker_authorized(struct qaffd_state *state,
     return -1;
   }
   return 0;
+}
+
+static int unregister_worker_authorized(struct qaffd_state *state,
+                                        uint32_t worker_id,
+                                        const struct qaffd_peer_cred *peer) {
+  /*
+   * The durable tombstone is the transaction commit point. Temporarily expose
+   * the prospective registry state only to the synchronous snapshot writer;
+   * live in-memory and BPF routing remain unchanged if persistence fails.
+   */
+  int was_registered = state->worker_registered[worker_id];
+  state->worker_registered[worker_id] = 0;
+  int persist_rc = save_state(state);
+  int persist_errno = errno;
+  state->worker_registered[worker_id] = was_registered;
+  if (persist_rc != 0) {
+    audit_event("worker_unregistration_commit_failed",
+                peer,
+                "worker_id=%u stage=state_persist errno=%d",
+                worker_id,
+                persist_errno ? persist_errno : EIO);
+    errno = persist_errno ? persist_errno : EIO;
+    return -1;
+  }
+
+  return finalize_worker_unregistration(state, worker_id, peer);
 }
 
 static int handle_unregister_worker(struct qaffd_state *state,
@@ -2058,13 +2115,43 @@ static void install_worker_lease(struct qaffd_state *state,
   state->worker_lease_fds[worker_id] = lease_fd;
 }
 
-static int unregister_worker_id(struct qaffd_state *state, uint32_t worker_id) {
+static int unregister_worker_liveness(struct qaffd_state *state,
+                                      uint32_t worker_id,
+                                      const char *reason) {
   if (worker_id >= QAFFD_MAX_WORKERS ||
       !state->worker_registered[worker_id]) {
     errno = ENOENT;
     return -1;
   }
-  return unregister_worker_authorized(state, worker_id, NULL);
+  int rc = unregister_worker_authorized(state, worker_id, NULL);
+  int saved_errno = errno;
+  if (rc == 0 || !state->worker_registered[worker_id]) {
+    errno = saved_errno;
+    return rc;
+  }
+
+  /*
+   * This path is used only after qaffd has confirmed loss of liveness. A
+   * failed tombstone write must not leave an ownerless worker routable. The
+   * failed save has already scheduled a rate-limited retry; withdraw the live
+   * generation and socket now, then let that retry persist the tombstone.
+   */
+  audit_event("worker_liveness_fail_closed",
+              NULL,
+              "worker_id=%u generation=%u reason=%s errno=%d",
+              worker_id,
+              state->worker_generations[worker_id],
+              reason,
+              saved_errno ? saved_errno : EIO);
+  if (finalize_worker_unregistration(state, worker_id, NULL) != 0) {
+    audit_event("worker_liveness_withdrawal_incomplete",
+                NULL,
+                "worker_id=%u errno=%d",
+                worker_id,
+                errno ? errno : EIO);
+  }
+  errno = saved_errno ? saved_errno : EIO;
+  return -1;
 }
 
 static int handle_worker_lease_event(struct qaffd_state *state,
@@ -2076,7 +2163,7 @@ static int handle_worker_lease_event(struct qaffd_state *state,
     if (received_fd >= 0) {
       close(received_fd);
     }
-    return unregister_worker_id(state, worker_id);
+    return unregister_worker_liveness(state, worker_id, "lease_read");
   }
   if (received_fd >= 0) {
     close(received_fd);
@@ -2101,18 +2188,18 @@ static int handle_worker_lease_event(struct qaffd_state *state,
                                 reply_packet,
                                 sizeof(reply_packet),
                                 &reply_len) != 0) {
-    return unregister_worker_id(state, worker_id);
+    return unregister_worker_liveness(state, worker_id, "lease_reply_encode");
   }
   ssize_t written;
   do {
     written = send(lease_fd, reply_packet, reply_len, MSG_NOSIGNAL);
   } while (written < 0 && errno == EINTR);
   if (written < 0 || (size_t)written != reply_len) {
-    return unregister_worker_id(state, worker_id);
+    return unregister_worker_liveness(state, worker_id, "lease_reply_write");
   }
   if (reply.status != 0) {
     int saved_errno = reply.status;
-    unregister_worker_id(state, worker_id);
+    unregister_worker_liveness(state, worker_id, "lease_protocol");
     errno = saved_errno;
     return -1;
   }
@@ -2249,26 +2336,9 @@ static void drop_client(struct qaffd_state *state,
     uint32_t worker_id = (uint32_t)client->lease_worker_id;
     if (state->worker_pending_lease_fds[worker_id] == client->fd) {
       state->worker_pending_lease_fds[worker_id] = -1;
-      if (unregister_worker_id(state, worker_id) != 0 && errno != ENOENT) {
-        int saved_errno = errno;
-        /*
-         * The registration was durably committed before its reply. If the
-         * rollback tombstone cannot be persisted, retain this connection as
-         * the lease so the committed worker never becomes an unowned one-shot
-         * registration. A closed peer will make it readable and retry normal
-         * lease cleanup.
-         */
-        if (state->worker_registered[worker_id]) {
-          install_worker_lease(state, worker_id, client->fd);
-          client->fd = -1;
-          audit_event("worker_lease_rollback_deferred",
-                      NULL,
-                      "worker_id=%u errno=%d",
-                      worker_id,
-                      saved_errno);
-        }
-        errno = saved_errno;
-      }
+      (void)unregister_worker_liveness(state,
+                                       worker_id,
+                                       "lease_registration_reply");
     }
   }
   if (client->received_fd >= 0) {
@@ -2626,7 +2696,8 @@ static int expire_worker_heartbeat_timeouts(struct qaffd_state *state) {
         state->worker_heartbeat_timeout_ms) {
       continue;
     }
-    if (unregister_worker_id(state, i) != 0 && errno != ENOENT) {
+    if (unregister_worker_liveness(state, i, "heartbeat_timeout") != 0 &&
+        errno != ENOENT) {
       rc = -1;
     }
   }
@@ -2649,7 +2720,10 @@ static int expire_recovered_workers(struct qaffd_state *state) {
                 "worker_id=%u generation=%u",
                 worker_id,
                 state->worker_generations[worker_id]);
-    if (unregister_worker_id(state, worker_id) != 0 && errno != ENOENT) {
+    if (unregister_worker_liveness(state,
+                                   worker_id,
+                                   "recovery_timeout") != 0 &&
+        errno != ENOENT) {
       rc = -1;
     }
   }
@@ -2731,6 +2805,18 @@ static int worker_recovery_poll_timeout(const struct qaffd_state *state) {
     return -1;
   }
   return min_remaining > (uint64_t)INT_MAX ? INT_MAX : (int)min_remaining;
+}
+
+static int state_persistence_poll_timeout(const struct qaffd_state *state) {
+  if (!state->state_persistence_degraded) {
+    return -1;
+  }
+  uint64_t now = now_ms();
+  if (now >= state->state_persistence_retry_at_ms) {
+    return 0;
+  }
+  uint64_t remaining = state->state_persistence_retry_at_ms - now;
+  return remaining > (uint64_t)INT_MAX ? INT_MAX : (int)remaining;
 }
 
 static int passive_cleanup_poll_timeout(const struct qaffd_state *state) {
@@ -2981,6 +3067,7 @@ int main(int argc, char **argv) {
   enum qaffd_poll_source poll_sources[QAFFD_MAX_POLLFDS];
 
   while (!state.stop && !g_stop_requested) {
+    retry_state_persistence_if_due(&state);
     if (expire_recovered_workers(&state) != 0) {
       perror("expire_recovered_workers");
     }
@@ -3008,6 +3095,9 @@ int main(int argc, char **argv) {
     poll_timeout = earlier_poll_timeout(
         poll_timeout,
         pending_client_poll_timeout(clients));
+    poll_timeout = earlier_poll_timeout(
+        poll_timeout,
+        state_persistence_poll_timeout(&state));
     int poll_rc;
     do {
       poll_rc = poll(pollfds, pollfds_len, poll_timeout);
@@ -3090,12 +3180,16 @@ int main(int argc, char **argv) {
         }
       } else if (poll_sources[i] == QAFFD_POLL_WORKER_LEASE &&
                  state.worker_lease_fds[worker_id] == pollfds[i].fd &&
-                 unregister_worker_id(&state, worker_id) != 0 &&
+                 unregister_worker_liveness(&state,
+                                            worker_id,
+                                            "lease_closed") != 0 &&
                  errno != ENOENT) {
         perror("unregister_worker_lease");
       } else if (poll_sources[i] == QAFFD_POLL_WORKER_PIDFD &&
                  state.worker_pidfds[worker_id] == pollfds[i].fd &&
-                 unregister_worker_id(&state, worker_id) != 0 &&
+                 unregister_worker_liveness(&state,
+                                            worker_id,
+                                            "pidfd_exit") != 0 &&
                  errno != ENOENT) {
         perror("unregister_worker_pidfd");
       }

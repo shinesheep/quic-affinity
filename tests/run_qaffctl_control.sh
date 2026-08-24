@@ -151,6 +151,9 @@ fi
 "$qaffctl_bin" health "$sock" >/tmp/qaffctl-control-$$.health
 grep -q '^ok=1$' /tmp/qaffctl-control-$$.health
 grep -q '^fallback_available=1$' /tmp/qaffctl-control-$$.health
+grep -q '^state_persistence_degraded=0$' /tmp/qaffctl-control-$$.health
+grep -q '^state_persistence_error_count=0$' /tmp/qaffctl-control-$$.health
+grep -q '^state_persistence_retry_count=0$' /tmp/qaffctl-control-$$.health
 grep -q '^attached=0$' /tmp/qaffctl-control-$$.health
 grep -q '^worker_count=0$' /tmp/qaffctl-control-$$.health
 grep -q '^recovering_worker_count=0$' /tmp/qaffctl-control-$$.health
@@ -174,6 +177,9 @@ grep -q '^recovering_worker_count=0$' /tmp/qaffctl-control-$$.config
 grep -q '^fallback_mode=kernel$' /tmp/qaffctl-control-$$.config
 grep -q '^fallback_worker_id=1$' /tmp/qaffctl-control-$$.config
 grep -q '^fallback_available=1$' /tmp/qaffctl-control-$$.config
+grep -q '^state_persistence_degraded=0$' /tmp/qaffctl-control-$$.config
+grep -q '^state_persistence_error_count=0$' /tmp/qaffctl-control-$$.config
+grep -q '^state_persistence_retry_count=0$' /tmp/qaffctl-control-$$.config
 grep -q '^cid_map_count=0$' /tmp/qaffctl-control-$$.config
 grep -q '^cid_owner_count=0$' /tmp/qaffctl-control-$$.config
 grep -q '^cid_index_mismatch=0$' /tmp/qaffctl-control-$$.config

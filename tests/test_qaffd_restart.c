@@ -351,6 +351,27 @@ static int wait_workers_len(const char *socket_path, size_t expected) {
   return -1;
 }
 
+static int control_config(const char *socket_path,
+                          struct qaff_control_config *config);
+
+static int wait_persistence_healthy(
+    const char *socket_path,
+    struct qaff_control_config *config) {
+  const struct timespec delay = {
+    .tv_sec = 0,
+    .tv_nsec = 20 * 1000 * 1000,
+  };
+  for (int attempt = 0; attempt < 250; attempt++) {
+    if (control_config(socket_path, config) == 0 &&
+        !config->state_persistence_degraded) {
+      return 0;
+    }
+    nanosleep(&delay, NULL);
+  }
+  errno = ETIMEDOUT;
+  return -1;
+}
+
 static int control_read_stats(const char *socket_path, struct qaff_stats *stats) {
   int fd = qaff_control_connect(socket_path);
   if (fd < 0) {
@@ -850,6 +871,8 @@ int main(int argc, char **argv) {
   if (control_workers_len(socket_path, &failed_unregister_workers_len) != 0 ||
       failed_unregister_workers_len != WORKER_COUNT ||
       control_cids(socket_path, &cid_config) != 0 ||
+      cid_config.state_persistence_degraded != 1 ||
+      cid_config.state_persistence_error_count == 0 ||
       cid_config.cid_map_count != 1 ||
       cid_config.cid_owner_count != 1 ||
       cid_config.cid_index_mismatch != 0 ||
@@ -881,6 +904,7 @@ int main(int argc, char **argv) {
     return 1;
   }
   if (cid_config.cid_map_count != 0 ||
+      cid_config.state_persistence_degraded != 0 ||
       cid_config.cid_owner_count != 0 ||
       cid_config.cid_index_mismatch != 0 ||
       cid_config.passive_entry_count != 0 ||
@@ -944,10 +968,31 @@ int main(int argc, char **argv) {
     perror("reclaim fallback after tombstone restart");
     return 1;
   }
+  if (rename(state_path, recovery_state_backup) != 0 ||
+      mkdir(state_path, 0700) != 0) {
+    perror("block recovery expiration snapshot");
+    return 1;
+  }
   if (wait_workers_len(socket_path, 1) != 0 ||
       control_cids(socket_path, &cid_config) != 0 ||
-      cid_config.recovering_worker_count != 0) {
-    fprintf(stderr, "unclaimed recovered worker did not expire\n");
+      cid_config.worker_count != 1 ||
+      cid_config.recovering_worker_count != 0 ||
+      cid_config.state_persistence_degraded != 1 ||
+      cid_config.state_persistence_error_count == 0) {
+    fprintf(stderr,
+            "unclaimed recovered worker did not fail closed on state "
+            "failure\n");
+    return 1;
+  }
+  if (rmdir(state_path) != 0 ||
+      rename(recovery_state_backup, state_path) != 0) {
+    perror("restore recovery expiration snapshot");
+    return 1;
+  }
+  if (wait_persistence_healthy(socket_path, &cid_config) != 0 ||
+      cid_config.worker_count != 1 ||
+      cid_config.state_persistence_retry_count == 0) {
+    fprintf(stderr, "state persistence retry did not recover\n");
     return 1;
   }
   close(workers[1]);

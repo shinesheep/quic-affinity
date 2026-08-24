@@ -193,8 +193,16 @@ static int cmd_health(int argc, char **argv) {
     return 1;
   }
 
-  printf("ok=%u\n", config.fallback_available ? 1u : 0u);
+  unsigned int healthy = config.fallback_available &&
+                         !config.state_persistence_degraded;
+  printf("ok=%u\n", healthy);
   printf("fallback_available=%u\n", config.fallback_available);
+  printf("state_persistence_degraded=%u\n",
+         config.state_persistence_degraded);
+  printf("state_persistence_error_count=%llu\n",
+         (unsigned long long)config.state_persistence_error_count);
+  printf("state_persistence_retry_count=%llu\n",
+         (unsigned long long)config.state_persistence_retry_count);
   printf("attached=%u\n", config.attached);
   printf("worker_count=%u\n", config.worker_count);
   printf("recovering_worker_count=%u\n", config.recovering_worker_count);
@@ -211,7 +219,7 @@ static int cmd_health(int argc, char **argv) {
   printf("passive_cleanup_error_count=%llu\n",
          (unsigned long long)config.passive_cleanup_error_count);
   close(fd);
-  return config.fallback_available ? 0 : 1;
+  return healthy ? 0 : 1;
 }
 
 static void print_config(const struct qaff_control_config *config) {
@@ -230,6 +238,12 @@ static void print_config(const struct qaff_control_config *config) {
              : "fixed");
   printf("fallback_worker_id=%u\n", config->fallback_worker_id);
   printf("fallback_available=%u\n", config->fallback_available);
+  printf("state_persistence_degraded=%u\n",
+         config->state_persistence_degraded);
+  printf("state_persistence_error_count=%llu\n",
+         (unsigned long long)config->state_persistence_error_count);
+  printf("state_persistence_retry_count=%llu\n",
+         (unsigned long long)config->state_persistence_retry_count);
   printf("cid_map_count=%llu\n",
          (unsigned long long)config->cid_map_count);
   printf("cid_owner_count=%llu\n",

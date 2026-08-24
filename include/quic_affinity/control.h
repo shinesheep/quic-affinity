@@ -49,7 +49,9 @@ struct qaff_control_config {
   uint8_t fallback_mode;
   /** Non-zero when the configured fallback can currently accept traffic. */
   uint8_t fallback_available;
-  uint8_t reserved[3];
+  /** Non-zero while the durable worker snapshot needs to be retried. */
+  uint8_t state_persistence_degraded;
+  uint8_t reserved[2];
   /** Number of durable worker records, including recovering workers. */
   uint32_t worker_count;
   /** Number of restored workers awaiting an exact-socket claim. */
@@ -74,6 +76,10 @@ struct qaff_control_config {
   uint64_t passive_expiry_initialized_count;
   /** Passive map cleanup operations that failed. */
   uint64_t passive_cleanup_error_count;
+  /** Durable worker snapshot operations that failed or were not synced. */
+  uint64_t state_persistence_error_count;
+  /** Background durable worker snapshot retry attempts. */
+  uint64_t state_persistence_retry_count;
   /** Interval between passive map cleanup scans. */
   uint64_t passive_scan_interval_ms;
   /** Deadline for a restored worker to reclaim its exact socket. */

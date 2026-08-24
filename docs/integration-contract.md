@@ -106,6 +106,13 @@ When using `qaffd`, the privileged daemon owns BPF setup:
 
 If the leased control connection closes unexpectedly, `qaffd` treats the worker as dead, unregisters it, closes qaffd's duplicated worker socket fd, and bulk-retires that worker's CIDs. `--worker-heartbeat-timeout-ms` also lets `qaffd` remove leased workers that keep the connection open but stop sending `WORKER_HEARTBEAT` messages; `0` disables heartbeat timeouts. The older one-shot `REGISTER_WORKER` operation remains available for compatibility, but it cannot detect worker process death on its own because fd passing gives `qaffd` a separate reference to the UDP socket.
 
+Confirmed liveness loss fails closed even if the durable tombstone write
+fails: qaffd withdraws the worker generation/socket and closes ownership FDs,
+then retries the snapshot once per second. `qaffctl health` remains failed with
+`state_persistence_degraded=1` until a retry succeeds. An explicit management
+`UNREGISTER_WORKER` remains transactional and leaves live routing intact when
+its pre-commit tombstone write fails.
+
 After qaffd restarts, persisted workers begin in a recovery quarantine rather
 than being considered live. Their live BPF generation is zero and their
 sockarray entry is absent until the exact socket cookie reclaims the worker ID.

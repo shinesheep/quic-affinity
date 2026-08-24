@@ -166,6 +166,7 @@ static int put_config(struct qaff_writer *writer,
       put_u8(writer, config->egress_attached) != 0 ||
       put_u8(writer, config->fallback_mode) != 0 ||
       put_u8(writer, config->fallback_available) != 0 ||
+      put_u8(writer, config->state_persistence_degraded) != 0 ||
       put_u32(writer, config->worker_count) != 0 ||
       put_u32(writer, config->recovering_worker_count) != 0 ||
       put_u32(writer, config->fallback_worker_id) != 0 ||
@@ -178,6 +179,8 @@ static int put_config(struct qaff_writer *writer,
       put_u64(writer, config->passive_worker_purged_count) != 0 ||
       put_u64(writer, config->passive_expiry_initialized_count) != 0 ||
       put_u64(writer, config->passive_cleanup_error_count) != 0 ||
+      put_u64(writer, config->state_persistence_error_count) != 0 ||
+      put_u64(writer, config->state_persistence_retry_count) != 0 ||
       put_u64(writer, config->passive_scan_interval_ms) != 0 ||
       put_u64(writer, config->worker_recovery_timeout_ms) != 0 ||
       put_path(writer, config->pin_root) != 0 ||
@@ -198,6 +201,7 @@ static int get_config(struct qaff_reader *reader,
       get_u8(reader, &config->egress_attached) != 0 ||
       get_u8(reader, &config->fallback_mode) != 0 ||
       get_u8(reader, &config->fallback_available) != 0 ||
+      get_u8(reader, &config->state_persistence_degraded) != 0 ||
       get_u32(reader, &config->worker_count) != 0 ||
       get_u32(reader, &config->recovering_worker_count) != 0 ||
       get_u32(reader, &config->fallback_worker_id) != 0 ||
@@ -210,6 +214,8 @@ static int get_config(struct qaff_reader *reader,
       get_u64(reader, &config->passive_worker_purged_count) != 0 ||
       get_u64(reader, &config->passive_expiry_initialized_count) != 0 ||
       get_u64(reader, &config->passive_cleanup_error_count) != 0 ||
+      get_u64(reader, &config->state_persistence_error_count) != 0 ||
+      get_u64(reader, &config->state_persistence_retry_count) != 0 ||
       get_u64(reader, &config->passive_scan_interval_ms) != 0 ||
       get_u64(reader, &config->worker_recovery_timeout_ms) != 0 ||
       get_path(reader, config->pin_root) != 0 ||

@@ -40,14 +40,23 @@ Worker unregistration uses the generation tombstone as its transaction commit
 point. qaffd writes the prospective tombstone before withdrawing the worker
 generation and socket, then removes exact CIDs, passive entries, and
 socket-cookie ownership. A pre-commit snapshot failure therefore leaves all
-live routing unchanged. After commit, generation/socket withdrawal happens
+live routing unchanged for an explicit management unregistration. When qaffd
+has independently confirmed loss of worker liveness through lease close,
+pidfd, heartbeat timeout, failed leased-registration reply, or recovery
+timeout, it instead fails closed: generation/socket withdrawal and local FD
+cleanup proceed even if the tombstone cannot be written. qaffd then retries
+the current snapshot at a one-second interval and reports degraded persistence
+health until it succeeds. After commit, generation/socket withdrawal happens
 first so a later cleanup error cannot leave the worker routable. Cleanup is
 idempotent; if qaffd stops during that phase, startup treats the durable
 tombstone as authoritative and removes residual pinned BPF state before
 accepting control connections.
 Pre-commit failures emit `worker_unregistration_commit_failed`; failures in
 the retryable post-commit cleanup emit `worker_unregistration_incomplete` with
-the failing stage.
+the failing stage. `qaffctl health` fails while
+`state_persistence_degraded=1`; `qaffctl config` also exposes cumulative
+`state_persistence_error_count` and `state_persistence_retry_count` values for
+the current daemon process.
 
 Loading uses `O_NOFOLLOW` and accepts only a private regular file owned by the
 daemon user, with no group/world permissions and exactly one hard link. Parsing
