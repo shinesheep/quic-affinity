@@ -82,7 +82,8 @@ passive_reject_generation=N
 Status: implemented in `tests/test_qaffd_restart.c`.
 
 Passive entries include worker generation, and the dataplane rejects entries
-whose generation no longer matches. This needs focused coverage.
+whose generation no longer matches. The focused restart coverage exercises
+this invariant for both stale entries and daemon recovery quarantine.
 
 Tasks:
 
@@ -94,16 +95,15 @@ Tasks:
 - Verify it does not route to the replacement worker.
 - Verify `passive_reject_generation` increments and the packet falls back.
 
-This should be the next implementation task because it validates the main stale
-state safety mechanism.
+These assertions validate the main stale-state safety mechanism.
 
 ## 5. Add Real QUIC Egress Learning Smoke
 
 Status: implemented by `quiche_passive_egress_smoke`, which runs
 `qaff_quiche_udp_smoke --passive-egress` with qaffd egress learning enabled.
 
-The current egress learning smoke uses QUIC-like long-header packets. The next
-proof point should use a real QUIC stack.
+The lower-level egress tests use QUIC-like long-header packets; the quiche smoke
+adds the corresponding proof with a real QUIC stack.
 
 Tasks:
 
@@ -180,12 +180,14 @@ Remaining protocol boundary: an external observer cannot decrypt
 at the same moment it migrates to a new path still needs explicit CID hooks or
 a routable CID profile for a hard guarantee.
 
-## Suggested Order
+## Implementation Status
 
-1. Worker restart and stale passive entry test.
-2. Real quiche egress learning smoke.
-3. Passive entry lifecycle cleanup.
-4. Passive table observability.
-5. Deployment and packaging updates.
-6. Expanded egress counters.
-7. Broader safety policy and ingress-only learning decisions.
+The original implementation sequence is complete: restart/stale-entry tests,
+real quiche egress learning, lifecycle cleanup, observability, packaging,
+egress counters, conservative policy defaults, and zero-source-change worker
+onboarding are all covered above.
+
+The remaining conditional work is ingress-only hardening. If ingress-only
+learning is introduced, design and test per-source or per-prefix rate limits,
+pressure counters, and its explicitly weaker trust model before enabling it in
+production.
