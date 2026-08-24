@@ -43,6 +43,11 @@ static const uint8_t k_passive_dcid[] = {
   0x50, 0x60, 0x70, 0x80,
 };
 
+static const uint8_t k_orphan_dcid[] = {
+  0x6f, 0x72, 0x70, 0x68, 0x61, 0x6e, 0x01, 0x02,
+  0x10, 0x20, 0x30, 0x40,
+};
+
 static int set_nonblocking(int fd) {
   int flags = fcntl(fd, F_GETFL, 0);
   if (flags < 0) {
@@ -311,6 +316,16 @@ static int control_register_cid(const char *socket_path,
   return rc;
 }
 
+static int control_retire_cid(const char *socket_path, const uint8_t *cid) {
+  int fd = qaff_control_connect(socket_path);
+  if (fd < 0) {
+    return -1;
+  }
+  int rc = qaff_control_retire_cid(fd, cid, sizeof(k_dcid));
+  close(fd);
+  return rc;
+}
+
 static int control_register_passive_cid(const char *socket_path,
                                         uint32_t worker_id,
                                         const uint8_t *cid) {
@@ -432,6 +447,18 @@ static int control_cids(const char *socket_path,
   return rc;
 }
 
+static int control_health(const char *socket_path) {
+  int fd = qaff_control_connect(socket_path);
+  if (fd < 0) {
+    return -1;
+  }
+  int rc = qaff_control_health(fd);
+  int saved_errno = errno;
+  close(fd);
+  errno = saved_errno;
+  return rc;
+}
+
 static int control_config(const char *socket_path,
                           struct qaff_control_config *config) {
   int fd = qaff_control_connect(socket_path);
@@ -491,6 +518,50 @@ static int open_pinned_map(const char *pin_root, const char *name) {
     return -1;
   }
   return bpf_obj_get(map_path);
+}
+
+static int set_pinned_exact_cid(const char *pin_root,
+                                const uint8_t *cid,
+                                size_t cid_len,
+                                uint32_t worker_id,
+                                uint32_t worker_generation) {
+  struct qaff_cid_key key;
+  if (qaff_cid_key_from_bytes(cid, cid_len, &key) != QAFF_PARSE_OK) {
+    errno = EINVAL;
+    return -1;
+  }
+  int map_fd = open_pinned_map(pin_root, "qaff_cids");
+  if (map_fd < 0) {
+    return -1;
+  }
+  struct qaff_cid_value value = {
+    .worker_id = worker_id,
+    .worker_generation = worker_generation,
+  };
+  int rc = bpf_map_update_elem(map_fd, &key, &value, BPF_ANY);
+  int saved_errno = errno;
+  close(map_fd);
+  errno = saved_errno;
+  return rc;
+}
+
+static int delete_pinned_exact_cid(const char *pin_root,
+                                   const uint8_t *cid,
+                                   size_t cid_len) {
+  struct qaff_cid_key key;
+  if (qaff_cid_key_from_bytes(cid, cid_len, &key) != QAFF_PARSE_OK) {
+    errno = EINVAL;
+    return -1;
+  }
+  int map_fd = open_pinned_map(pin_root, "qaff_cids");
+  if (map_fd < 0) {
+    return -1;
+  }
+  int rc = bpf_map_delete_elem(map_fd, &key);
+  int saved_errno = errno;
+  close(map_fd);
+  errno = saved_errno;
+  return rc;
 }
 
 static int freeze_pinned_map(const char *pin_root, const char *name) {
@@ -703,6 +774,7 @@ int main(int argc, char **argv) {
     fprintf(stderr, "profile v2 persistence config was not applied\n");
     return 1;
   }
+  struct qaff_control_config cid_config;
 
   int workers[WORKER_COUNT] = {-1, -1, -1};
   uint16_t port = 0;
@@ -741,6 +813,34 @@ int main(int argc, char **argv) {
       receive_worker(workers, WORKER_COUNT) != TARGET_WORKER) {
     fprintf(stderr, "expected initial passive CID hit on worker %d\n",
             TARGET_WORKER);
+    return 1;
+  }
+
+  if (delete_pinned_exact_cid(pin_root, k_dcid, sizeof(k_dcid)) != 0 ||
+      control_cids(socket_path, &cid_config) != 0 ||
+      cid_config.cid_map_count != 0 ||
+      cid_config.cid_owner_count != 1 ||
+      cid_config.cid_index_mismatch != 1) {
+    fprintf(stderr, "exact CID deletion fault was not observable\n");
+    return 1;
+  }
+  errno = 0;
+  if (control_health(socket_path) == 0 || errno != EUCLEAN) {
+    fprintf(stderr, "CID ownership mismatch did not fail health errno=%d\n",
+            errno);
+    return 1;
+  }
+  if (control_retire_cid(socket_path, k_dcid) != 0 ||
+      control_cids(socket_path, &cid_config) != 0 ||
+      cid_config.cid_map_count != 0 ||
+      cid_config.cid_owner_count != 0 ||
+      cid_config.cid_index_mismatch != 0 ||
+      control_health(socket_path) != 0) {
+    fprintf(stderr, "idempotent exact CID retirement did not repair index\n");
+    return 1;
+  }
+  if (control_register_cid(socket_path, TARGET_WORKER, k_dcid) != 0) {
+    perror("restore exact CID after retirement repair");
     return 1;
   }
 
@@ -842,7 +942,6 @@ int main(int argc, char **argv) {
     }
   }
 
-  struct qaff_control_config cid_config;
   if (control_cids(socket_path, &cid_config) != 0) {
     perror("qaff_control_cids restart");
     return 1;
@@ -1007,6 +1106,19 @@ int main(int argc, char **argv) {
 
   if (rmdir(state_path) != 0 || rename(state_backup, state_path) != 0) {
     perror("restore state snapshot path");
+    return 1;
+  }
+
+  if (set_pinned_exact_cid(pin_root,
+                           k_orphan_dcid,
+                           sizeof(k_orphan_dcid),
+                           TARGET_WORKER,
+                           QAFF_WORKER_GENERATION_DEFAULT) != 0 ||
+      control_cids(socket_path, &cid_config) != 0 ||
+      cid_config.cid_map_count != 2 ||
+      cid_config.cid_owner_count != 1 ||
+      cid_config.cid_index_mismatch != 1) {
+    fprintf(stderr, "map-only exact CID fixture was not observable\n");
     return 1;
   }
 

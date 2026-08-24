@@ -82,6 +82,7 @@ static int test_config_reply(void) {
   input.config.fallback_available = 1;
   input.config.state_persistence_degraded = 1;
   input.config.worker_cleanup_degraded = 1;
+  input.config.cid_consistency_degraded = 1;
   input.config.worker_count = 73;
   input.config.recovering_worker_count = 4;
   input.config.fallback_worker_id = 42;
@@ -124,6 +125,8 @@ static int test_config_reply(void) {
                  check(output.config.worker_cleanup_degraded == 1 &&
                            output.config.worker_cleanup_pending_count == 5,
                        "worker cleanup health round trip") == 0 &&
+                 check(output.config.cid_consistency_degraded == 1,
+                       "CID consistency health round trip") == 0 &&
                  check(output.config.cid_map_count ==
                            UINT64_C(0x0102030405060708),
                        "config u64 round trip") == 0 &&

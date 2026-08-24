@@ -186,6 +186,7 @@ grep -q '^worker_cleanup_degraded=0$' /tmp/qaffctl-control-$$.health
 grep -q '^worker_cleanup_pending_count=0$' /tmp/qaffctl-control-$$.health
 grep -q '^worker_cleanup_error_count=0$' /tmp/qaffctl-control-$$.health
 grep -q '^worker_cleanup_retry_count=0$' /tmp/qaffctl-control-$$.health
+grep -q '^cid_consistency_degraded=0$' /tmp/qaffctl-control-$$.health
 grep -q '^attached=0$' /tmp/qaffctl-control-$$.health
 grep -q '^worker_count=0$' /tmp/qaffctl-control-$$.health
 grep -q '^recovering_worker_count=0$' /tmp/qaffctl-control-$$.health
@@ -216,6 +217,7 @@ grep -q '^worker_cleanup_degraded=0$' /tmp/qaffctl-control-$$.config
 grep -q '^worker_cleanup_pending_count=0$' /tmp/qaffctl-control-$$.config
 grep -q '^worker_cleanup_error_count=0$' /tmp/qaffctl-control-$$.config
 grep -q '^worker_cleanup_retry_count=0$' /tmp/qaffctl-control-$$.config
+grep -q '^cid_consistency_degraded=0$' /tmp/qaffctl-control-$$.config
 grep -q '^cid_map_count=0$' /tmp/qaffctl-control-$$.config
 grep -q '^cid_owner_count=0$' /tmp/qaffctl-control-$$.config
 grep -q '^cid_index_mismatch=0$' /tmp/qaffctl-control-$$.config
@@ -248,6 +250,7 @@ grep -q '^qaff_control_retire_passive_cid:' /tmp/qaffctl-control-$$.passive-reti
 grep -q '^cid_map_count=0$' /tmp/qaffctl-control-$$.cids
 grep -q '^cid_owner_count=0$' /tmp/qaffctl-control-$$.cids
 grep -q '^cid_index_mismatch=0$' /tmp/qaffctl-control-$$.cids
+grep -q '^cid_consistency_degraded=0$' /tmp/qaffctl-control-$$.cids
 
 "$qaffctl_bin" workers "$sock" >/tmp/qaffctl-control-$$.workers
 grep -q '^workers_len=0$' /tmp/qaffctl-control-$$.workers

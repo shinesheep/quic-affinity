@@ -56,7 +56,8 @@ struct qaff_control_config {
   uint8_t state_persistence_degraded;
   /** Non-zero while an incomplete worker transaction has BPF map residue. */
   uint8_t worker_cleanup_degraded;
-  uint8_t reserved[1];
+  /** Non-zero when exact-CID consistency could not be inspected. */
+  uint8_t cid_consistency_degraded;
   /** Number of durable worker records, including recovering workers. */
   uint32_t worker_count;
   /** Number of restored workers awaiting an exact-socket claim. */
@@ -202,7 +203,12 @@ int qaff_control_retire_passive_cid(int control_fd,
 /** Read dataplane counters through qaffd. */
 int qaff_control_read_stats(int control_fd, struct qaff_stats *out);
 
-/** Check whether qaffd is reachable and healthy. */
+/**
+ * Check whether qaffd is reachable and healthy.
+ *
+ * Returns -1 with EHOSTDOWN when the fixed fallback is unavailable, or
+ * EUCLEAN when persistence, cleanup, or exact-CID consistency is degraded.
+ */
 int qaff_control_health(int control_fd);
 
 /** Read listener configuration and CID-index health. */

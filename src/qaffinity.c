@@ -735,7 +735,10 @@ int qaff_register_cid(struct qaff_context *ctx,
                           &value,
                           BPF_NOEXIST) == 0) {
     if (qaff_worker_generation_matches(ctx, worker_id, generation) != 0) {
+      int saved_errno = errno ? errno : ESTALE;
+      (void)bpf_map_delete_elem(ctx->cid_map_fd, &key);
       qaff_unlock_mutations(ctx);
+      errno = saved_errno;
       return -1;
     }
     qaff_unlock_mutations(ctx);

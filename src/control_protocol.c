@@ -168,6 +168,7 @@ static int put_config(struct qaff_writer *writer,
       put_u8(writer, config->fallback_available) != 0 ||
       put_u8(writer, config->state_persistence_degraded) != 0 ||
       put_u8(writer, config->worker_cleanup_degraded) != 0 ||
+      put_u8(writer, config->cid_consistency_degraded) != 0 ||
       put_u32(writer, config->worker_count) != 0 ||
       put_u32(writer, config->recovering_worker_count) != 0 ||
       put_u32(writer, config->fallback_worker_id) != 0 ||
@@ -207,6 +208,7 @@ static int get_config(struct qaff_reader *reader,
       get_u8(reader, &config->fallback_available) != 0 ||
       get_u8(reader, &config->state_persistence_degraded) != 0 ||
       get_u8(reader, &config->worker_cleanup_degraded) != 0 ||
+      get_u8(reader, &config->cid_consistency_degraded) != 0 ||
       get_u32(reader, &config->worker_count) != 0 ||
       get_u32(reader, &config->recovering_worker_count) != 0 ||
       get_u32(reader, &config->fallback_worker_id) != 0 ||

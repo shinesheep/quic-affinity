@@ -652,6 +652,8 @@ static void fill_config_reply(const struct qaffd_state *state,
     reply->config.cid_map_count = consistency.map_count;
     reply->config.cid_owner_count = consistency.owner_count;
     reply->config.cid_index_mismatch = consistency.mismatch_count;
+  } else {
+    reply->config.cid_consistency_degraded = 1;
   }
 
   struct qaffd_passive_table_info passive;
@@ -1231,6 +1233,52 @@ static int retire_worker_cids(struct qaffd_state *state, uint32_t worker_id) {
     if (qaffd_cid_index_remove_at(&state->cid_index, i) != 0) {
       return -1;
     }
+  }
+
+  /*
+   * The ownership index is an acceleration structure, not the cleanup source
+   * of truth. Sweep the map as well so legacy, externally inserted, or failed-
+   * rollback residue cannot survive worker teardown.
+   */
+  int map_fd = qaff_get_cid_map_fd(state->ctx);
+  if (map_fd < 0) {
+    errno = EINVAL;
+    return -1;
+  }
+  struct bpf_map_info map_info;
+  memset(&map_info, 0, sizeof(map_info));
+  uint32_t map_info_len = sizeof(map_info);
+  if (bpf_obj_get_info_by_fd(map_fd, &map_info, &map_info_len) != 0) {
+    return -1;
+  }
+  struct qaff_cid_key current;
+  if (bpf_map_get_next_key(map_fd, NULL, &current) != 0) {
+    return errno == ENOENT ? 0 : -1;
+  }
+  for (uint32_t inspected = 0; inspected < map_info.max_entries; inspected++) {
+    struct qaff_cid_key next;
+    int has_next = bpf_map_get_next_key(map_fd, &current, &next) == 0;
+    if (!has_next && errno != ENOENT) {
+      return -1;
+    }
+
+    struct qaff_cid_value value;
+    if (bpf_map_lookup_elem(map_fd, &current, &value) == 0) {
+      int should_retire = retire_tombstones
+                              ? worker_is_tombstoned(state, value.worker_id)
+                              : value.worker_id == worker_id;
+      if (should_retire &&
+          bpf_map_delete_elem(map_fd, &current) != 0 && errno != ENOENT) {
+        return -1;
+      }
+    } else if (errno != ENOENT) {
+      return -1;
+    }
+
+    if (!has_next) {
+      break;
+    }
+    current = next;
   }
 
   return 0;
@@ -2182,16 +2230,27 @@ static int handle_register_cid(struct qaffd_state *state,
     return -1;
   }
 
+  int index_inserted = existing_entry == NULL;
+  if (index_inserted &&
+      qaffd_cid_index_put(&state->cid_index,
+                          &key,
+                          request->worker_id) != 0) {
+    return -1;
+  }
+
   if (qaff_register_cid(state->ctx,
                         request->cid,
                         request->cid_len,
                         request->worker_id) != 0) {
-    return -1;
-  }
-
-  if (qaffd_cid_index_put(&state->cid_index, &key, request->worker_id) != 0) {
-    int saved_errno = errno ? errno : ENOMEM;
-    qaff_retire_cid(state->ctx, request->cid, request->cid_len);
+    int saved_errno = errno ? errno : EIO;
+    if (index_inserted &&
+        qaffd_cid_index_remove(&state->cid_index, &key) != 0) {
+      audit_event("cid_registration_rollback_failed",
+                  peer,
+                  "worker_id=%u stage=ownership_index errno=%d",
+                  request->worker_id,
+                  errno ? errno : EIO);
+    }
     errno = saved_errno;
     return -1;
   }
@@ -2228,7 +2287,8 @@ static int handle_retire_cid(struct qaffd_state *state,
   }
   uint32_t owner_worker_id = entry->worker_id;
 
-  if (qaff_retire_cid(state->ctx, request->cid, request->cid_len) != 0) {
+  if (qaff_retire_cid(state->ctx, request->cid, request->cid_len) != 0 &&
+      errno != ENOENT) {
     return -1;
   }
 
@@ -2531,6 +2591,14 @@ static void process_request(struct qaffd_state *state,
       break;
     case QAFF_CONTROL_HEALTH:
       fill_config_reply(state, reply);
+      if (!reply->config.fallback_available) {
+        reply->status = EHOSTDOWN;
+      } else if (reply->config.state_persistence_degraded ||
+                 reply->config.worker_cleanup_degraded ||
+                 reply->config.cid_consistency_degraded ||
+                 reply->config.cid_index_mismatch != 0) {
+        reply->status = EUCLEAN;
+      }
       break;
     case QAFF_CONTROL_CONFIG:
       fill_config_reply(state, reply);
