@@ -28,6 +28,8 @@ static struct qaff_cid_profile_key test_key(void) {
 static int roundtrips_profile_cid(void) {
   struct qaff_cid_profile_key key = test_key();
   uint8_t cid[QAFF_CID_PROFILE_LEN];
+  CHECK(qaff_cid_profile_key_fingerprint(&key) ==
+        UINT64_C(0x51438a6af17bcaf5));
 
   int rc = qaff_cid_profile_generate(&key,
                                      42,
@@ -36,8 +38,13 @@ static int roundtrips_profile_cid(void) {
                                      cid,
                                      sizeof(cid));
   CHECK(rc == 0);
-  CHECK(cid[0] == QAFF_CID_PROFILE_MARKER);
-  CHECK(cid[1] == QAFF_CID_PROFILE_FLAGS_NONE);
+  CHECK(cid[0] == QAFF_CID_PROFILE_MAGIC_0);
+  CHECK(cid[1] == QAFF_CID_PROFILE_MAGIC_1);
+  static const uint8_t expected[QAFF_CID_PROFILE_LEN] = {
+      0xa5, 0x5a, 0x00, 0x2a, 0x03, 0x01, 0x02, 0x03,
+      0xf5, 0x60, 0x53, 0x3c, 0x82, 0xb2, 0x3d, 0xbe,
+  };
+  CHECK(memcmp(cid, expected, sizeof(expected)) == 0);
 
   struct qaff_cid_profile_fields fields;
   rc = qaff_cid_profile_parse(&key, cid, sizeof(cid), &fields);
@@ -75,7 +82,7 @@ static int rejects_tampered_profile_cid(void) {
   return 0;
 }
 
-static int rejects_unknown_marker_or_flags(void) {
+static int rejects_unknown_magic(void) {
   struct qaff_cid_profile_key key = test_key();
   uint8_t cid[QAFF_CID_PROFILE_LEN];
   struct qaff_cid_profile_fields fields;
@@ -110,7 +117,7 @@ static int rejects_invalid_bounds(void) {
 int main(void) {
   if (roundtrips_profile_cid() != 0 ||
       rejects_tampered_profile_cid() != 0 ||
-      rejects_unknown_marker_or_flags() != 0 ||
+      rejects_unknown_magic() != 0 ||
       rejects_wrong_key() != 0 || rejects_invalid_bounds() != 0) {
     return 1;
   }

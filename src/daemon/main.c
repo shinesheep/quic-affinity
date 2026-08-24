@@ -2,8 +2,10 @@
 #define _POSIX_C_SOURCE 200809L
 
 #include "quic_affinity/control.h"
+#include "quic_affinity/cid_profile.h"
 #include "control_protocol.h"
 #include "authorization.h"
+#include "bpf_abi.h"
 #include "cid_index.h"
 #include "cleanup_retry.h"
 #include "qaffinity_internal.h"
@@ -600,6 +602,15 @@ static int read_cid_consistency(const struct qaffd_state *state,
 static int read_passive_table_info(const struct qaffd_state *state,
                                    struct qaffd_passive_table_info *out);
 
+static uint64_t profile_key_fingerprint(const struct qaffd_state *state) {
+  if (!state->cid_profile_enabled) {
+    return 0;
+  }
+  struct qaff_cid_profile_key key;
+  memcpy(key.bytes, state->cid_profile_key, sizeof(key.bytes));
+  return qaff_cid_profile_key_fingerprint(&key);
+}
+
 static void fill_config_reply(const struct qaffd_state *state,
                               struct qaff_control_msg *reply) {
   reply->config.short_cid_len = state->short_cid_len;
@@ -625,6 +636,8 @@ static void fill_config_reply(const struct qaffd_state *state,
   reply->config.fallback_worker_id = state->fallback_worker_id;
   reply->config.worker_cleanup_pending_count =
       state->worker_cleanup_retry.pending_count;
+  reply->config.cid_profile_key_fingerprint =
+      profile_key_fingerprint(state);
   reply->config.passive_expired_count = state->passive_expired_count;
   reply->config.passive_worker_purged_count =
       state->passive_worker_purged_count;
@@ -689,6 +702,7 @@ static void fill_workers_reply(const struct qaffd_state *state,
     }
     reply->workers[written] = i;
     reply->worker_infos[written].worker_id = i;
+    reply->worker_infos[written].generation = state->worker_generations[i];
     reply->worker_infos[written].flags =
         state->worker_lease_fds[i] >= 0 ? QAFF_CONTROL_WORKER_FLAG_LEASED : 0;
     if (cleanup_pending) {
@@ -836,6 +850,7 @@ static int read_profile_key_file(const char *path,
 
 static int parse_args(int argc, char **argv, struct qaffd_options *options) {
   memset(options, 0, sizeof(*options));
+  int profile_key_seen = 0;
   options->socket_mode = 0600;
   options->passive_min_confidence = QAFF_PASSIVE_CONFIDENCE_HIGH;
   options->passive_scan_interval_ms =
@@ -884,19 +899,27 @@ static int parse_args(int argc, char **argv, struct qaffd_options *options) {
         return -1;
       }
     } else if (strcmp(argv[i], "--cid-profile-key") == 0 && i + 1 < argc) {
+      if (profile_key_seen) {
+        return -1;
+      }
       if (parse_fixed_hex(argv[++i],
                           options->cid_profile_key,
                           sizeof(options->cid_profile_key)) != 0) {
         return -1;
       }
+      profile_key_seen = 1;
       options->cid_profile_enabled = 1;
     } else if (strcmp(argv[i], "--cid-profile-key-file") == 0 &&
                i + 1 < argc) {
+      if (profile_key_seen) {
+        return -1;
+      }
       if (read_profile_key_file(argv[++i],
                                 options->cid_profile_key,
                                 sizeof(options->cid_profile_key)) != 0) {
         return -1;
       }
+      profile_key_seen = 1;
       options->cid_profile_enabled = 1;
     } else if (strcmp(argv[i], "--passive-affinity") == 0) {
       options->passive_affinity_enabled = 1;
@@ -1019,6 +1042,16 @@ static int parse_args(int argc, char **argv, struct qaffd_options *options) {
   if (options->cid_profile_enabled &&
       options->short_cid_len != QAFF_CID_PROFILE_LEN) {
     return -1;
+  }
+  if (options->cid_profile_enabled) {
+    uint8_t key_or = 0;
+    for (size_t i = 0; i < QAFF_CID_PROFILE_KEY_LEN; i++) {
+      key_or |= options->cid_profile_key[i];
+    }
+    if (key_or == 0) {
+      fprintf(stderr, "qaffd: all-zero CID profile keys are forbidden\n");
+      return -1;
+    }
   }
   if ((options->socket_mode & 0007) != 0) {
     return -1;
@@ -1512,6 +1545,41 @@ static int validate_workers_against_generation_map(
   return 0;
 }
 
+static int validate_profile_configuration_change(
+    const struct qaffd_state *state,
+    const struct qaff_options *desired) {
+  int has_durable_generation = 0;
+  for (uint32_t worker_id = 0; worker_id < QAFFD_MAX_WORKERS; worker_id++) {
+    if (state->worker_generations[worker_id] != 0) {
+      has_durable_generation = 1;
+      break;
+    }
+  }
+  if (!has_durable_generation) {
+    return 0;
+  }
+
+  struct qaff_config_value current;
+  uint32_t key = 0;
+  int map_fd = qaff_get_config_map_fd(state->ctx);
+  if (map_fd < 0 || bpf_map_lookup_elem(map_fd, &key, &current) != 0) {
+    return -1;
+  }
+  if (current.cid_profile_enabled != desired->cid_profile_enabled ||
+      (desired->cid_profile_enabled &&
+       memcmp(current.cid_profile_key,
+              desired->cid_profile_key,
+              QAFF_CID_PROFILE_KEY_LEN) != 0)) {
+    fprintf(stderr,
+            "qaffd: refusing CID profile configuration change while durable "
+            "worker generations exist; drain and unregister all workers "
+            "before rekeying\n");
+    errno = EKEYREJECTED;
+    return -1;
+  }
+  return 0;
+}
+
 static int recover_cids_from_map(struct qaffd_state *state) {
   int map_fd = qaff_get_cid_map_fd(state->ctx);
   int generation_map_fd = qaff_get_worker_generation_map_fd(state->ctx);
@@ -1805,12 +1873,17 @@ static int handle_register_worker(struct qaffd_state *state,
                                   const struct qaff_control_msg *request,
                                   int socket_fd,
                                   const struct qaffd_peer_cred *peer,
-                                  int enable_pidfd) {
+                                  int enable_pidfd,
+                                  uint32_t *registered_generation) {
   if (socket_fd < 0 || request->worker_id >= QAFFD_MAX_WORKERS) {
     errno = EINVAL;
     return -1;
   }
   if (validate_worker_peer(state, peer) != 0) {
+    return -1;
+  }
+  if (registered_generation == NULL) {
+    errno = EINVAL;
     return -1;
   }
   if (qaffd_cleanup_retry_is_pending(&state->worker_cleanup_retry,
@@ -2044,6 +2117,7 @@ static int handle_register_worker(struct qaffd_state *state,
                 "worker_id=%u",
                 request->worker_id);
   }
+  *registered_generation = generation;
   return 0;
 }
 
@@ -2569,9 +2643,13 @@ static void process_request(struct qaffd_state *state,
                                  request,
                                  *received_fd,
                                  &peer_cred,
-                                 0) != 0) {
+                                 0,
+                                 &reply->generation) != 0) {
         reply->status = errno ? errno : EIO;
       } else {
+        reply->worker_id = request->worker_id;
+        reply->cid_profile_key_fingerprint =
+            profile_key_fingerprint(state);
         *received_fd = -1;
       }
       break;
@@ -2581,9 +2659,13 @@ static void process_request(struct qaffd_state *state,
                                  request,
                                  *received_fd,
                                  &peer_cred,
-                                 1) != 0) {
+                                 1,
+                                 &reply->generation) != 0) {
         reply->status = errno ? errno : EIO;
       } else {
+        reply->worker_id = request->worker_id;
+        reply->cid_profile_key_fingerprint =
+            profile_key_fingerprint(state);
         *lease_worker_id = (int)request->worker_id;
         state->worker_pending_lease_fds[request->worker_id] = client_fd;
         *received_fd = -1;
@@ -3402,6 +3484,14 @@ int main(int argc, char **argv) {
     close(state.instance_lock_fd);
     return 1;
   }
+  if (validate_profile_configuration_change(&state, &options) != 0) {
+    perror("validate_profile_configuration_change");
+    qaff_bpf_object_close(state.bpf);
+    qaff_close(state.ctx);
+    qaffd_cid_index_destroy(&state.cid_index);
+    close(state.instance_lock_fd);
+    return 1;
+  }
   if (recover_cids_from_map(&state) != 0) {
     perror("recover_cids_from_map");
     qaff_bpf_object_close(state.bpf);
@@ -3441,6 +3531,16 @@ int main(int argc, char **argv) {
   }
   if (quarantine_recovered_workers(&state) != 0) {
     perror("quarantine_recovered_workers");
+    close(server_fd);
+    unlink(daemon_options.socket_path);
+    qaff_bpf_object_close(state.bpf);
+    qaff_close(state.ctx);
+    qaffd_cid_index_destroy(&state.cid_index);
+    close(state.instance_lock_fd);
+    return 1;
+  }
+  if (qaff_apply_config(state.ctx) != 0) {
+    perror("qaff_apply_config");
     close(server_fd);
     unlink(daemon_options.socket_path);
     qaff_bpf_object_close(state.bpf);

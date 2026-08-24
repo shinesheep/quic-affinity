@@ -298,6 +298,21 @@ static int qaff_write_config(struct qaff_context *ctx) {
   return bpf_map_update_elem(ctx->config_map_fd, &key, &value, BPF_ANY);
 }
 
+int qaff_apply_config(struct qaff_context *ctx) {
+  if (ctx == NULL) {
+    errno = EINVAL;
+    return -1;
+  }
+  if (qaff_lock_mutations(ctx) != 0) {
+    return -1;
+  }
+  int rc = qaff_write_config(ctx);
+  int saved_errno = errno;
+  qaff_unlock_mutations(ctx);
+  errno = saved_errno;
+  return rc;
+}
+
 static int qaff_validate_context_maps(const struct qaff_context *ctx) {
   if (qaff_validate_map_fd(ctx->cid_map_fd,
                            BPF_MAP_TYPE_HASH,
@@ -385,6 +400,16 @@ int qaff_open(const struct qaff_options *options, struct qaff_context **out) {
       ctx->short_cid_len != QAFF_CID_PROFILE_LEN) {
     errno = EINVAL;
     goto fail;
+  }
+  if (ctx->cid_profile_enabled) {
+    uint8_t key_or = 0;
+    for (size_t i = 0; i < QAFF_CID_PROFILE_KEY_LEN; i++) {
+      key_or |= options->cid_profile_key[i];
+    }
+    if (key_or == 0) {
+      errno = EINVAL;
+      goto fail;
+    }
   }
   if (options->fallback_worker_id >= QAFF_WORKER_CAPACITY) {
     errno = EINVAL;
@@ -613,8 +638,7 @@ int qaff_open(const struct qaff_options *options, struct qaff_context **out) {
     ctx->owns_config_map = 1;
   }
 
-  if (qaff_validate_context_maps(ctx) != 0 ||
-      qaff_write_config(ctx) != 0) {
+  if (qaff_validate_context_maps(ctx) != 0) {
     goto fail;
   }
 
@@ -920,6 +944,14 @@ int qaff_retire_passive_cid(struct qaff_context *ctx,
 int qaff_register_worker_socket(struct qaff_context *ctx,
                                 uint32_t worker_id,
                                 int socket_fd) {
+  if (ctx == NULL) {
+    errno = EINVAL;
+    return -1;
+  }
+  if (ctx->cid_profile_enabled) {
+    errno = ENOTSUP;
+    return -1;
+  }
   return qaff_register_worker_socket_generation(ctx,
                                                 worker_id,
                                                 socket_fd,

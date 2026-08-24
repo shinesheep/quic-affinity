@@ -70,6 +70,34 @@ static int test_passive_request(void) {
              : -1;
 }
 
+static int test_worker_registration_reply(void) {
+  struct qaff_control_msg input;
+  memset(&input, 0, sizeof(input));
+  input.op = QAFF_CONTROL_REGISTER_WORKER_LEASE;
+  input.worker_id = 42;
+  input.generation = 7;
+  input.cid_profile_key_fingerprint = UINT64_C(0x0102030405060708);
+
+  uint8_t packet[QAFF_CONTROL_MAX_MESSAGE_SIZE];
+  size_t packet_len = 0;
+  struct qaff_control_msg output;
+  if (qaff_control_encode_reply(&input, packet, sizeof(packet), &packet_len) !=
+          0 ||
+      qaff_control_decode_reply(packet, packet_len, &output) != 0) {
+    perror("worker registration reply round trip");
+    return -1;
+  }
+  return check(packet_len == QAFF_CONTROL_HEADER_SIZE + 16,
+               "worker registration reply length") == 0 &&
+                 check(output.worker_id == 42 && output.generation == 7,
+                       "worker registration generation round trip") == 0 &&
+                 check(output.cid_profile_key_fingerprint ==
+                           UINT64_C(0x0102030405060708),
+                       "worker registration key fingerprint round trip") == 0
+             ? 0
+             : -1;
+}
+
 static int test_config_reply(void) {
   struct qaff_control_msg input;
   memset(&input, 0, sizeof(input));
@@ -77,6 +105,8 @@ static int test_config_reply(void) {
   input.config.short_cid_len = 20;
   input.config.attached = 1;
   input.config.cid_profile_enabled = 1;
+  input.config.cid_profile_key_fingerprint =
+      UINT64_C(0x8877665544332211);
   input.config.passive_affinity_enabled = 1;
   input.config.fallback_available = 1;
   input.config.state_persistence_degraded = 1;
@@ -114,6 +144,9 @@ static int test_config_reply(void) {
                "config byte field round trip") == 0 &&
                  check(output.config.cid_profile_enabled == 1,
                        "profile config round trip") == 0 &&
+                 check(output.config.cid_profile_key_fingerprint ==
+                           UINT64_C(0x8877665544332211),
+                       "profile key fingerprint round trip") == 0 &&
                  check(output.config.worker_count == 73,
                        "config u32 round trip") == 0 &&
                  check(output.config.recovering_worker_count == 4,
@@ -160,6 +193,7 @@ static int test_workers_reply(void) {
   input.workers_len = 2;
   input.worker_infos[0] = (struct qaff_control_worker_info){
       .worker_id = 7,
+      .generation = 3,
       .flags = QAFF_CONTROL_WORKER_FLAG_LEASED,
       .pid = 101,
       .uid = 102,
@@ -170,6 +204,7 @@ static int test_workers_reply(void) {
   };
   input.worker_infos[1] = (struct qaff_control_worker_info){
       .worker_id = 4095,
+      .generation = 255,
       .flags = QAFF_CONTROL_WORKER_FLAG_CRED |
                QAFF_CONTROL_WORKER_FLAG_PIDFD |
                QAFF_CONTROL_WORKER_FLAG_RECOVERING |
@@ -196,6 +231,9 @@ static int test_workers_reply(void) {
                  check(output.workers_len == 2, "worker page count") == 0 &&
                  check(output.workers[0] == 7 && output.workers[1] == 4095,
                        "worker IDs derived from records") == 0 &&
+                 check(output.worker_infos[0].generation == 3 &&
+                           output.worker_infos[1].generation == 255,
+                       "worker generations round trip") == 0 &&
                  check(output.worker_infos[0].last_seen_ms_ago == 106,
                        "worker metadata round trip") == 0 &&
                  check((output.worker_infos[1].flags &
@@ -282,7 +320,8 @@ static int test_malformed_packets(void) {
 }
 
 int main(void) {
-  if (test_passive_request() != 0 || test_config_reply() != 0 ||
+  if (test_passive_request() != 0 || test_worker_registration_reply() != 0 ||
+      test_config_reply() != 0 ||
       test_workers_reply() != 0 || test_malformed_packets() != 0) {
     return 1;
   }

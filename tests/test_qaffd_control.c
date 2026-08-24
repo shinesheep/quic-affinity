@@ -356,7 +356,14 @@ static int control_call_register_worker(const char *socket_path,
   if (fd < 0) {
     return -1;
   }
-  int rc = qaff_control_register_worker(fd, worker_id, worker_fd);
+  struct qaff_control_worker_registration registration;
+  int rc = qaff_control_register_worker(
+      fd, worker_id, worker_fd, &registration);
+  if (rc == 0 && (registration.worker_id != worker_id ||
+                  registration.generation == 0)) {
+    errno = EPROTO;
+    rc = -1;
+  }
   close(fd);
   return rc;
 }
@@ -369,8 +376,15 @@ static int control_call_register_worker_lease(const char *socket_path,
   if (fd < 0) {
     return -1;
   }
-  if (qaff_control_register_worker_lease(fd, worker_id, worker_fd) != 0) {
+  struct qaff_control_worker_registration registration;
+  if (qaff_control_register_worker_lease(
+          fd, worker_id, worker_fd, &registration) != 0) {
     close(fd);
+    return -1;
+  }
+  if (registration.worker_id != worker_id || registration.generation == 0) {
+    close(fd);
+    errno = EPROTO;
     return -1;
   }
   *lease_fd = fd;
@@ -861,6 +875,7 @@ static int run_case(const char *qaffd_path,
   }
   if (worker_infos_len != 1 ||
       worker_infos[0].worker_id != 0 ||
+      worker_infos[0].generation != QAFF_WORKER_GENERATION_DEFAULT ||
       (worker_infos[0].flags & QAFF_CONTROL_WORKER_FLAG_LEASED) == 0 ||
       (worker_infos[0].flags & QAFF_CONTROL_WORKER_FLAG_CRED) == 0 ||
       worker_infos[0].uid != (uint32_t)getuid() ||

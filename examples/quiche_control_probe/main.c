@@ -53,22 +53,29 @@ static int make_udp_reuseport_socket(void) {
   return fd;
 }
 
-static int register_worker(const char *socket_path, int worker_fd, int *lease_fd) {
+static int register_worker(const char *socket_path, int worker_fd, int *lease_fd,
+                           uint32_t *generation,
+                           uint64_t *key_fingerprint) {
   int control_fd = qaff_control_connect(socket_path);
   if (control_fd < 0) {
     perror("qaff_control_connect");
     return -1;
   }
 
-  int rc = qaff_control_register_worker_lease(control_fd, WORKER_ID, worker_fd);
+  struct qaff_control_worker_registration registration;
+  int rc = qaff_control_register_worker_lease(
+      control_fd, WORKER_ID, worker_fd, &registration);
   if (rc != 0) {
     perror("qaff_control_register_worker_lease");
     close(control_fd);
     return -1;
   }
 
-  printf("registered_worker=%u\n", WORKER_ID);
+  printf("registered_worker=%u generation=%u\n",
+         registration.worker_id, registration.generation);
   *lease_fd = control_fd;
+  *generation = registration.generation;
+  *key_fingerprint = registration.cid_profile_key_fingerprint;
   return 0;
 }
 
@@ -113,7 +120,10 @@ int main(int argc, char **argv) {
     return 1;
   }
   int worker_lease_fd = -1;
-  if (register_worker(socket_path, worker_fd, &worker_lease_fd) != 0) {
+  uint32_t worker_generation = 0;
+  uint64_t worker_key_fingerprint = 0;
+  if (register_worker(socket_path, worker_fd, &worker_lease_fd,
+                      &worker_generation, &worker_key_fingerprint) != 0) {
     close(worker_fd);
     return 1;
   }
@@ -189,10 +199,19 @@ int main(int argc, char **argv) {
   }
 
   struct qaff_cid_profile_key key = profile_key();
+  if (worker_key_fingerprint != 0 &&
+      worker_key_fingerprint != qaff_cid_profile_key_fingerprint(&key)) {
+    fprintf(stderr, "CID profile key fingerprint mismatch\n");
+    quiche_conn_free(conn);
+    quiche_config_free(config);
+    close(worker_lease_fd);
+    close(worker_fd);
+    return 1;
+  }
   uint8_t profile_cid[QAFF_CID_PROFILE_LEN];
   if (qaff_cid_profile_generate(&key,
                                 WORKER_ID,
-                                QAFF_WORKER_GENERATION_DEFAULT,
+                                worker_generation,
                                 0x010203,
                                 profile_cid,
                                 sizeof(profile_cid)) != 0) {

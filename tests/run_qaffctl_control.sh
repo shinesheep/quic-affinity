@@ -69,7 +69,7 @@ if [ "$validation_rc" -ne 2 ]; then
 fi
 
 set +e
-"$qaffd_bin" --socket "$sock" --bpf "$bpf_obj" --short-cid-len 12 \
+"$qaffd_bin" --socket "$sock" --bpf "$bpf_obj" --short-cid-len 16 \
   --reuseport-bpf-policy replace \
   --cid-profile-key-file "$key_file" >"$validation_log" 2>&1
 validation_rc=$?

@@ -19,16 +19,14 @@
 #define QAFF_WORKER_CAPACITY 4096u
 
 /** Length, in bytes, of the routable CID profile. */
-#define QAFF_CID_PROFILE_LEN 12u
+#define QAFF_CID_PROFILE_LEN 16u
 
 /** Length, in bytes, of the listener-local routable CID profile key. */
 #define QAFF_CID_PROFILE_KEY_LEN 16u
 
-/** Fixed marker in byte zero of every routable profile CID. */
-#define QAFF_CID_PROFILE_MARKER 0xa5u
-
-/** Currently supported flags value in byte one of a routable profile CID. */
-#define QAFF_CID_PROFILE_FLAGS_NONE 0u
+/** Two-byte magic identifying the routable profile CID namespace. */
+#define QAFF_CID_PROFILE_MAGIC_0 0xa5u
+#define QAFF_CID_PROFILE_MAGIC_1 0x5au
 
 /** Initial worker generation written when callers do not supply one. */
 #define QAFF_WORKER_GENERATION_DEFAULT 1u

@@ -21,7 +21,11 @@ struct qaff_cid_profile_key {
   uint8_t bytes[QAFF_CID_PROFILE_KEY_LEN];
 };
 
-/** Decoded fields from a 12-byte routable CID profile. */
+/** Return a non-secret stable fingerprint for configuration verification. */
+uint64_t qaff_cid_profile_key_fingerprint(
+    const struct qaff_cid_profile_key *key);
+
+/** Decoded fields from a 16-byte routable CID profile. */
 struct qaff_cid_profile_fields {
   /** Embedded worker ID; the profile encodes 16 bits. */
   uint32_t worker_id;
@@ -32,7 +36,7 @@ struct qaff_cid_profile_fields {
 };
 
 /**
- * Generate a 12-byte routable CID profile.
+ * Generate a 16-byte routable CID profile.
  *
  * worker_id must be below QAFF_WORKER_CAPACITY, generation in 1..255, and nonce
  * in 24 bits. The output buffer must be at least QAFF_CID_PROFILE_LEN bytes.
@@ -47,7 +51,7 @@ int qaff_cid_profile_generate(const struct qaff_cid_profile_key *key,
                               size_t out_len);
 
 /**
- * Validate and decode a 12-byte routable CID profile.
+ * Validate and decode a 16-byte routable CID profile.
  *
  * The parser checks the profile tag but does not check the worker generation
  * against the live worker map; qaffd/BPF perform that deployment-time check.

@@ -37,18 +37,23 @@
 
 static const uint8_t k_dcid[] = {
     0xde, 0xad, 0xbe, 0xef, 0xaa, 0xbb, 0xcc, 0xdd, 0x10, 0x11, 0x12, 0x13,
+    0x14, 0x15, 0x16, 0x17,
 };
 
 static const uint8_t k_unknown_dcid[] = {
     0xba, 0xad, 0xf0, 0x0d, 0x12, 0x34, 0x56, 0x78, 0x20, 0x21, 0x22, 0x23,
+    0x24, 0x25, 0x26, 0x27,
 };
 
 static const uint8_t k_passive_dcid[] = {
-    0x70, 0x61, 0x73, 0x73, 0x01, 0x02, 0x03, 0x04, 0x30, 0x31, 0x32, 0x33,
+    QAFF_CID_PROFILE_MAGIC_0, 0x61, 0x73, 0x73,
+    0x01, 0x02, 0x03, 0x04, 0x30, 0x31, 0x32, 0x33,
+    0x34, 0x35, 0x36, 0x37,
 };
 
 static const uint8_t k_worker_lifecycle_dcid[] = {
     0x6c, 0x69, 0x66, 0x65, 0x01, 0x02, 0x03, 0x04, 0x40, 0x41, 0x42, 0x43,
+    0x44, 0x45, 0x46, 0x47,
 };
 
 static struct qaff_cid_profile_key profile_key(void) {
@@ -482,6 +487,28 @@ static int run_case(const char *object_path, const struct test_case *test) {
     perror("qaff_open");
     return 1;
   }
+  struct qaff_config_value unpublished_config;
+  uint32_t config_key = 0;
+  if (bpf_map_lookup_elem(qaff_get_config_map_fd(ctx),
+                          &config_key,
+                          &unpublished_config) != 0 ||
+      unpublished_config.short_cid_len != 0 ||
+      unpublished_config.cid_profile_enabled != 0) {
+    fprintf(stderr, "%s: qaff_open published configuration prematurely\n",
+            test->name);
+    return 1;
+  }
+  if (qaff_apply_config(ctx) != 0) {
+    perror("qaff_apply_config");
+    return 1;
+  }
+  errno = 0;
+  if (qaff_register_worker_socket(ctx, 0, workers[0]) == 0 ||
+      errno != ENOTSUP) {
+    fprintf(stderr, "%s: profile accepted implicit worker generation\n",
+            test->name);
+    return 1;
+  }
 
   struct qaff_passive_cid_value passive_value;
   memset(&passive_value, 0, sizeof(passive_value));
@@ -504,7 +531,9 @@ static int run_case(const char *object_path, const struct test_case *test) {
     return 1;
   }
   errno = 0;
-  if (qaff_register_worker_socket(ctx, QAFF_WORKER_CAPACITY, workers[0]) == 0 ||
+  if (qaff_register_worker_socket_generation(
+          ctx, QAFF_WORKER_CAPACITY, workers[0],
+          QAFF_WORKER_GENERATION_DEFAULT) == 0 ||
       errno != EINVAL) {
     fprintf(stderr, "%s: worker registration accepted an invalid ID\n",
             test->name);
@@ -512,8 +541,9 @@ static int run_case(const char *object_path, const struct test_case *test) {
   }
 
   for (uint32_t i = 0; i < WORKER_COUNT; i++) {
-    if (qaff_register_worker_socket(ctx, i, workers[i]) != 0) {
-      perror("qaff_register_worker_socket");
+    if (qaff_register_worker_socket_generation(
+            ctx, i, workers[i], QAFF_WORKER_GENERATION_DEFAULT) != 0) {
+      perror("qaff_register_worker_socket_generation");
       return 1;
     }
   }
@@ -571,7 +601,9 @@ static int run_case(const char *object_path, const struct test_case *test) {
     return 1;
   }
   errno = 0;
-  if (qaff_register_worker_socket(ctx, TARGET_WORKER, replacement_worker) ==
+  if (qaff_register_worker_socket_generation(
+          ctx, TARGET_WORKER, replacement_worker,
+          QAFF_WORKER_GENERATION_DEFAULT) ==
           0 ||
       errno != EBUSY) {
     fprintf(stderr, "%s: active worker socket was replaced\n", test->name);
@@ -583,7 +615,9 @@ static int run_case(const char *object_path, const struct test_case *test) {
     return 1;
   }
   errno = 0;
-  if (qaff_register_worker_socket(ctx, TARGET_WORKER, replacement_worker) ==
+  if (qaff_register_worker_socket_generation(
+          ctx, TARGET_WORKER, replacement_worker,
+          QAFF_WORKER_GENERATION_DEFAULT) ==
           0 ||
       errno != EBUSY) {
     fprintf(stderr,
@@ -599,8 +633,9 @@ static int run_case(const char *object_path, const struct test_case *test) {
   }
   close(replacement_worker);
   errno = 0;
-  if (qaff_register_worker_socket(ctx, FALLBACK_WORKER,
-                                  workers[TARGET_WORKER]) == 0 ||
+  if (qaff_register_worker_socket_generation(
+          ctx, FALLBACK_WORKER, workers[TARGET_WORKER],
+          QAFF_WORKER_GENERATION_DEFAULT) == 0 ||
       errno != EEXIST) {
     fprintf(stderr, "socket was registered under multiple worker IDs\n");
     return 1;
@@ -1050,6 +1085,7 @@ static int run_case(const char *object_path, const struct test_case *test) {
          sizeof(peer_options.cid_profile_key));
   struct qaff_context *peer_ctx = NULL;
   if (qaff_open(&peer_options, &peer_ctx) != 0 ||
+      qaff_apply_config(peer_ctx) != 0 ||
       qaff_register_worker_socket_generation(
           peer_ctx, TARGET_WORKER, replacement_after_withdrawal, 2) != 0) {
     perror("reuse worker ID from independent context");
@@ -1171,7 +1207,9 @@ static int run_case(const char *object_path, const struct test_case *test) {
     return 1;
   }
   errno = 0;
-  if (qaff_register_worker_socket(ctx, TARGET_WORKER, workers[TARGET_WORKER]) ==
+  if (qaff_register_worker_socket_generation(
+          ctx, TARGET_WORKER, workers[TARGET_WORKER],
+          QAFF_WORKER_GENERATION_DEFAULT) ==
           0 ||
       errno != EINVAL) {
     fprintf(stderr, "%s: worker generation regressed during registration\n",
@@ -1258,6 +1296,15 @@ int main(int argc, char **argv) {
   errno = 0;
   if (qaff_open(&invalid_options, &invalid_context) == 0 || errno != EINVAL) {
     fprintf(stderr, "accepted an out-of-range embedded fallback worker\n");
+    qaff_close(invalid_context);
+    return 1;
+  }
+  qaff_options_init(&invalid_options);
+  invalid_options.short_cid_len = QAFF_CID_PROFILE_LEN;
+  invalid_options.cid_profile_enabled = 1;
+  errno = 0;
+  if (qaff_open(&invalid_options, &invalid_context) == 0 || errno != EINVAL) {
+    fprintf(stderr, "accepted an all-zero CID profile key\n");
     qaff_close(invalid_context);
     return 1;
   }

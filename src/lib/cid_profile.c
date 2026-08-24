@@ -5,26 +5,75 @@
 
 #define QAFF_CID_PROFILE_NONCE_MAX 0xffffffu
 
-static uint32_t profile_hash32(const struct qaff_cid_profile_key *key,
-                               const uint8_t *cid_prefix,
-                               size_t cid_prefix_len) {
-  uint32_t h = 2166136261u;
-
+uint64_t qaff_cid_profile_key_fingerprint(
+    const struct qaff_cid_profile_key *key) {
+  if (key == NULL) {
+    return 0;
+  }
+  uint64_t hash = UINT64_C(14695981039346656037);
   for (size_t i = 0; i < QAFF_CID_PROFILE_KEY_LEN; i++) {
-    h ^= key->bytes[i];
-    h *= 16777619u;
+    hash ^= key->bytes[i];
+    hash *= UINT64_C(1099511628211);
   }
-  for (size_t i = 0; i < cid_prefix_len; i++) {
-    h ^= cid_prefix[i];
-    h *= 16777619u;
-  }
+  return hash == 0 ? 1 : hash;
+}
 
-  h ^= h >> 16;
-  h *= 2246822519u;
-  h ^= h >> 13;
-  h *= 3266489917u;
-  h ^= h >> 16;
-  return h;
+static uint64_t load64_le(const uint8_t bytes[8]) {
+  uint64_t value = 0;
+  for (size_t i = 0; i < 8; i++) {
+    value |= (uint64_t)bytes[i] << (8u * i);
+  }
+  return value;
+}
+
+static uint64_t rotl64(uint64_t value, unsigned int bits) {
+  return (value << bits) | (value >> (64u - bits));
+}
+
+static void sip_round(uint64_t *v0, uint64_t *v1,
+                      uint64_t *v2, uint64_t *v3) {
+  *v0 += *v1;
+  *v1 = rotl64(*v1, 13);
+  *v1 ^= *v0;
+  *v0 = rotl64(*v0, 32);
+  *v2 += *v3;
+  *v3 = rotl64(*v3, 16);
+  *v3 ^= *v2;
+  *v0 += *v3;
+  *v3 = rotl64(*v3, 21);
+  *v3 ^= *v0;
+  *v2 += *v1;
+  *v1 = rotl64(*v1, 17);
+  *v1 ^= *v2;
+  *v2 = rotl64(*v2, 32);
+}
+
+/* SipHash-2-4 over the fixed eight-byte profile routing prefix. */
+static uint64_t profile_tag64(const struct qaff_cid_profile_key *key,
+                              const uint8_t cid_prefix[8]) {
+  uint64_t k0 = load64_le(key->bytes);
+  uint64_t k1 = load64_le(key->bytes + 8);
+  uint64_t v0 = UINT64_C(0x736f6d6570736575) ^ k0;
+  uint64_t v1 = UINT64_C(0x646f72616e646f6d) ^ k1;
+  uint64_t v2 = UINT64_C(0x6c7967656e657261) ^ k0;
+  uint64_t v3 = UINT64_C(0x7465646279746573) ^ k1;
+  uint64_t message = load64_le(cid_prefix);
+
+  v3 ^= message;
+  sip_round(&v0, &v1, &v2, &v3);
+  sip_round(&v0, &v1, &v2, &v3);
+  v0 ^= message;
+
+  uint64_t final_block = UINT64_C(8) << 56;
+  v3 ^= final_block;
+  sip_round(&v0, &v1, &v2, &v3);
+  sip_round(&v0, &v1, &v2, &v3);
+  v0 ^= final_block;
+  v2 ^= UINT64_C(0xff);
+  for (unsigned int i = 0; i < 4; i++) {
+    sip_round(&v0, &v1, &v2, &v3);
+  }
+  return v0 ^ v1 ^ v2 ^ v3;
 }
 
 int qaff_cid_profile_generate(const struct qaff_cid_profile_key *key,
@@ -43,8 +92,8 @@ int qaff_cid_profile_generate(const struct qaff_cid_profile_key *key,
     return -1;
   }
 
-  out[0] = QAFF_CID_PROFILE_MARKER;
-  out[1] = QAFF_CID_PROFILE_FLAGS_NONE;
+  out[0] = QAFF_CID_PROFILE_MAGIC_0;
+  out[1] = QAFF_CID_PROFILE_MAGIC_1;
   out[2] = (uint8_t)(worker_id >> 8);
   out[3] = (uint8_t)worker_id;
   out[4] = (uint8_t)generation;
@@ -52,11 +101,10 @@ int qaff_cid_profile_generate(const struct qaff_cid_profile_key *key,
   out[6] = (uint8_t)(nonce >> 8);
   out[7] = (uint8_t)nonce;
 
-  uint32_t tag = profile_hash32(key, out, 8);
-  out[8] = (uint8_t)(tag >> 24);
-  out[9] = (uint8_t)(tag >> 16);
-  out[10] = (uint8_t)(tag >> 8);
-  out[11] = (uint8_t)tag;
+  uint64_t tag = profile_tag64(key, out);
+  for (size_t i = 0; i < 8; i++) {
+    out[8 + i] = (uint8_t)(tag >> (56u - 8u * i));
+  }
   return 0;
 }
 
@@ -70,17 +118,17 @@ int qaff_cid_profile_parse(const struct qaff_cid_profile_key *key,
     return -1;
   }
 
-  if (cid[0] != QAFF_CID_PROFILE_MARKER ||
-      cid[1] != QAFF_CID_PROFILE_FLAGS_NONE) {
+  if (cid[0] != QAFF_CID_PROFILE_MAGIC_0 ||
+      cid[1] != QAFF_CID_PROFILE_MAGIC_1) {
     errno = EPROTO;
     return -1;
   }
 
-  uint32_t expected_tag = profile_hash32(key, cid, 8);
-  uint32_t got_tag = ((uint32_t)cid[8] << 24) |
-                     ((uint32_t)cid[9] << 16) |
-                     ((uint32_t)cid[10] << 8) |
-                     (uint32_t)cid[11];
+  uint64_t expected_tag = profile_tag64(key, cid);
+  uint64_t got_tag = 0;
+  for (size_t i = 0; i < 8; i++) {
+    got_tag = (got_tag << 8) | cid[8 + i];
+  }
   if (got_tag != expected_tag) {
     errno = EBADMSG;
     return -1;

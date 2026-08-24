@@ -192,58 +192,92 @@ static __always_inline int qaff_extract_dcid(struct sk_reuseport_md *ctx,
                         config->short_cid_len);
 }
 
-static __always_inline __u32 qaff_profile_hash32(
+static __always_inline __u64 qaff_load64_le(const __u8 *bytes) {
+  return (__u64)bytes[0] |
+         ((__u64)bytes[1] << 8) |
+         ((__u64)bytes[2] << 16) |
+         ((__u64)bytes[3] << 24) |
+         ((__u64)bytes[4] << 32) |
+         ((__u64)bytes[5] << 40) |
+         ((__u64)bytes[6] << 48) |
+         ((__u64)bytes[7] << 56);
+}
+
+#define QAFF_ROTL64(value, bits)                                               \
+  (((value) << (bits)) | ((value) >> (64 - (bits))))
+
+#define QAFF_SIPROUND(v0, v1, v2, v3)                                         \
+  do {                                                                         \
+    (v0) += (v1);                                                              \
+    (v1) = QAFF_ROTL64((v1), 13);                                              \
+    (v1) ^= (v0);                                                              \
+    (v0) = QAFF_ROTL64((v0), 32);                                              \
+    (v2) += (v3);                                                              \
+    (v3) = QAFF_ROTL64((v3), 16);                                              \
+    (v3) ^= (v2);                                                              \
+    (v0) += (v3);                                                              \
+    (v3) = QAFF_ROTL64((v3), 21);                                              \
+    (v3) ^= (v0);                                                              \
+    (v2) += (v1);                                                              \
+    (v1) = QAFF_ROTL64((v1), 17);                                              \
+    (v1) ^= (v2);                                                              \
+    (v2) = QAFF_ROTL64((v2), 32);                                              \
+  } while (0)
+
+static __always_inline __u64 qaff_profile_tag64(
     const struct qaff_config_value *config,
-    const struct qaff_cid_key *key,
-    __u32 prefix_len) {
-  __u32 h = 2166136261u;
+    const struct qaff_cid_key *key) {
+  __u64 k0 = qaff_load64_le(config->cid_profile_key);
+  __u64 k1 = qaff_load64_le(config->cid_profile_key + 8);
+  __u64 v0 = 0x736f6d6570736575ULL ^ k0;
+  __u64 v1 = 0x646f72616e646f6dULL ^ k1;
+  __u64 v2 = 0x6c7967656e657261ULL ^ k0;
+  __u64 v3 = 0x7465646279746573ULL ^ k1;
+  __u64 message = qaff_load64_le(key->bytes);
+  __u64 final_block = 8ULL << 56;
 
-#pragma unroll
-  for (__u32 i = 0; i < QAFF_CID_PROFILE_KEY_LEN; i++) {
-    h ^= config->cid_profile_key[i];
-    h *= 16777619u;
-  }
+  v3 ^= message;
+  QAFF_SIPROUND(v0, v1, v2, v3);
+  QAFF_SIPROUND(v0, v1, v2, v3);
+  v0 ^= message;
+  v3 ^= final_block;
+  QAFF_SIPROUND(v0, v1, v2, v3);
+  QAFF_SIPROUND(v0, v1, v2, v3);
+  v0 ^= final_block;
+  v2 ^= 0xffULL;
+  QAFF_SIPROUND(v0, v1, v2, v3);
+  QAFF_SIPROUND(v0, v1, v2, v3);
+  QAFF_SIPROUND(v0, v1, v2, v3);
+  QAFF_SIPROUND(v0, v1, v2, v3);
+  return v0 ^ v1 ^ v2 ^ v3;
+}
 
-#pragma unroll
-  for (__u32 i = 0; i < 8; i++) {
-    if (i >= prefix_len) {
-      break;
-    }
-    h ^= key->bytes[i];
-    h *= 16777619u;
-  }
-
-  h ^= h >> 16;
-  h *= 2246822519u;
-  h ^= h >> 13;
-  h *= 3266489917u;
-  h ^= h >> 16;
-  return h;
+static __always_inline int qaff_is_profile_candidate(
+    const struct qaff_config_value *config,
+    const struct qaff_cid_key *key) {
+  return config && config->cid_profile_enabled &&
+         key->len == QAFF_CID_PROFILE_LEN &&
+         key->bytes[0] == QAFF_CID_PROFILE_MAGIC_0 &&
+         key->bytes[1] == QAFF_CID_PROFILE_MAGIC_1;
 }
 
 static __always_inline int qaff_profile_worker(
     const struct qaff_config_value *config,
     const struct qaff_cid_key *key,
     __u32 *worker_id) {
-  if (!config || !config->cid_profile_enabled) {
-    return 0;
-  }
-  if (key->len != QAFF_CID_PROFILE_LEN) {
+  if (!qaff_is_profile_candidate(config, key)) {
     return 0;
   }
 
-  if (key->bytes[0] != QAFF_CID_PROFILE_MARKER) {
-    return 0;
-  }
-  if (key->bytes[1] != QAFF_CID_PROFILE_FLAGS_NONE) {
-    return -1;
-  }
-
-  __u32 expected = qaff_profile_hash32(config, key, 8);
-  __u32 got = ((__u32)key->bytes[8] << 24) |
-              ((__u32)key->bytes[9] << 16) |
-              ((__u32)key->bytes[10] << 8) |
-              (__u32)key->bytes[11];
+  __u64 expected = qaff_profile_tag64(config, key);
+  __u64 got = ((__u64)key->bytes[8] << 56) |
+              ((__u64)key->bytes[9] << 48) |
+              ((__u64)key->bytes[10] << 40) |
+              ((__u64)key->bytes[11] << 32) |
+              ((__u64)key->bytes[12] << 24) |
+              ((__u64)key->bytes[13] << 16) |
+              ((__u64)key->bytes[14] << 8) |
+              (__u64)key->bytes[15];
   if (got != expected) {
     return -1;
   }
@@ -590,6 +624,11 @@ int qaff_egress_learn(struct __sk_buff *skb) {
     } else {
       qaff_count(QAFF_STAT_PASSIVE_EGRESS_PARSE_MISS);
     }
+    return 1;
+  }
+
+  /* The profile namespace is authoritative and must not consume passive LRU. */
+  if (qaff_is_profile_candidate(config, &key)) {
     return 1;
   }
 

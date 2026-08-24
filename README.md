@@ -71,8 +71,9 @@ The eBPF program can route these CIDs without a per-CID map entry.
 
 This mode is useful for very high connection counts and restart recovery. It
 requires the QUIC server to adopt the profile format and manage key rotation.
-The profile embeds a worker generation, nonce, and a 32-bit BPF-friendly keyed
-tag. The tag is a routing integrity check, not a cryptographic MAC.
+The profile embeds a worker generation, nonce, and a 64-bit SipHash-2-4 tag.
+The tag provides listener-local routing integrity while keeping the dataplane
+implementation bounded and BPF-verifier friendly.
 
 The exact profile formats are documented in [docs/cid-profile.md](docs/cid-profile.md).
 
@@ -251,7 +252,10 @@ Register workers and CIDs from a QUIC server through the control API:
 
 ```c
 int lease_fd = qaff_control_connect("/tmp/qaffd.sock");
-qaff_control_register_worker_lease(lease_fd, worker_id, udp_socket_fd);
+struct qaff_control_worker_registration registration;
+qaff_control_register_worker_lease(lease_fd, worker_id, udp_socket_fd,
+                                   &registration);
+/* Use registration.generation when generating routable profile CIDs. */
 
 int operation_fd = qaff_control_connect("/tmp/qaffd.sock");
 qaff_control_register_cid(operation_fd, worker_id,
@@ -385,7 +389,7 @@ Start `qaffd` with the profile enabled:
 build/qaffd \
   --socket /tmp/qaffd.sock \
   --bpf build/qaff_reuseport.bpf.o \
-  --short-cid-len 12 \
+  --short-cid-len 16 \
   --reuseport-bpf-policy replace \
   --pin-root /sys/fs/bpf/quic-affinity/listeners/example \
   --state-path /var/lib/quic-affinity/example.state \
@@ -393,7 +397,7 @@ build/qaffd \
 ```
 
 The exact CID map has priority. On a map miss, the BPF program validates the
-profile marker, flags, keyed tag, and worker generation. If all checks pass, it
+profile magic, keyed tag, and worker generation. If all checks pass, it
 selects the embedded worker ID. qaffd rejects the profile unless both the pinned
 map root and durable state snapshot are configured; otherwise a daemon restart
 could reuse a generation and reactivate a stale CID.

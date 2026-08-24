@@ -176,6 +176,11 @@ int main(int argc, char **argv) {
     perror("qaff_open");
     return 1;
   }
+  if (qaff_apply_config(ctx) != 0) {
+    perror("qaff_apply_config");
+    qaff_close(ctx);
+    return 1;
+  }
 
   struct qaff_bpf_object *object = NULL;
   if (qaff_bpf_object_open(ctx, argv[1], &object) != 0) {

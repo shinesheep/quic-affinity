@@ -57,7 +57,7 @@ For the stateful CID registry mode, every server-issued CID routed by `quic-affi
 For the routable CID profile, set `short_cid_len` to
 `QAFF_CID_PROFILE_LEN`, enable `cid_profile_enabled`, and copy the 16-byte
 listener key into `cid_profile_key`. The dataplane checks the CID map first; on
-map miss, it validates the profile marker, flags, tag, and worker generation before routing to
+map miss, it validates the two-byte profile magic, tag, and worker generation before routing to
 the embedded worker ID. qaffd requires both `--pin-root` and `--state-path`
 whenever the profile is enabled, so allocated generations and tombstones survive
 restart. Embedded users are responsible for an equivalent durable generation
@@ -74,12 +74,15 @@ The expected startup sequence is:
 3. Call `qaff_options_init()`.
 4. Set `short_cid_len`.
 5. Call `qaff_open()`.
-6. Register each worker socket with `qaff_register_worker_socket()`.
-7. Load the BPF object with `qaff_bpf_object_open()`.
-8. Attach the BPF program with `qaff_attach_reuseport_bpf()` on one socket in
+6. Publish the validated configuration with `qaff_apply_config()`.
+7. Register each worker socket. Profile integrations must use
+   `qaff_register_worker_socket_generation()` with a durable generation;
+   other integrations may use `qaff_register_worker_socket()`.
+8. Load the BPF object with `qaff_bpf_object_open()`.
+9. Attach the BPF program with `qaff_attach_reuseport_bpf()` on one socket in
    the group. This explicit call replaces any reuseport BPF program already
    owned by that group.
-9. Start accepting packets.
+10. Start accepting packets.
 
 The BPF program applies to the reuseport group after attachment.
 Worker registration populates both the reuseport sockarray and the
@@ -482,11 +485,17 @@ The application should read dataplane counters through `qaff_read_stats()` and a
 ```c
 void qaff_options_init(struct qaff_options *options);
 int qaff_open(const struct qaff_options *options, struct qaff_context **out);
+int qaff_apply_config(struct qaff_context *ctx);
 void qaff_close(struct qaff_context *ctx);
 
 int qaff_register_worker_socket(struct qaff_context *ctx,
                                 uint32_t worker_id,
                                 int socket_fd);
+
+int qaff_register_worker_socket_generation(struct qaff_context *ctx,
+                                           uint32_t worker_id,
+                                           int socket_fd,
+                                           uint32_t generation);
 
 int qaff_unregister_worker_socket(struct qaff_context *ctx,
                                   uint32_t worker_id);

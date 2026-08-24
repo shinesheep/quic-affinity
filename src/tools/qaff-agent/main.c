@@ -623,11 +623,13 @@ static int register_control_with_retry(int pidfd,
     }
     int fd = qaff_control_connect(options->control_socket);
     if (fd >= 0) {
+      struct qaff_control_worker_registration registration;
       if (qaff_control_register_worker_lease_for_pid(
               fd,
               options->worker_id,
               worker_fd,
-              (uint32_t)options->target_pid) == 0) {
+              (uint32_t)options->target_pid,
+              &registration) == 0) {
         if (restoring_after_disconnect) {
           fprintf(stderr,
                   "qaff-agent: restored worker_id=%u lease after qaffd "

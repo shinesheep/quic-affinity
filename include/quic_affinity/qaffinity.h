@@ -68,16 +68,26 @@ void qaff_options_init(struct qaff_options *options);
 /**
  * Open a libqaffinity context.
  *
- * The context validates map schemas, creates missing maps, optionally pins
- * them, and writes dataplane configuration. Existing map fds supplied in
- * options remain owned by the caller; internally opened/created fds are closed
- * by qaff_close(). Mutation calls on one context are serialized. A pinned map
+ * The context validates map schemas, creates missing maps, and optionally pins
+ * them. Call qaff_apply_config() after all application-level validation has
+ * succeeded to publish the requested dataplane configuration. Existing map
+ * fds supplied in options remain owned by the caller; internally
+ * opened/created fds are closed by qaff_close(). Mutation calls on one context
+ * are serialized. A pinned map
  * set must have one lifecycle owner; use qaffd instead of mutating the same
  * worker/CID maps concurrently from independent embedded contexts.
  *
  * Returns 0 on success or -1 with errno set.
  */
 int qaff_open(const struct qaff_options *options, struct qaff_context **out);
+
+/**
+ * Atomically publish the context's validated dataplane configuration.
+ *
+ * Separating this operation from qaff_open() ensures a failed startup cannot
+ * alter the configuration used by a previously attached BPF program.
+ */
+int qaff_apply_config(struct qaff_context *ctx);
 
 /** Close a context and release fds owned by libqaffinity. */
 void qaff_close(struct qaff_context *ctx);
@@ -136,7 +146,9 @@ int qaff_retire_passive_cid(struct qaff_context *ctx,
  * also installs the socket-cookie mapping required by passive egress learning.
  * A socket cannot belong to multiple worker IDs; conflicts fail with EEXIST.
  * Replacing an active worker ID with a different socket fails with EBUSY;
- * unregister the old worker first.
+ * unregister the old worker first. This helper fails with ENOTSUP when the
+ * routable CID profile is enabled; profile users must explicitly manage a
+ * durable generation with qaff_register_worker_socket_generation().
  */
 int qaff_register_worker_socket(struct qaff_context *ctx,
                                 uint32_t worker_id,

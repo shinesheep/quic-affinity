@@ -66,6 +66,8 @@ struct qaff_control_config {
   uint32_t fallback_worker_id;
   /** Worker IDs quarantined until transaction cleanup succeeds. */
   uint32_t worker_cleanup_pending_count;
+  /** Non-secret fingerprint used to verify profile-key consistency. */
+  uint64_t cid_profile_key_fingerprint;
   /** Number of exact CID entries in qaffd's ownership index. */
   uint64_t cid_map_count;
   /** Number of CID ownership entries tracked by qaffd. */
@@ -108,6 +110,8 @@ struct qaff_control_config {
 struct qaff_control_worker_info {
   /** Worker ID used by the dataplane. */
   uint32_t worker_id;
+  /** Durable generation assigned to this worker lifecycle. */
+  uint32_t generation;
   /** Bitwise OR of QAFF_CONTROL_WORKER_FLAG_* values. */
   uint32_t flags;
   /** Registering process ID when credentials were available. */
@@ -122,6 +126,14 @@ struct qaff_control_worker_info {
   uint64_t registered_ms_ago;
   /** Approximate time since the last heartbeat or registration. */
   uint64_t last_seen_ms_ago;
+};
+
+/** Result returned after qaffd commits a worker registration. */
+struct qaff_control_worker_registration {
+  uint32_t worker_id;
+  uint32_t generation;
+  /** Fingerprint of qaffd's active profile key, or zero when disabled. */
+  uint64_t cid_profile_key_fingerprint;
 };
 
 /**
@@ -141,10 +153,13 @@ int qaff_control_connect(const char *socket_path);
  * Registering an already-live worker ID fails with EBUSY; explicitly
  * unregister it before beginning a new worker lifecycle.
  * Registering one socket under multiple worker IDs fails with EEXIST.
+ * On success, out receives the committed generation and active profile-key
+ * fingerprint.
  */
 int qaff_control_register_worker(int control_fd,
                                  uint32_t worker_id,
-                                 int socket_fd);
+                                 int socket_fd,
+                                 struct qaff_control_worker_registration *out);
 
 /**
  * Register a leased worker socket.
@@ -152,10 +167,13 @@ int qaff_control_register_worker(int control_fd,
  * qaffd unregisters the worker if the control connection closes unexpectedly.
  * When supported by the kernel, qaffd also monitors the registering process
  * with pidfd.
+ * On success, out receives the committed generation and active profile-key
+ * fingerprint.
  */
 int qaff_control_register_worker_lease(int control_fd,
                                        uint32_t worker_id,
-                                       int socket_fd);
+                                       int socket_fd,
+                                       struct qaff_control_worker_registration *out);
 
 /**
  * Register a leased worker on behalf of a supervised target PID.
@@ -166,7 +184,8 @@ int qaff_control_register_worker_lease(int control_fd,
 int qaff_control_register_worker_lease_for_pid(int control_fd,
                                                uint32_t worker_id,
                                                int socket_fd,
-                                               uint32_t target_pid);
+                                               uint32_t target_pid,
+                                               struct qaff_control_worker_registration *out);
 
 /** Refresh liveness for a leased worker when qaffd heartbeat timeout is used. */
 int qaff_control_worker_heartbeat(int control_fd, uint32_t worker_id);

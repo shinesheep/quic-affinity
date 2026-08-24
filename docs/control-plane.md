@@ -48,7 +48,7 @@ routable CID. `fixed` selects `fallback_worker_id`; that worker must register
 before non-fallback workers, health fails while it is absent, and fallback
 packets are dropped rather than hashed to another worker. `kernel` leaves
 selection to Linux's native reuseport hash and is always available.
-The profile adds a worker generation, nonce, and a 32-bit keyed tag.
+The profile adds a worker generation, nonce, and a 64-bit SipHash-2-4 tag.
 
 qaffd requires `--reuseport-bpf-policy replace` at startup. Linux attach
 replaces any reuseport BPF program already owned by the group and offers no
@@ -64,6 +64,10 @@ and retire CIDs first when possible, so delayed packets are less likely to fall
 back. Profile-routed CIDs do not consume CID map entries. For the profile, qaffd
 increments a per-worker generation on replacement and BPF rejects stale CIDs
 whose generation no longer matches.
+Successful `REGISTER_WORKER` and `REGISTER_WORKER_LEASE` replies return the
+committed worker ID, generation, and a non-secret profile-key fingerprint. CID
+issuers use the returned generation and verify that their separately
+provisioned key has the same fingerprint.
 
 The control socket defaults to `0600`. Deployments that need group access must use `--socket-mode 0660 --socket-gid GID` and configure an explicit management UID and/or GID with `--allow-admin-uid` or `--allow-admin-gid`; world permissions are rejected. Worker admission options never implicitly grant daemon-management authority.
 
@@ -205,7 +209,7 @@ During reload:
 The control plane must still drain before reusing a worker ID. If reuse races
 with cleanup, generation validation prevents old CIDs from selecting the new
 socket.
-Profile-v2 generations do not wrap: after generation 255, that worker ID is
+Profile generations do not wrap: after generation 255, that worker ID is
 exhausted for the listener and registration fails instead of making generation
 1—and potentially stale CIDs—valid again.
 

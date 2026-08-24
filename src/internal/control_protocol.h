@@ -37,6 +37,8 @@ struct qaff_control_msg {
   uint16_t op;
   int32_t status;
   uint32_t worker_id;
+  uint32_t generation;
+  uint64_t cid_profile_key_fingerprint;
   uint32_t target_pid;
   uint32_t cid_len;
   uint8_t cid[QAFF_MAX_CID_LEN];

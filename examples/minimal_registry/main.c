@@ -92,6 +92,11 @@ int main(int argc, char **argv) {
     perror("qaff_open");
     return 1;
   }
+  if (qaff_apply_config(ctx) != 0) {
+    perror("qaff_apply_config");
+    qaff_close(ctx);
+    return 1;
+  }
 
   for (uint32_t worker_id = 0; worker_id < WORKER_COUNT; worker_id++) {
     if (qaff_register_worker_socket(ctx, worker_id, workers[worker_id]) != 0) {

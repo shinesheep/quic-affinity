@@ -48,8 +48,8 @@
   qaff-agent startup readiness hooks and explicit withdrawal failures.)
 - Require durable worker generations when the CID profile is enabled.
   (Implemented: qaffd requires both pinned maps and a state snapshot.)
-- Remove the generationless routable profile path. (Implemented: profile v1 is
-  unsupported; the production dataplane accepts only generation-bound v2.)
+- Keep a single generation-bound routable profile with no internal protocol
+  version compatibility path. (Implemented.)
 - Make worker unregistration and its persisted snapshot transactional.
   (Implemented: pre-commit failures preserve live routing; post-commit cleanup
   failures quarantine the worker ID and retry with health reporting.)

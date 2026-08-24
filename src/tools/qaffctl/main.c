@@ -243,6 +243,8 @@ static int cmd_health(int argc, char **argv) {
 static void print_config(const struct qaff_control_config *config) {
   printf("short_cid_len=%u\n", config->short_cid_len);
   printf("cid_profile_enabled=%u\n", config->cid_profile_enabled);
+  printf("cid_profile_key_fingerprint=%016llx\n",
+         (unsigned long long)config->cid_profile_key_fingerprint);
   printf("passive_affinity_enabled=%u\n", config->passive_affinity_enabled);
   printf("passive_min_confidence=%u\n", config->passive_min_confidence);
   printf("egress_attached=%u\n", config->egress_attached);
@@ -380,11 +382,12 @@ static int cmd_workers(int argc, char **argv) {
   for (size_t i = 0;
        i < workers_len && i < QAFF_CONTROL_WORKER_CAPACITY;
        i++) {
-    printf("worker=%u leased=%u recovering=%u cleanup_pending=%u "
+    printf("worker=%u generation=%u leased=%u recovering=%u cleanup_pending=%u "
            "has_cred=%u pidfd=%u "
            "pid=%u target_pid=%u "
            "uid=%u gid=%u registered_ms_ago=%llu last_seen_ms_ago=%llu\n",
            workers[i].worker_id,
+           workers[i].generation,
            (workers[i].flags & QAFF_CONTROL_WORKER_FLAG_LEASED) ? 1u : 0u,
            (workers[i].flags & QAFF_CONTROL_WORKER_FLAG_RECOVERING) ? 1u : 0u,
            (workers[i].flags & QAFF_CONTROL_WORKER_FLAG_CLEANUP_PENDING)

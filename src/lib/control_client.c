@@ -143,31 +143,54 @@ int qaff_control_connect(const char *socket_path) {
 
 int qaff_control_register_worker(int control_fd,
                                  uint32_t worker_id,
-                                 int socket_fd) {
+                                 int socket_fd,
+                                 struct qaff_control_worker_registration *out) {
+  if (out == NULL) {
+    errno = EINVAL;
+    return -1;
+  }
   struct qaff_control_msg msg;
   struct qaff_control_msg reply;
   qaff_control_msg_init(&msg, QAFF_CONTROL_REGISTER_WORKER);
   msg.worker_id = worker_id;
-  return qaff_round_trip(control_fd, &msg, socket_fd, &reply);
+  if (qaff_round_trip(control_fd, &msg, socket_fd, &reply) != 0) {
+    return -1;
+  }
+  out->worker_id = reply.worker_id;
+  out->generation = reply.generation;
+  out->cid_profile_key_fingerprint = reply.cid_profile_key_fingerprint;
+  return 0;
 }
 
 int qaff_control_register_worker_lease(int control_fd,
                                        uint32_t worker_id,
-                                       int socket_fd) {
+                                       int socket_fd,
+                                       struct qaff_control_worker_registration *out) {
   return qaff_control_register_worker_lease_for_pid(
-      control_fd, worker_id, socket_fd, 0);
+      control_fd, worker_id, socket_fd, 0, out);
 }
 
 int qaff_control_register_worker_lease_for_pid(int control_fd,
                                                uint32_t worker_id,
                                                int socket_fd,
-                                               uint32_t target_pid) {
+                                               uint32_t target_pid,
+                                               struct qaff_control_worker_registration *out) {
+  if (out == NULL) {
+    errno = EINVAL;
+    return -1;
+  }
   struct qaff_control_msg msg;
   struct qaff_control_msg reply;
   qaff_control_msg_init(&msg, QAFF_CONTROL_REGISTER_WORKER_LEASE);
   msg.worker_id = worker_id;
   msg.target_pid = target_pid;
-  return qaff_round_trip(control_fd, &msg, socket_fd, &reply);
+  if (qaff_round_trip(control_fd, &msg, socket_fd, &reply) != 0) {
+    return -1;
+  }
+  out->worker_id = reply.worker_id;
+  out->generation = reply.generation;
+  out->cid_profile_key_fingerprint = reply.cid_profile_key_fingerprint;
+  return 0;
 }
 
 int qaff_control_worker_heartbeat(int control_fd, uint32_t worker_id) {

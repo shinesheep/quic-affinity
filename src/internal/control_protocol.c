@@ -173,6 +173,7 @@ static int put_config(struct qaff_writer *writer,
       put_u32(writer, config->recovering_worker_count) != 0 ||
       put_u32(writer, config->fallback_worker_id) != 0 ||
       put_u32(writer, config->worker_cleanup_pending_count) != 0 ||
+      put_u64(writer, config->cid_profile_key_fingerprint) != 0 ||
       put_u64(writer, config->cid_map_count) != 0 ||
       put_u64(writer, config->cid_owner_count) != 0 ||
       put_u64(writer, config->cid_index_mismatch) != 0 ||
@@ -214,6 +215,7 @@ static int get_config(struct qaff_reader *reader,
       get_u32(reader, &config->recovering_worker_count) != 0 ||
       get_u32(reader, &config->fallback_worker_id) != 0 ||
       get_u32(reader, &config->worker_cleanup_pending_count) != 0 ||
+      get_u64(reader, &config->cid_profile_key_fingerprint) != 0 ||
       get_u64(reader, &config->cid_map_count) != 0 ||
       get_u64(reader, &config->cid_owner_count) != 0 ||
       get_u64(reader, &config->cid_index_mismatch) != 0 ||
@@ -240,6 +242,7 @@ static int get_config(struct qaff_reader *reader,
 static int put_worker_info(struct qaff_writer *writer,
                            const struct qaff_control_worker_info *info) {
   return put_u32(writer, info->worker_id) == 0 &&
+                 put_u32(writer, info->generation) == 0 &&
                  put_u32(writer, info->flags) == 0 &&
                  put_u32(writer, info->pid) == 0 &&
                  put_u32(writer, info->uid) == 0 &&
@@ -254,6 +257,7 @@ static int put_worker_info(struct qaff_writer *writer,
 static int get_worker_info(struct qaff_reader *reader,
                            struct qaff_control_worker_info *info) {
   return get_u32(reader, &info->worker_id) == 0 &&
+                 get_u32(reader, &info->generation) == 0 &&
                  get_u32(reader, &info->flags) == 0 &&
                  get_u32(reader, &info->pid) == 0 &&
                  get_u32(reader, &info->uid) == 0 &&
@@ -478,6 +482,14 @@ int qaff_control_encode_reply(const struct qaff_control_msg *msg,
     return finish_encode(&writer, msg, packet_len);
   }
   switch (msg->op) {
+  case QAFF_CONTROL_REGISTER_WORKER:
+  case QAFF_CONTROL_REGISTER_WORKER_LEASE:
+    if (put_u32(&writer, msg->worker_id) != 0 ||
+        put_u32(&writer, msg->generation) != 0 ||
+        put_u64(&writer, msg->cid_profile_key_fingerprint) != 0) {
+      return -1;
+    }
+    break;
   case QAFF_CONTROL_READ_STATS:
     for (size_t i = 0; i < QAFF_STAT_MAX; i++) {
       if (put_u64(&writer, msg->stats.values[i]) != 0) {
@@ -507,13 +519,11 @@ int qaff_control_encode_reply(const struct qaff_control_msg *msg,
       }
     }
     break;
-  case QAFF_CONTROL_REGISTER_WORKER:
   case QAFF_CONTROL_REGISTER_CID:
   case QAFF_CONTROL_RETIRE_CID:
   case QAFF_CONTROL_STOP:
   case QAFF_CONTROL_HEALTH:
   case QAFF_CONTROL_UNREGISTER_WORKER:
-  case QAFF_CONTROL_REGISTER_WORKER_LEASE:
   case QAFF_CONTROL_WORKER_HEARTBEAT:
   case QAFF_CONTROL_REGISTER_PASSIVE_CID:
   case QAFF_CONTROL_RETIRE_PASSIVE_CID:
@@ -540,6 +550,18 @@ int qaff_control_decode_reply(const uint8_t *packet, size_t packet_len,
     return finish_decode(&reader);
   }
   switch (msg->op) {
+  case QAFF_CONTROL_REGISTER_WORKER:
+  case QAFF_CONTROL_REGISTER_WORKER_LEASE:
+    if (get_u32(&reader, &msg->worker_id) != 0 ||
+        get_u32(&reader, &msg->generation) != 0 ||
+        get_u64(&reader, &msg->cid_profile_key_fingerprint) != 0 ||
+        msg->worker_id >= QAFF_CONTROL_WORKER_CAPACITY ||
+        msg->generation == 0 ||
+        msg->generation > QAFF_WORKER_GENERATION_MAX) {
+      errno = EPROTO;
+      return -1;
+    }
+    break;
   case QAFF_CONTROL_READ_STATS:
     for (size_t i = 0; i < QAFF_STAT_MAX; i++) {
       if (get_u64(&reader, &msg->stats.values[i]) != 0) {
@@ -571,13 +593,11 @@ int qaff_control_decode_reply(const uint8_t *packet, size_t packet_len,
     }
     break;
   }
-  case QAFF_CONTROL_REGISTER_WORKER:
   case QAFF_CONTROL_REGISTER_CID:
   case QAFF_CONTROL_RETIRE_CID:
   case QAFF_CONTROL_STOP:
   case QAFF_CONTROL_HEALTH:
   case QAFF_CONTROL_UNREGISTER_WORKER:
-  case QAFF_CONTROL_REGISTER_WORKER_LEASE:
   case QAFF_CONTROL_WORKER_HEARTBEAT:
   case QAFF_CONTROL_REGISTER_PASSIVE_CID:
   case QAFF_CONTROL_RETIRE_PASSIVE_CID:

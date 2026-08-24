@@ -67,7 +67,9 @@ static int register_worker(const char *socket_path,
   if (control_fd < 0) {
     return -1;
   }
-  int rc = qaff_control_register_worker_lease(control_fd, worker_id, worker_fd);
+  struct qaff_control_worker_registration registration;
+  int rc = qaff_control_register_worker_lease(
+      control_fd, worker_id, worker_fd, &registration);
   if (rc != 0) {
     perror("qaff_control_register_worker_lease");
     close(control_fd);

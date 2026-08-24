@@ -37,17 +37,17 @@
 
 static const uint8_t k_dcid[] = {
   0xde, 0xad, 0xbe, 0xef, 0xaa, 0xbb, 0xcc, 0xdd,
-  0x10, 0x20, 0x30, 0x40,
+  0x10, 0x20, 0x30, 0x40, 0x50, 0x60, 0x70, 0x80,
 };
 
 static const uint8_t k_passive_dcid[] = {
   0x70, 0x61, 0x73, 0x73, 0x0a, 0x0b, 0x0c, 0x0d,
-  0x50, 0x60, 0x70, 0x80,
+  0x50, 0x60, 0x70, 0x80, 0x90, 0xa0, 0xb0, 0xc0,
 };
 
 static const uint8_t k_orphan_dcid[] = {
   0x6f, 0x72, 0x70, 0x68, 0x61, 0x6e, 0x01, 0x02,
-  0x10, 0x20, 0x30, 0x40,
+  0x10, 0x20, 0x30, 0x40, 0x50, 0x60, 0x70, 0x80,
 };
 
 static int set_nonblocking(int fd) {
@@ -215,11 +215,12 @@ static int state_has_record(const char *state_path,
   return found;
 }
 
-static pid_t start_qaffd(const char *qaffd_path,
-                         const char *socket_path,
-                         const char *bpf_path,
-                         const char *pin_root,
-                         const char *state_path) {
+static pid_t start_qaffd_with_key(const char *qaffd_path,
+                                  const char *socket_path,
+                                  const char *bpf_path,
+                                  const char *pin_root,
+                                  const char *state_path,
+                                  const char *profile_key) {
   char uid_arg[32];
   char gid_arg[32];
   snprintf(uid_arg, sizeof(uid_arg), "%u", (unsigned int)getuid());
@@ -237,11 +238,11 @@ static pid_t start_qaffd(const char *qaffd_path,
         "--bpf",
         bpf_path,
         "--short-cid-len",
-        "12",
+        "16",
         "--reuseport-bpf-policy",
         "replace",
         "--cid-profile-key",
-        "707172737475767778797a7b7c7d7e7f",
+        profile_key,
         "--passive-affinity",
         "--pin-root",
         pin_root,
@@ -260,6 +261,39 @@ static pid_t start_qaffd(const char *qaffd_path,
         (char *)NULL);
   perror("execl qaffd");
   _exit(127);
+}
+
+static pid_t start_qaffd(const char *qaffd_path,
+                         const char *socket_path,
+                         const char *bpf_path,
+                         const char *pin_root,
+                         const char *state_path) {
+  return start_qaffd_with_key(qaffd_path,
+                              socket_path,
+                              bpf_path,
+                              pin_root,
+                              state_path,
+                              "707172737475767778797a7b7c7d7e7f");
+}
+
+static int read_pinned_config(const char *pin_root,
+                              struct qaff_config_value *out) {
+  char path[4096];
+  int n = snprintf(path, sizeof(path), "%s/qaff_config", pin_root);
+  if (n < 0 || (size_t)n >= sizeof(path)) {
+    errno = ENAMETOOLONG;
+    return -1;
+  }
+  int fd = bpf_obj_get(path);
+  if (fd < 0) {
+    return -1;
+  }
+  uint32_t key = 0;
+  int rc = bpf_map_lookup_elem(fd, &key, out);
+  int saved_errno = errno;
+  close(fd);
+  errno = saved_errno;
+  return rc;
 }
 
 static int stop_qaffd(const char *socket_path, pid_t pid) {
@@ -292,16 +326,35 @@ static int wait_ready_or_skip(const char *socket_path, pid_t pid) {
   return -1;
 }
 
-static int control_register_worker(const char *socket_path,
-                                   uint32_t worker_id,
-                                   int worker_fd) {
+static int control_register_worker_result(const char *socket_path,
+                                          uint32_t worker_id,
+                                          int worker_fd,
+                                          uint32_t *generation_out) {
   int fd = qaff_control_connect(socket_path);
   if (fd < 0) {
     return -1;
   }
-  int rc = qaff_control_register_worker(fd, worker_id, worker_fd);
+  struct qaff_control_worker_registration registration;
+  int rc = qaff_control_register_worker(
+      fd, worker_id, worker_fd, &registration);
   close(fd);
+  if (rc == 0 && (registration.worker_id != worker_id ||
+                  registration.generation == 0 ||
+                  registration.cid_profile_key_fingerprint == 0)) {
+    errno = EPROTO;
+    return -1;
+  }
+  if (rc == 0 && generation_out != NULL) {
+    *generation_out = registration.generation;
+  }
   return rc;
+}
+
+static int control_register_worker(const char *socket_path,
+                                   uint32_t worker_id,
+                                   int worker_fd) {
+  return control_register_worker_result(
+      socket_path, worker_id, worker_fd, NULL);
 }
 
 static int control_register_cid(const char *socket_path,
@@ -848,6 +901,57 @@ int main(int argc, char **argv) {
     return 1;
   }
 
+  struct qaff_config_value config_before_rekey;
+  struct qaff_config_value config_after_rekey;
+  if (read_pinned_config(pin_root, &config_before_rekey) != 0) {
+    perror("read config before rejected rekey");
+    return 1;
+  }
+  daemon_pid = start_qaffd_with_key(
+      qaffd_path,
+      socket_path,
+      bpf_path,
+      pin_root,
+      state_path,
+      "808182838485868788898a8b8c8d8e8f");
+  if (daemon_pid < 0) {
+    perror("fork qaffd rekey rejection");
+    return 1;
+  }
+  int rekey_status = 0;
+  int rekey_exited = 0;
+  const struct timespec rekey_delay = {
+    .tv_sec = 0,
+    .tv_nsec = 20 * 1000 * 1000,
+  };
+  for (int attempt = 0; attempt < 100; attempt++) {
+    pid_t waited = waitpid(daemon_pid, &rekey_status, WNOHANG);
+    if (waited == daemon_pid) {
+      rekey_exited = 1;
+      break;
+    }
+    if (waited < 0) {
+      perror("waitpid rejected rekey");
+      return 1;
+    }
+    nanosleep(&rekey_delay, NULL);
+  }
+  if (!rekey_exited) {
+    kill(daemon_pid, SIGTERM);
+    waitpid(daemon_pid, NULL, 0);
+  }
+  if (!rekey_exited || !WIFEXITED(rekey_status) ||
+      WEXITSTATUS(rekey_status) == 0 ||
+      read_pinned_config(pin_root, &config_after_rekey) != 0 ||
+      memcmp(&config_before_rekey,
+             &config_after_rekey,
+             sizeof(config_before_rekey)) != 0) {
+    fprintf(stderr,
+            "qaffd accepted an online rekey or changed pinned config on "
+            "failed startup\n");
+    return 1;
+  }
+
   if (set_pinned_worker_generation(pin_root,
                                    3,
                                    QAFF_WORKER_GENERATION_DEFAULT) != 0) {
@@ -1236,9 +1340,12 @@ int main(int argc, char **argv) {
     perror("make replacement worker socket");
     return 1;
   }
-  if (control_register_worker(socket_path,
-                              TARGET_WORKER,
-                              workers[TARGET_WORKER]) != 0) {
+  uint32_t replacement_generation = 0;
+  if (control_register_worker_result(socket_path,
+                                     TARGET_WORKER,
+                                     workers[TARGET_WORKER],
+                                     &replacement_generation) != 0 ||
+      replacement_generation != 2) {
     perror("qaff_control_register_worker replacement");
     return 1;
   }
