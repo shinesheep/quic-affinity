@@ -5,6 +5,7 @@
 #include "control_protocol.h"
 #include "authorization.h"
 #include "cid_index.h"
+#include "cleanup_retry.h"
 #include "qaffinity_internal.h"
 #include "state_store.h"
 #include "worker_registry.h"
@@ -38,6 +39,7 @@
 #define QAFFD_PASSIVE_SCAN_INTERVAL_MS_DEFAULT 30000u
 #define QAFFD_WORKER_RECOVERY_TIMEOUT_MS_DEFAULT 5000u
 #define QAFFD_STATE_PERSISTENCE_RETRY_MS 1000u
+#define QAFFD_WORKER_CLEANUP_RETRY_MS 1000u
 
 #ifndef SO_REUSEPORT
 #define SO_REUSEPORT 15
@@ -155,6 +157,8 @@ struct qaffd_state {
   uint64_t state_persistence_error_count;
   uint64_t state_persistence_retry_count;
   uint64_t state_persistence_retry_at_ms;
+  uint8_t worker_cleanup_pending[QAFFD_MAX_WORKERS];
+  struct qaffd_cleanup_retry worker_cleanup_retry;
   int allow_worker_uid_set;
   int allow_worker_gid_set;
   int allow_admin_uid_set;
@@ -602,10 +606,14 @@ static void fill_config_reply(const struct qaffd_state *state,
        !worker_is_recovering(state, state->fallback_worker_id));
   reply->config.state_persistence_degraded =
       state->state_persistence_degraded;
+  reply->config.worker_cleanup_degraded =
+      state->worker_cleanup_retry.pending_count != 0;
   reply->config.attached = state->attached ? 1 : 0;
   reply->config.worker_count = worker_count(state);
   reply->config.recovering_worker_count = recovering_worker_count(state);
   reply->config.fallback_worker_id = state->fallback_worker_id;
+  reply->config.worker_cleanup_pending_count =
+      state->worker_cleanup_retry.pending_count;
   reply->config.passive_expired_count = state->passive_expired_count;
   reply->config.passive_worker_purged_count =
       state->passive_worker_purged_count;
@@ -617,6 +625,10 @@ static void fill_config_reply(const struct qaffd_state *state,
       state->state_persistence_error_count;
   reply->config.state_persistence_retry_count =
       state->state_persistence_retry_count;
+  reply->config.worker_cleanup_error_count =
+      state->worker_cleanup_retry.error_count;
+  reply->config.worker_cleanup_retry_count =
+      state->worker_cleanup_retry.retry_count;
   reply->config.passive_scan_interval_ms =
       state->passive_scan_interval_ms;
   reply->config.worker_recovery_timeout_ms =
@@ -1604,6 +1616,15 @@ static int handle_register_worker(struct qaffd_state *state,
   if (validate_worker_peer(state, peer) != 0) {
     return -1;
   }
+  if (qaffd_cleanup_retry_is_pending(&state->worker_cleanup_retry,
+                                     request->worker_id)) {
+    audit_event("worker_registration_rejected",
+                peer,
+                "worker_id=%u reason=cleanup_pending",
+                request->worker_id);
+    errno = EBUSY;
+    return -1;
+  }
   if (worker_has_pending_lease(state, request->worker_id)) {
     audit_event("worker_registration_rejected",
                 peer,
@@ -1805,15 +1826,16 @@ static int handle_register_worker(struct qaffd_state *state,
   return 0;
 }
 
-static int finalize_worker_unregistration(
+static int cleanup_worker_dataplane(
     struct qaffd_state *state,
     uint32_t worker_id,
-    const struct qaffd_peer_cred *peer) {
+    const struct qaffd_peer_cred *peer,
+    const char *failure_event) {
   int cleanup_errno = 0;
   if (qaff_unregister_worker_socket_only(state->ctx, worker_id) != 0 &&
       errno != ENOENT) {
     cleanup_errno = errno ? errno : EIO;
-    audit_event("worker_unregistration_incomplete",
+    audit_event(failure_event,
                 peer,
                 "worker_id=%u stage=worker_maps errno=%d",
                 worker_id,
@@ -1824,7 +1846,7 @@ static int finalize_worker_unregistration(
     if (cleanup_errno == 0) {
       cleanup_errno = stage_errno;
     }
-    audit_event("worker_unregistration_incomplete",
+    audit_event(failure_event,
                 peer,
                 "worker_id=%u stage=exact_cids errno=%d",
                 worker_id,
@@ -1836,12 +1858,30 @@ static int finalize_worker_unregistration(
       cleanup_errno = stage_errno;
     }
     state->passive_cleanup_error_count++;
-    audit_event("worker_unregistration_incomplete",
+    audit_event(failure_event,
                 peer,
                 "worker_id=%u stage=passive_cids errno=%d",
                 worker_id,
                 stage_errno);
   }
+
+  if (cleanup_errno != 0) {
+    errno = cleanup_errno;
+    return -1;
+  }
+  return 0;
+}
+
+static int finalize_worker_unregistration(
+    struct qaffd_state *state,
+    uint32_t worker_id,
+    const struct qaffd_peer_cred *peer) {
+  int cleanup_rc = cleanup_worker_dataplane(
+      state,
+      worker_id,
+      peer,
+      "worker_unregistration_incomplete");
+  int cleanup_errno = errno;
 
   if (state->worker_fds[worker_id] >= 0) {
     close(state->worker_fds[worker_id]);
@@ -1871,11 +1911,44 @@ static int finalize_worker_unregistration(
                 worker_id,
                 worker_count(state));
   }
-  if (cleanup_errno != 0) {
+  if (cleanup_rc != 0) {
+    (void)qaffd_cleanup_retry_mark_failed(&state->worker_cleanup_retry,
+                                          worker_id,
+                                          now_ms());
+    audit_event("worker_cleanup_degraded",
+                peer,
+                "worker_id=%u pending_count=%u errno=%d retry_ms=%u",
+                worker_id,
+                state->worker_cleanup_retry.pending_count,
+                cleanup_errno ? cleanup_errno : EIO,
+                QAFFD_WORKER_CLEANUP_RETRY_MS);
     errno = cleanup_errno;
     return -1;
   }
   return 0;
+}
+
+static int retry_worker_cleanup_one(void *opaque, uint32_t worker_id) {
+  struct qaffd_state *state = opaque;
+  if (cleanup_worker_dataplane(state,
+                               worker_id,
+                               NULL,
+                               "worker_cleanup_retry_failed") != 0) {
+    return -1;
+  }
+  audit_event("worker_cleanup_recovered",
+              NULL,
+              "worker_id=%u remaining_before=%u",
+              worker_id,
+              state->worker_cleanup_retry.pending_count);
+  return 0;
+}
+
+static int retry_worker_cleanups_if_due(struct qaffd_state *state) {
+  return qaffd_cleanup_retry_run_due(&state->worker_cleanup_retry,
+                                     now_ms(),
+                                     retry_worker_cleanup_one,
+                                     state);
 }
 
 static int unregister_worker_authorized(struct qaffd_state *state,
@@ -2819,6 +2892,11 @@ static int state_persistence_poll_timeout(const struct qaffd_state *state) {
   return remaining > (uint64_t)INT_MAX ? INT_MAX : (int)remaining;
 }
 
+static int worker_cleanup_poll_timeout(const struct qaffd_state *state) {
+  return qaffd_cleanup_retry_poll_timeout(&state->worker_cleanup_retry,
+                                          now_ms());
+}
+
 static int passive_cleanup_poll_timeout(const struct qaffd_state *state) {
   if (!state->passive_affinity_enabled ||
       state->passive_scan_interval_ms == 0 ||
@@ -2953,6 +3031,13 @@ int main(int argc, char **argv) {
     perror("qaffd_worker_registry_init");
     return 1;
   }
+  if (qaffd_cleanup_retry_init(&state.worker_cleanup_retry,
+                               state.worker_cleanup_pending,
+                               QAFFD_MAX_WORKERS,
+                               QAFFD_WORKER_CLEANUP_RETRY_MS) != 0) {
+    perror("qaffd_cleanup_retry_init");
+    return 1;
+  }
   for (uint32_t worker_id = 0;
        worker_id < QAFFD_MAX_WORKERS;
        worker_id++) {
@@ -3068,6 +3153,9 @@ int main(int argc, char **argv) {
 
   while (!state.stop && !g_stop_requested) {
     retry_state_persistence_if_due(&state);
+    if (retry_worker_cleanups_if_due(&state) != 0) {
+      perror("retry_worker_cleanups");
+    }
     if (expire_recovered_workers(&state) != 0) {
       perror("expire_recovered_workers");
     }
@@ -3098,6 +3186,9 @@ int main(int argc, char **argv) {
     poll_timeout = earlier_poll_timeout(
         poll_timeout,
         state_persistence_poll_timeout(&state));
+    poll_timeout = earlier_poll_timeout(
+        poll_timeout,
+        worker_cleanup_poll_timeout(&state));
     int poll_rc;
     do {
       poll_rc = poll(pollfds, pollfds_len, poll_timeout);

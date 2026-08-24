@@ -104,6 +104,13 @@ if(QAFF_BUILD_DAEMON OR BUILD_TESTING)
     ${CMAKE_CURRENT_SOURCE_DIR}/include)
   target_compile_options(qaffd_cid_index PRIVATE
     -Wall -Wextra -Wpedantic)
+
+  add_library(qaffd_cleanup_retry STATIC
+    qaffd/cleanup_retry.c)
+  target_include_directories(qaffd_cleanup_retry PUBLIC
+    ${CMAKE_CURRENT_SOURCE_DIR}/qaffd)
+  target_compile_options(qaffd_cleanup_retry PRIVATE
+    -Wall -Wextra -Wpedantic)
 endif()
 
 if(QAFF_BUILD_DAEMON)
@@ -113,6 +120,7 @@ if(QAFF_BUILD_DAEMON)
   target_link_libraries(qaffd PRIVATE
     qaffinity
     qaffd_authorization
+    qaffd_cleanup_retry
     qaffd_cid_index
     qaffd_state_store
     qaffd_worker_registry)
@@ -370,6 +378,14 @@ if(BUILD_TESTING)
     -Wall -Wextra -Wpedantic)
   add_test(NAME qaffd_cid_index
     COMMAND $<TARGET_FILE:test_qaffd_cid_index>)
+
+  add_executable(test_qaffd_cleanup_retry
+    tests/test_qaffd_cleanup_retry.c)
+  target_link_libraries(test_qaffd_cleanup_retry PRIVATE qaffd_cleanup_retry)
+  target_compile_options(test_qaffd_cleanup_retry PRIVATE
+    -Wall -Wextra -Wpedantic)
+  add_test(NAME qaffd_cleanup_retry
+    COMMAND $<TARGET_FILE:test_qaffd_cleanup_retry>)
 
   if(QAFF_BUILD_BPF)
     add_executable(test_reuseport_smoke

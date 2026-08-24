@@ -48,7 +48,12 @@ cleanup proceed even if the tombstone cannot be written. qaffd then retries
 the current snapshot at a one-second interval and reports degraded persistence
 health until it succeeds. After commit, generation/socket withdrawal happens
 first so a later cleanup error cannot leave the worker routable. Cleanup is
-idempotent; if qaffd stops during that phase, startup treats the durable
+idempotent. If socket-map, reverse-cookie, exact-CID, or passive-CID cleanup
+fails after the tombstone commit, qaffd quarantines that worker ID and retries
+the complete cleanup. The fair retry queue advances by at most one worker per
+second, bounding expensive full-map scans. The ID cannot be registered again
+until cleanup succeeds, preventing an old retry from deleting a replacement
+worker's state. If qaffd stops during that phase, startup treats the durable
 tombstone as authoritative and removes residual pinned BPF state before
 accepting control connections.
 Pre-commit failures emit `worker_unregistration_commit_failed`; failures in
@@ -56,7 +61,10 @@ the retryable post-commit cleanup emit `worker_unregistration_incomplete` with
 the failing stage. `qaffctl health` fails while
 `state_persistence_degraded=1`; `qaffctl config` also exposes cumulative
 `state_persistence_error_count` and `state_persistence_retry_count` values for
-the current daemon process.
+the current daemon process. Post-tombstone cleanup health is exposed separately
+through `worker_cleanup_degraded`, `worker_cleanup_pending_count`,
+`worker_cleanup_error_count`, and `worker_cleanup_retry_count`; health fails
+while any cleanup remains pending.
 
 Loading uses `O_NOFOLLOW` and accepts only a private regular file owned by the
 daemon user, with no group/world permissions and exactly one hard link. Parsing

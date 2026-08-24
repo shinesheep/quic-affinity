@@ -113,6 +113,14 @@ then retries the snapshot once per second. `qaffctl health` remains failed with
 `UNREGISTER_WORKER` remains transactional and leaves live routing intact when
 its pre-commit tombstone write fails.
 
+Once a tombstone is committed, any incomplete BPF cleanup is retried at a
+one-second interval. The affected worker ID returns `EBUSY` on registration
+until cleanup completes; this quarantine is required because retry cleanup is
+keyed by worker ID and must never delete a replacement worker's state.
+`worker_cleanup_degraded` and `worker_cleanup_pending_count` expose this state,
+and health remains failed while either is nonzero. A daemon restart performs
+the same tombstone reconciliation before opening the control socket.
+
 After qaffd restarts, persisted workers begin in a recovery quarantine rather
 than being considered live. Their live BPF generation is zero and their
 sockarray entry is absent until the exact socket cookie reclaims the worker ID.

@@ -194,7 +194,8 @@ static int cmd_health(int argc, char **argv) {
   }
 
   unsigned int healthy = config.fallback_available &&
-                         !config.state_persistence_degraded;
+                         !config.state_persistence_degraded &&
+                         !config.worker_cleanup_degraded;
   printf("ok=%u\n", healthy);
   printf("fallback_available=%u\n", config.fallback_available);
   printf("state_persistence_degraded=%u\n",
@@ -203,6 +204,13 @@ static int cmd_health(int argc, char **argv) {
          (unsigned long long)config.state_persistence_error_count);
   printf("state_persistence_retry_count=%llu\n",
          (unsigned long long)config.state_persistence_retry_count);
+  printf("worker_cleanup_degraded=%u\n", config.worker_cleanup_degraded);
+  printf("worker_cleanup_pending_count=%u\n",
+         config.worker_cleanup_pending_count);
+  printf("worker_cleanup_error_count=%llu\n",
+         (unsigned long long)config.worker_cleanup_error_count);
+  printf("worker_cleanup_retry_count=%llu\n",
+         (unsigned long long)config.worker_cleanup_retry_count);
   printf("attached=%u\n", config.attached);
   printf("worker_count=%u\n", config.worker_count);
   printf("recovering_worker_count=%u\n", config.recovering_worker_count);
@@ -244,6 +252,14 @@ static void print_config(const struct qaff_control_config *config) {
          (unsigned long long)config->state_persistence_error_count);
   printf("state_persistence_retry_count=%llu\n",
          (unsigned long long)config->state_persistence_retry_count);
+  printf("worker_cleanup_degraded=%u\n",
+         config->worker_cleanup_degraded);
+  printf("worker_cleanup_pending_count=%u\n",
+         config->worker_cleanup_pending_count);
+  printf("worker_cleanup_error_count=%llu\n",
+         (unsigned long long)config->worker_cleanup_error_count);
+  printf("worker_cleanup_retry_count=%llu\n",
+         (unsigned long long)config->worker_cleanup_retry_count);
   printf("cid_map_count=%llu\n",
          (unsigned long long)config->cid_map_count);
   printf("cid_owner_count=%llu\n",

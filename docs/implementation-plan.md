@@ -51,6 +51,8 @@
 - Remove the generationless routable profile path. (Implemented: profile v1 is
   unsupported; the production dataplane accepts only generation-bound v2.)
 - Make worker unregistration and its persisted snapshot transactional.
+  (Implemented: pre-commit failures preserve live routing; post-commit cleanup
+  failures quarantine the worker ID and retry with health reporting.)
   (Implemented with a tombstone commit point and startup reconciliation.)
 - Validate fixed fallback targets and eliminate silent reuseport BPF
   replacement. (Implemented: fixed worker IDs are range-checked, non-fallback

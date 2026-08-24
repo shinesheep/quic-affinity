@@ -51,13 +51,17 @@ struct qaff_control_config {
   uint8_t fallback_available;
   /** Non-zero while the durable worker snapshot needs to be retried. */
   uint8_t state_persistence_degraded;
-  uint8_t reserved[2];
+  /** Non-zero while a tombstoned worker still has BPF map residue. */
+  uint8_t worker_cleanup_degraded;
+  uint8_t reserved[1];
   /** Number of durable worker records, including recovering workers. */
   uint32_t worker_count;
   /** Number of restored workers awaiting an exact-socket claim. */
   uint32_t recovering_worker_count;
   /** Worker used for fallback when fallback_mode is FIXED. */
   uint32_t fallback_worker_id;
+  /** Worker IDs quarantined until post-tombstone cleanup succeeds. */
+  uint32_t worker_cleanup_pending_count;
   /** Number of exact CID entries in qaffd's ownership index. */
   uint64_t cid_map_count;
   /** Number of CID ownership entries tracked by qaffd. */
@@ -80,6 +84,10 @@ struct qaff_control_config {
   uint64_t state_persistence_error_count;
   /** Background durable worker snapshot retry attempts. */
   uint64_t state_persistence_retry_count;
+  /** Post-tombstone worker cleanup attempts that failed. */
+  uint64_t worker_cleanup_error_count;
+  /** Background post-tombstone worker cleanup retry attempts. */
+  uint64_t worker_cleanup_retry_count;
   /** Interval between passive map cleanup scans. */
   uint64_t passive_scan_interval_ms;
   /** Deadline for a restored worker to reclaim its exact socket. */

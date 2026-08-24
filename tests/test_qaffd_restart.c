@@ -454,6 +454,18 @@ static int open_pinned_map(const char *pin_root, const char *name) {
   return bpf_obj_get(map_path);
 }
 
+static int freeze_pinned_map(const char *pin_root, const char *name) {
+  int map_fd = open_pinned_map(pin_root, name);
+  if (map_fd < 0) {
+    return -1;
+  }
+  int rc = bpf_map_freeze(map_fd);
+  int saved_errno = errno;
+  close(map_fd);
+  errno = saved_errno;
+  return rc;
+}
+
 static int inject_interrupted_unregistration(const char *pin_root,
                                              uint32_t worker_id,
                                              int worker_fd,
@@ -1075,6 +1087,67 @@ int main(int argc, char **argv) {
             (unsigned long long)
                 stats.values[QAFF_STAT_CID_MAP_REJECT_GENERATION]);
     stop_qaffd(socket_path, daemon_pid);
+    return 1;
+  }
+
+  if (control_register_cid(socket_path, TARGET_WORKER, k_dcid) != 0) {
+    perror("register exact CID before cleanup fault");
+    return 1;
+  }
+  if (freeze_pinned_map(pin_root, "qaff_cids") != 0) {
+    perror("freeze exact CID map");
+    return 1;
+  }
+  if (control_unregister_worker(socket_path, TARGET_WORKER) == 0) {
+    fprintf(stderr, "worker cleanup unexpectedly survived frozen CID map\n");
+    return 1;
+  }
+  if (control_config(socket_path, &cid_config) != 0 ||
+      cid_config.worker_cleanup_degraded != 1 ||
+      cid_config.worker_cleanup_pending_count != 1 ||
+      cid_config.worker_cleanup_error_count == 0 ||
+      cid_config.worker_count != WORKER_COUNT - 1 ||
+      cid_config.cid_map_count != 1 ||
+      cid_config.cid_owner_count != 1) {
+    fprintf(stderr, "failed worker cleanup was not quarantined\n");
+    return 1;
+  }
+  errno = 0;
+  if (control_register_worker(socket_path,
+                              TARGET_WORKER,
+                              workers[TARGET_WORKER]) == 0 ||
+      errno != EBUSY) {
+    fprintf(stderr, "cleanup-pending worker ID was reusable errno=%d\n", errno);
+    return 1;
+  }
+  if (send_quic_like_packet(sender, port, k_dcid) != 0 ||
+      receive_worker(workers, WORKER_COUNT) != FALLBACK_WORKER) {
+    fprintf(stderr, "cleanup residue remained generation-routable\n");
+    return 1;
+  }
+  const struct timespec cleanup_retry_delay = {
+    .tv_sec = 0,
+    .tv_nsec = 20 * 1000 * 1000,
+  };
+  int cleanup_retry_observed = 0;
+  for (int attempt = 0; attempt < 150; attempt++) {
+    if (control_config(socket_path, &cid_config) == 0 &&
+        cid_config.worker_cleanup_degraded == 1 &&
+        cid_config.worker_cleanup_pending_count == 1 &&
+        cid_config.worker_cleanup_retry_count > 0) {
+      cleanup_retry_observed = 1;
+      break;
+    }
+    nanosleep(&cleanup_retry_delay, NULL);
+  }
+  if (!cleanup_retry_observed ||
+      cid_config.worker_cleanup_error_count < 2 ||
+      cid_config.worker_cleanup_retry_count > 3) {
+    fprintf(stderr,
+            "worker cleanup retry was absent or unthrottled errors=%llu "
+            "retries=%llu\n",
+            (unsigned long long)cid_config.worker_cleanup_error_count,
+            (unsigned long long)cid_config.worker_cleanup_retry_count);
     return 1;
   }
 

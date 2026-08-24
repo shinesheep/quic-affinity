@@ -467,6 +467,12 @@ worker immediately, then retries the snapshot once per second; `qaffctl
 health` reports failure until persistence recovers. Restart recovery uses a
 committed tombstone to finish any interrupted BPF cleanup.
 
+Failures after the tombstone commit are also retried once per second. qaffd
+quarantines the affected worker ID until socket, reverse-cookie, exact-CID, and
+passive-CID cleanup all succeed, so a delayed retry cannot delete a newly
+registered worker using the same ID. `qaffctl health` reports these pending
+cleanups as degraded.
+
 Pinned map schemas are validated strictly and incompatible maps fail startup.
 During pre-1.0 upgrades that add statistics slots, stop `qaffd`, unpin only the
 listener's `qaff_stats` map, and restart so it can be recreated. CID ownership,

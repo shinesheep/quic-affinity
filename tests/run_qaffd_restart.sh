@@ -40,6 +40,7 @@ trap cleanup EXIT INT TERM
 
 if command -v sudo >/dev/null 2>&1 && command -v setcap >/dev/null 2>&1; then
   sudo -n setcap "$caps" "$qaffd_bin" 2>/dev/null || true
+  sudo -n setcap "$caps" "$test_bin" 2>/dev/null || true
 fi
 
 if [ ! -d /sys/fs/bpf ]; then
