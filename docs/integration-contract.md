@@ -280,6 +280,51 @@ The resulting priority is:
 exact CID registration > routable CID profile > passive CID > fallback
 ```
 
+This priority is fail closed. A higher-priority route that is present but
+invalid is not treated as a miss and reinterpreted by a lower-priority route.
+For example, an exact entry with an old worker generation and a profile-shaped
+CID with an invalid tag both go directly to fallback even if the same CID also
+exists in the passive map. This prevents stale or attacker-controlled bytes
+from changing routing identity by falling through to a different mechanism.
+
+### Routing decision matrix
+
+The following matrix is the normative dataplane oracle. "Socket available"
+means `bpf_sk_select_reuseport()` succeeded for the selected worker.
+
+| Parsed DCID state | Exact route | Profile result | Passive result | Socket available | Decision | Required counter |
+| --- | --- | --- | --- | --- | --- | --- |
+| Parse error or zero-length long-header DCID | Not evaluated | Not evaluated | Not evaluated | N/A | Fallback | `parse_error` or `zero_length_cid` |
+| Valid | Live generation | Not evaluated | Not evaluated | Yes | Exact worker | `cid_map_hit` |
+| Valid | Live generation | Not evaluated | Not evaluated | No | Fallback | `cid_map_hit`, `worker_missing` |
+| Valid | Missing/zero/stale generation | Not evaluated | Not evaluated | N/A | Fallback | `cid_map_reject_generation` |
+| Valid | Miss | Valid, live generation | Not evaluated | Yes | Profile worker | `cid_profile_hit` |
+| Valid | Miss | Valid, live generation | Not evaluated | No | Fallback | `cid_profile_hit`, `worker_missing` |
+| Valid | Miss | Invalid tag/config/generation | Not evaluated | N/A | Fallback | `cid_profile_reject` |
+| Valid | Miss | Not a profile CID | Live and policy-valid | Yes | Passive worker | `passive_hit` |
+| Valid | Miss | Not a profile CID | Live and policy-valid | No | Fallback | `passive_hit`, `worker_missing` |
+| Valid | Miss | Not a profile CID | Below confidence | N/A | Fallback | `passive_reject_confidence` |
+| Valid | Miss | Not a profile CID | Expired | N/A | Fallback | `passive_reject_expired` |
+| Valid | Miss | Not a profile CID | Missing/zero/stale generation | N/A | Fallback | `passive_reject_generation` |
+| Valid | Miss | Not a profile CID | Miss or disabled | N/A | Fallback | `passive_miss` when enabled |
+
+Every fallback decision increments `fallback` in addition to the row-specific
+counter. The fallback policy then has its own terminal matrix:
+
+| Fallback mode | Fixed worker socket | Result |
+| --- | --- | --- |
+| `kernel` | N/A | Return `SK_PASS`; Linux applies the reuseport hash |
+| `fixed` | Available | Select the configured fallback worker |
+| `fixed` | Missing | Increment `worker_missing` and return `SK_DROP` |
+
+The same DCID decision applies to QUIC v1 Initial, 0-RTT, Handshake, and Retry
+long headers. A 1-RTT short header uses the configured fixed short-DCID length.
+The privileged reuseport smoke test executes all five packet classes for both
+IPv4 and IPv6, both fallback modes, route hits, each passive rejection state,
+missing target sockets, stale exact/profile generations, and missing fixed
+fallback sockets. Its collision cases also enforce the no-lower-priority
+reinterpretation rule above.
+
 Fixed fallback:
 
 ```text

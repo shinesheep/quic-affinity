@@ -172,6 +172,7 @@ install(FILES
   docs/control-protocol.md
   docs/cid-index.md
   docs/fuzzing.md
+  docs/integration-contract.md
   docs/state-store.md
   docs/worker-registry.md
   DESTINATION ${CMAKE_INSTALL_DOCDIR}/docs)
