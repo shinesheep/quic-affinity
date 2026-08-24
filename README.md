@@ -473,6 +473,14 @@ passive-CID cleanup all succeed, so a delayed retry cannot delete a newly
 registered worker using the same ID. `qaffctl health` reports these pending
 cleanups as degraded.
 
+Worker registration is also transactional. If any stage after BPF insertion
+fails and rollback cannot complete, qaffd quarantines the worker ID and retries
+cleanup once per second. A failed new registration receives a full tombstone
+cleanup; a failed recovery claim only withdraws the attempted live route, so
+the recovered worker's prior CID and cookie ownership remain available for a
+later exact-socket claim. `qaffctl workers` exposes either case with
+`cleanup_pending=1`.
+
 Pinned map schemas are validated strictly and incompatible maps fail startup.
 During pre-1.0 upgrades that add statistics slots, stop `qaffd`, unpin only the
 listener's `qaff_stats` map, and restart so it can be recreated. CID ownership,

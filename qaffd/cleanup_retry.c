@@ -47,6 +47,23 @@ int qaffd_cleanup_retry_mark_failed(struct qaffd_cleanup_retry *retry,
   return 0;
 }
 
+int qaffd_cleanup_retry_clear(struct qaffd_cleanup_retry *retry,
+                              uint32_t worker_id) {
+  if (retry == NULL || retry->pending == NULL ||
+      worker_id >= retry->capacity) {
+    errno = EINVAL;
+    return -1;
+  }
+  if (retry->pending[worker_id]) {
+    retry->pending[worker_id] = 0;
+    retry->pending_count--;
+  }
+  if (retry->pending_count == 0) {
+    retry->retry_at_ms = 0;
+  }
+  return 0;
+}
+
 int qaffd_cleanup_retry_poll_timeout(const struct qaffd_cleanup_retry *retry,
                                      uint64_t now_ms) {
   if (retry == NULL || retry->pending_count == 0) {
@@ -94,15 +111,14 @@ int qaffd_cleanup_retry_run_due(struct qaffd_cleanup_retry *retry,
   int cleanup_rc = cleanup_fn(opaque, attempted_worker_id);
   int cleanup_errno = errno ? errno : EIO;
   if (cleanup_rc == 0) {
-    retry->pending[attempted_worker_id] = 0;
-    retry->pending_count--;
+    (void)qaffd_cleanup_retry_clear(retry, attempted_worker_id);
   } else {
     retry->error_count++;
   }
 
-  retry->retry_at_ms = retry->pending_count == 0
-                           ? 0
-                           : now_ms + retry->retry_interval_ms;
+  if (retry->pending_count != 0) {
+    retry->retry_at_ms = now_ms + retry->retry_interval_ms;
+  }
   if (cleanup_rc != 0) {
     errno = cleanup_errno;
     return -1;

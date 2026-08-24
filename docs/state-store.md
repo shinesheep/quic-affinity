@@ -66,6 +66,13 @@ through `worker_cleanup_degraded`, `worker_cleanup_pending_count`,
 `worker_cleanup_error_count`, and `worker_cleanup_retry_count`; health fails
 while any cleanup remains pending.
 
+Registration uses the inverse transaction boundary: local registry and durable
+state are not committed until all BPF insertion stages succeed. If rollback of
+a failed insertion is itself incomplete, the same retry queue quarantines the
+worker ID. New registrations use full dataplane cleanup. A failed claim of a
+recovered worker uses route withdrawal only, preserving the durable record,
+exact/passive CIDs, and reverse-cookie ownership needed for another claim.
+
 Loading uses `O_NOFOLLOW` and accepts only a private regular file owned by the
 daemon user, with no group/world permissions and exactly one hard link. Parsing
 is transactional: truncated lines,

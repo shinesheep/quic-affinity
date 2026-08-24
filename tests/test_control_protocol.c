@@ -166,7 +166,8 @@ static int test_workers_reply(void) {
       .worker_id = 4095,
       .flags = QAFF_CONTROL_WORKER_FLAG_CRED |
                QAFF_CONTROL_WORKER_FLAG_PIDFD |
-               QAFF_CONTROL_WORKER_FLAG_RECOVERING,
+               QAFF_CONTROL_WORKER_FLAG_RECOVERING |
+               QAFF_CONTROL_WORKER_FLAG_CLEANUP_PENDING,
       .registered_ms_ago = UINT64_MAX,
       .last_seen_ms_ago = UINT64_C(0x1020304050607080),
   };
@@ -194,6 +195,9 @@ static int test_workers_reply(void) {
                  check((output.worker_infos[1].flags &
                         QAFF_CONTROL_WORKER_FLAG_RECOVERING) != 0,
                        "recovering worker flag round trip") == 0 &&
+                 check((output.worker_infos[1].flags &
+                        QAFF_CONTROL_WORKER_FLAG_CLEANUP_PENDING) != 0,
+                       "cleanup-pending worker flag round trip") == 0 &&
                  check(output.worker_infos[1].last_seen_ms_ago ==
                            UINT64_C(0x1020304050607080),
                        "worker u64 metadata round trip") == 0

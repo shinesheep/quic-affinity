@@ -121,6 +121,13 @@ keyed by worker ID and must never delete a replacement worker's state.
 and health remains failed while either is nonzero. A daemon restart performs
 the same tombstone reconciliation before opening the control socket.
 
+Failed registrations follow the same quarantine rule when their BPF rollback
+is incomplete. Cleanup for a new worker removes all worker-keyed residue. For
+a recovered exact-socket claim, cleanup only re-withdraws the attempted live
+generation and socket; it does not delete the old CID or cookie ownership that
+the recovery record still needs. Registrations for a cleanup-pending ID return
+`EBUSY` until the retry succeeds.
+
 After qaffd restarts, persisted workers begin in a recovery quarantine rather
 than being considered live. Their live BPF generation is zero and their
 sockarray entry is absent until the exact socket cookie reclaims the worker ID.

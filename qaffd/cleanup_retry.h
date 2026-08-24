@@ -34,6 +34,9 @@ int qaffd_cleanup_retry_mark_failed(struct qaffd_cleanup_retry *retry,
                                     uint32_t worker_id,
                                     uint64_t now_ms);
 
+int qaffd_cleanup_retry_clear(struct qaffd_cleanup_retry *retry,
+                              uint32_t worker_id);
+
 int qaffd_cleanup_retry_poll_timeout(const struct qaffd_cleanup_retry *retry,
                                      uint64_t now_ms);
 

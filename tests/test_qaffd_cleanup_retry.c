@@ -113,6 +113,11 @@ int main(void) {
             "large deadline is clamped") != 0) {
     return 1;
   }
+  if (qaffd_cleanup_retry_clear(&retry, 0) != 0 ||
+      check(retry.pending_count == 0 && retry.retry_at_ms == 0,
+            "explicit completion cancels pending retry") != 0) {
+    return 1;
+  }
 
   puts("qaffd cleanup retry tests passed");
   return 0;

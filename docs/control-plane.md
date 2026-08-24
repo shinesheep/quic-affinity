@@ -259,7 +259,9 @@ On daemon restart:
 
 `qaffctl config` reports both `worker_count` (durable worker records, including
 quarantined records) and `recovering_worker_count`. `qaffctl workers` marks
-these records with `recovering=1`. A quarantined fixed fallback is reported as
+these records with `recovering=1`. It also includes transaction-cleanup
+quarantine records with `cleanup_pending=1`; these additional records are not
+included in `config.worker_count`. A quarantined fixed fallback is reported as
 unavailable, so health stays failed until that exact socket reclaims its ID.
 The cgroup egress learner is attached after state/map reconciliation and cannot
 learn for quarantined workers because their live generation is zero.
@@ -292,7 +294,7 @@ qaffctl listeners
 qaffctl cids LISTENER_ID --limit 20
 ```
 
-`qaffctl health`, `qaffctl config`, and `qaffctl cids --count` expose `cid_map_count`, `cid_owner_count`, and `cid_index_mismatch`. Health returns a nonzero status when a fixed fallback worker is absent, durable state persistence is degraded, or post-tombstone BPF cleanup remains pending. Persistence and worker cleanup failures are retried once per second. `state_persistence_degraded`, `state_persistence_error_count`, and `state_persistence_retry_count` expose snapshot health; `worker_cleanup_degraded`, `worker_cleanup_pending_count`, `worker_cleanup_error_count`, and `worker_cleanup_retry_count` expose cleanup quarantine and cumulative process-local activity. `qaffctl workers` reports worker IDs, lease state, pidfd availability, peer pid/uid/gid when available, registration age, and last-seen age. CID bytes and profile keys are not printed by default. `qaffd` emits audit records to stderr for worker lifecycle, CID lifecycle, fallback availability transitions, persistence and cleanup health transitions, and denied mutations. `qaffctl` currently talks to `qaffd` over the daemon Unix socket. Direct pinned-map inspection remains future work.
+`qaffctl health`, `qaffctl config`, and `qaffctl cids --count` expose `cid_map_count`, `cid_owner_count`, and `cid_index_mismatch`. Health returns a nonzero status when a fixed fallback worker is absent, durable state persistence is degraded, or worker-transaction BPF cleanup remains pending. Persistence and worker cleanup failures are retried once per second. `state_persistence_degraded`, `state_persistence_error_count`, and `state_persistence_retry_count` expose snapshot health; `worker_cleanup_degraded`, `worker_cleanup_pending_count`, `worker_cleanup_error_count`, and `worker_cleanup_retry_count` expose cleanup quarantine and cumulative process-local activity. `qaffctl workers` reports worker IDs, cleanup quarantine, lease state, pidfd availability, peer pid/uid/gid when available, registration age, and last-seen age. CID bytes and profile keys are not printed by default. `qaffd` emits audit records to stderr for worker lifecycle, CID lifecycle, fallback availability transitions, persistence and cleanup health transitions, and denied mutations. `qaffctl` currently talks to `qaffd` over the daemon Unix socket. Direct pinned-map inspection remains future work.
 
 ## Open Decisions
 

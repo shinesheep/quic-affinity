@@ -118,6 +118,12 @@ struct qaffd_worker_snapshot {
   struct sockaddr_storage listener_addr;
 };
 
+enum qaffd_worker_cleanup_action {
+  QAFFD_WORKER_CLEANUP_NONE = 0,
+  QAFFD_WORKER_CLEANUP_TOMBSTONE = 1,
+  QAFFD_WORKER_CLEANUP_RECOVERY_WITHDRAW = 2,
+};
+
 struct qaffd_state {
   struct qaff_context *ctx;
   struct qaff_bpf_object *bpf;
@@ -158,6 +164,7 @@ struct qaffd_state {
   uint64_t state_persistence_retry_count;
   uint64_t state_persistence_retry_at_ms;
   uint8_t worker_cleanup_pending[QAFFD_MAX_WORKERS];
+  uint8_t worker_cleanup_actions[QAFFD_MAX_WORKERS];
   struct qaffd_cleanup_retry worker_cleanup_retry;
   int allow_worker_uid_set;
   int allow_worker_gid_set;
@@ -662,7 +669,10 @@ static void fill_workers_reply(const struct qaffd_state *state,
 
   reply->worker_id = UINT32_MAX;
   for (uint32_t i = cursor; i < QAFFD_MAX_WORKERS; i++) {
-    if (!state->worker_registered[i]) {
+    int cleanup_pending = qaffd_cleanup_retry_is_pending(
+        &state->worker_cleanup_retry,
+        i);
+    if (!state->worker_registered[i] && !cleanup_pending) {
       continue;
     }
     if (written == QAFF_CONTROL_PAGE_WORKERS) {
@@ -673,6 +683,10 @@ static void fill_workers_reply(const struct qaffd_state *state,
     reply->worker_infos[written].worker_id = i;
     reply->worker_infos[written].flags =
         state->worker_lease_fds[i] >= 0 ? QAFF_CONTROL_WORKER_FLAG_LEASED : 0;
+    if (cleanup_pending) {
+      reply->worker_infos[written].flags |=
+          QAFF_CONTROL_WORKER_FLAG_CLEANUP_PENDING;
+    }
     if (worker_is_recovering(state, i)) {
       reply->worker_infos[written].flags |=
           QAFF_CONTROL_WORKER_FLAG_RECOVERING;
@@ -688,10 +702,12 @@ static void fill_workers_reply(const struct qaffd_state *state,
     if (state->worker_pidfds[i] >= 0) {
       reply->worker_infos[written].flags |= QAFF_CONTROL_WORKER_FLAG_PIDFD;
     }
-    reply->worker_infos[written].registered_ms_ago =
-        elapsed_ms(now, state->worker_registered_at_ms[i]);
-    reply->worker_infos[written].last_seen_ms_ago =
-        elapsed_ms(now, state->worker_last_seen_ms[i]);
+    if (state->worker_registered[i]) {
+      reply->worker_infos[written].registered_ms_ago =
+          elapsed_ms(now, state->worker_registered_at_ms[i]);
+      reply->worker_infos[written].last_seen_ms_ago =
+          elapsed_ms(now, state->worker_last_seen_ms[i]);
+    }
     written++;
   }
 
@@ -1565,6 +1581,43 @@ static void restore_worker(struct qaffd_state *state,
   state->listener_addr = snapshot->listener_addr;
 }
 
+static const char *worker_cleanup_action_name(uint8_t action) {
+  switch (action) {
+    case QAFFD_WORKER_CLEANUP_TOMBSTONE:
+      return "tombstone";
+    case QAFFD_WORKER_CLEANUP_RECOVERY_WITHDRAW:
+      return "recovery_withdraw";
+    default:
+      return "none";
+  }
+}
+
+static void defer_worker_cleanup(struct qaffd_state *state,
+                                 uint32_t worker_id,
+                                 uint8_t action,
+                                 const struct qaffd_peer_cred *peer,
+                                 const char *reason,
+                                 int error) {
+  if (action == QAFFD_WORKER_CLEANUP_TOMBSTONE ||
+      state->worker_cleanup_actions[worker_id] == QAFFD_WORKER_CLEANUP_NONE) {
+    state->worker_cleanup_actions[worker_id] = action;
+  }
+  (void)qaffd_cleanup_retry_mark_failed(&state->worker_cleanup_retry,
+                                        worker_id,
+                                        now_ms());
+  audit_event("worker_cleanup_degraded",
+              peer,
+              "worker_id=%u action=%s reason=%s pending_count=%u errno=%d "
+              "retry_ms=%u",
+              worker_id,
+              worker_cleanup_action_name(
+                  state->worker_cleanup_actions[worker_id]),
+              reason,
+              state->worker_cleanup_retry.pending_count,
+              error ? error : EIO,
+              QAFFD_WORKER_CLEANUP_RETRY_MS);
+}
+
 static int rollback_worker_maps(
     struct qaffd_state *state,
     uint32_t worker_id,
@@ -1602,6 +1655,58 @@ static int rollback_worker_maps(
   }
   errno = ESTALE;
   return -1;
+}
+
+static void rollback_registration_maps_or_defer(
+    struct qaffd_state *state,
+    uint32_t worker_id,
+    const struct qaffd_worker_snapshot *snapshot,
+    uint64_t new_socket_cookie,
+    int same_socket,
+    const struct qaffd_peer_cred *peer,
+    const char *stage) {
+  if (rollback_worker_maps(state,
+                           worker_id,
+                           snapshot,
+                           new_socket_cookie,
+                           same_socket) == 0) {
+    return;
+  }
+
+  int rollback_errno = errno ? errno : EIO;
+  uint8_t action = QAFFD_WORKER_CLEANUP_NONE;
+  if (!snapshot->worker.registered) {
+    action = QAFFD_WORKER_CLEANUP_TOMBSTONE;
+  } else if (snapshot->worker.worker_fd < 0 && same_socket) {
+    action = QAFFD_WORKER_CLEANUP_RECOVERY_WITHDRAW;
+  }
+  if (action != QAFFD_WORKER_CLEANUP_NONE) {
+    defer_worker_cleanup(state,
+                         worker_id,
+                         action,
+                         peer,
+                         "registration_rollback",
+                         rollback_errno);
+  }
+  audit_event("worker_registration_rollback_failed",
+              peer,
+              "worker_id=%u stage=%s action=%s errno=%d",
+              worker_id,
+              stage,
+              action == QAFFD_WORKER_CLEANUP_NONE
+                  ? "unrecoverable"
+                  : worker_cleanup_action_name(action),
+              rollback_errno);
+}
+
+static void reset_empty_listener_after_registration_failure(
+    struct qaffd_state *state) {
+  if (worker_count(state) != 0) {
+    return;
+  }
+  state->attached = 0;
+  state->listener_locked = 0;
+  memset(&state->listener_addr, 0, sizeof(state->listener_addr));
 }
 
 static int handle_register_worker(struct qaffd_state *state,
@@ -1695,6 +1800,7 @@ static int handle_register_worker(struct qaffd_state *state,
   if (!same_socket &&
       next_worker_generation(state->worker_generations[request->worker_id],
                              &generation) != 0) {
+    reset_empty_listener_after_registration_failure(state);
     return -1;
   }
   struct qaffd_worker_snapshot snapshot;
@@ -1703,6 +1809,16 @@ static int handle_register_worker(struct qaffd_state *state,
                                              request->worker_id,
                                              socket_fd,
                                              generation) != 0) {
+    int saved_errno = errno ? errno : EIO;
+    rollback_registration_maps_or_defer(state,
+                                        request->worker_id,
+                                        &snapshot,
+                                        0,
+                                        same_socket,
+                                        peer,
+                                        "worker_maps");
+    reset_empty_listener_after_registration_failure(state);
+    errno = saved_errno;
     return -1;
   }
 
@@ -1712,17 +1828,14 @@ static int handle_register_worker(struct qaffd_state *state,
                              socket_fd,
                              &socket_cookie) != 0) {
     int saved_errno = errno ? errno : EIO;
-    if (rollback_worker_maps(state,
-                             request->worker_id,
-                             &snapshot,
-                             0,
-                             same_socket) != 0) {
-      audit_event("worker_registration_rollback_failed",
-                  peer,
-                  "worker_id=%u stage=socket_cookie errno=%d",
-                  request->worker_id,
-                  errno);
-    }
+    rollback_registration_maps_or_defer(state,
+                                        request->worker_id,
+                                        &snapshot,
+                                        0,
+                                        same_socket,
+                                        peer,
+                                        "socket_cookie");
+    reset_empty_listener_after_registration_failure(state);
     errno = saved_errno;
     return -1;
   }
@@ -1737,17 +1850,14 @@ static int handle_register_worker(struct qaffd_state *state,
                                      now,
                                      peer) != 0) {
     int saved_errno = errno ? errno : EIO;
-    if (rollback_worker_maps(state,
-                             request->worker_id,
-                             &snapshot,
-                             socket_cookie,
-                             same_socket) != 0) {
-      audit_event("worker_registration_rollback_failed",
-                  peer,
-                  "worker_id=%u stage=registry errno=%d",
-                  request->worker_id,
-                  errno);
-    }
+    rollback_registration_maps_or_defer(state,
+                                        request->worker_id,
+                                        &snapshot,
+                                        socket_cookie,
+                                        same_socket,
+                                        peer,
+                                        "registry");
+    reset_empty_listener_after_registration_failure(state);
     errno = saved_errno;
     return -1;
   }
@@ -1777,17 +1887,14 @@ static int handle_register_worker(struct qaffd_state *state,
                   request->worker_id,
                   errno);
     }
-    if (rollback_worker_maps(state,
-                             request->worker_id,
-                             &snapshot,
-                             socket_cookie,
-                             same_socket) != 0) {
-      audit_event("worker_registration_rollback_failed",
-                  peer,
-                  "worker_id=%u stage=state_persist errno=%d",
-                  request->worker_id,
-                  errno);
-    }
+    rollback_registration_maps_or_defer(state,
+                                        request->worker_id,
+                                        &snapshot,
+                                        socket_cookie,
+                                        same_socket,
+                                        peer,
+                                        "state_persist");
+    reset_empty_listener_after_registration_failure(state);
     errno = saved_errno;
     return -1;
   }
@@ -1912,35 +2019,66 @@ static int finalize_worker_unregistration(
                 worker_count(state));
   }
   if (cleanup_rc != 0) {
-    (void)qaffd_cleanup_retry_mark_failed(&state->worker_cleanup_retry,
-                                          worker_id,
-                                          now_ms());
-    audit_event("worker_cleanup_degraded",
-                peer,
-                "worker_id=%u pending_count=%u errno=%d retry_ms=%u",
-                worker_id,
-                state->worker_cleanup_retry.pending_count,
-                cleanup_errno ? cleanup_errno : EIO,
-                QAFFD_WORKER_CLEANUP_RETRY_MS);
+    defer_worker_cleanup(state,
+                         worker_id,
+                         QAFFD_WORKER_CLEANUP_TOMBSTONE,
+                         peer,
+                         "unregistration",
+                         cleanup_errno);
     errno = cleanup_errno;
     return -1;
+  }
+  if (qaffd_cleanup_retry_is_pending(&state->worker_cleanup_retry,
+                                     worker_id)) {
+    audit_event("worker_cleanup_superseded",
+                peer,
+                "worker_id=%u old_action=%s reason=unregistration_complete",
+                worker_id,
+                worker_cleanup_action_name(
+                    state->worker_cleanup_actions[worker_id]));
+    (void)qaffd_cleanup_retry_clear(&state->worker_cleanup_retry, worker_id);
+    state->worker_cleanup_actions[worker_id] = QAFFD_WORKER_CLEANUP_NONE;
   }
   return 0;
 }
 
 static int retry_worker_cleanup_one(void *opaque, uint32_t worker_id) {
   struct qaffd_state *state = opaque;
-  if (cleanup_worker_dataplane(state,
-                               worker_id,
-                               NULL,
-                               "worker_cleanup_retry_failed") != 0) {
+  uint8_t action = state->worker_cleanup_actions[worker_id];
+  int cleanup_rc;
+  if (action == QAFFD_WORKER_CLEANUP_RECOVERY_WITHDRAW) {
+    cleanup_rc = withdraw_worker_route(state, worker_id);
+    if (cleanup_rc != 0) {
+      audit_event("worker_cleanup_retry_failed",
+                  NULL,
+                  "worker_id=%u action=recovery_withdraw errno=%d",
+                  worker_id,
+                  errno ? errno : EIO);
+    }
+  } else if (action == QAFFD_WORKER_CLEANUP_TOMBSTONE) {
+    cleanup_rc = cleanup_worker_dataplane(state,
+                                          worker_id,
+                                          NULL,
+                                          "worker_cleanup_retry_failed");
+  } else {
+    audit_event("worker_cleanup_retry_failed",
+                NULL,
+                "worker_id=%u action=none errno=%d",
+                worker_id,
+                EINVAL);
+    errno = EINVAL;
+    return -1;
+  }
+  if (cleanup_rc != 0) {
     return -1;
   }
   audit_event("worker_cleanup_recovered",
               NULL,
-              "worker_id=%u remaining_before=%u",
+              "worker_id=%u action=%s remaining_before=%u",
               worker_id,
+              worker_cleanup_action_name(action),
               state->worker_cleanup_retry.pending_count);
+  state->worker_cleanup_actions[worker_id] = QAFFD_WORKER_CLEANUP_NONE;
   return 0;
 }
 

@@ -363,12 +363,16 @@ static int cmd_workers(int argc, char **argv) {
   for (size_t i = 0;
        i < workers_len && i < QAFF_CONTROL_WORKER_CAPACITY;
        i++) {
-    printf("worker=%u leased=%u recovering=%u has_cred=%u pidfd=%u "
+    printf("worker=%u leased=%u recovering=%u cleanup_pending=%u "
+           "has_cred=%u pidfd=%u "
            "pid=%u target_pid=%u "
            "uid=%u gid=%u registered_ms_ago=%llu last_seen_ms_ago=%llu\n",
            workers[i].worker_id,
            (workers[i].flags & QAFF_CONTROL_WORKER_FLAG_LEASED) ? 1u : 0u,
            (workers[i].flags & QAFF_CONTROL_WORKER_FLAG_RECOVERING) ? 1u : 0u,
+           (workers[i].flags & QAFF_CONTROL_WORKER_FLAG_CLEANUP_PENDING)
+               ? 1u
+               : 0u,
            (workers[i].flags & QAFF_CONTROL_WORKER_FLAG_CRED) ? 1u : 0u,
            (workers[i].flags & QAFF_CONTROL_WORKER_FLAG_PIDFD) ? 1u : 0u,
            workers[i].pid,

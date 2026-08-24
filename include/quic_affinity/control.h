@@ -29,6 +29,9 @@ extern "C" {
 /** Worker was restored from durable state and has not reclaimed its socket. */
 #define QAFF_CONTROL_WORKER_FLAG_RECOVERING 0x8u
 
+/** Worker ID is quarantined while BPF transaction cleanup is retried. */
+#define QAFF_CONTROL_WORKER_FLAG_CLEANUP_PENDING 0x10u
+
 /** qaffd listener configuration and CID-index health summary. */
 struct qaff_control_config {
   /** Fixed short-header DCID length used by the dataplane parser. */
@@ -51,7 +54,7 @@ struct qaff_control_config {
   uint8_t fallback_available;
   /** Non-zero while the durable worker snapshot needs to be retried. */
   uint8_t state_persistence_degraded;
-  /** Non-zero while a tombstoned worker still has BPF map residue. */
+  /** Non-zero while an incomplete worker transaction has BPF map residue. */
   uint8_t worker_cleanup_degraded;
   uint8_t reserved[1];
   /** Number of durable worker records, including recovering workers. */
@@ -60,7 +63,7 @@ struct qaff_control_config {
   uint32_t recovering_worker_count;
   /** Worker used for fallback when fallback_mode is FIXED. */
   uint32_t fallback_worker_id;
-  /** Worker IDs quarantined until post-tombstone cleanup succeeds. */
+  /** Worker IDs quarantined until transaction cleanup succeeds. */
   uint32_t worker_cleanup_pending_count;
   /** Number of exact CID entries in qaffd's ownership index. */
   uint64_t cid_map_count;
@@ -84,9 +87,9 @@ struct qaff_control_config {
   uint64_t state_persistence_error_count;
   /** Background durable worker snapshot retry attempts. */
   uint64_t state_persistence_retry_count;
-  /** Post-tombstone worker cleanup attempts that failed. */
+  /** Worker transaction cleanup attempts that failed. */
   uint64_t worker_cleanup_error_count;
-  /** Background post-tombstone worker cleanup retry attempts. */
+  /** Background worker transaction cleanup retry attempts. */
   uint64_t worker_cleanup_retry_count;
   /** Interval between passive map cleanup scans. */
   uint64_t passive_scan_interval_ms;
@@ -98,7 +101,7 @@ struct qaff_control_config {
   char state_path[QAFF_CONTROL_MAX_PATH];
 };
 
-/** Information about one registered worker. */
+/** Information about one registered, recovering, or cleanup-pending worker. */
 struct qaff_control_worker_info {
   /** Worker ID used by the dataplane. */
   uint32_t worker_id;
@@ -209,7 +212,7 @@ int qaff_control_config(int control_fd, struct qaff_control_config *out);
 int qaff_control_cids(int control_fd, struct qaff_control_config *out);
 
 /**
- * List registered worker IDs.
+ * List registered, recovering, and cleanup-pending worker IDs.
  *
  * workers_len receives the total number of workers known to qaffd, even if
  * workers_cap is smaller and only a prefix was copied. The helper transparently
@@ -221,7 +224,7 @@ int qaff_control_workers(int control_fd,
                          size_t *workers_len);
 
 /**
- * List registered workers with lifecycle metadata.
+ * List registered, recovering, and cleanup-pending workers with metadata.
  *
  * workers_len receives the total number of workers known to qaffd, even if
  * workers_cap is smaller and only a prefix was copied. The helper transparently

@@ -334,9 +334,11 @@ static int qaff_control_list_workers(
       errno = EPROTO;
       return -1;
     }
-    if (cursor == 0) {
-      total = reply.config.worker_count;
+    if (reply.workers_len > QAFF_CONTROL_WORKER_CAPACITY - total) {
+      errno = EPROTO;
+      return -1;
     }
+    total += reply.workers_len;
 
     uint32_t previous = cursor;
     for (size_t i = 0; i < reply.workers_len; i++) {
@@ -359,7 +361,7 @@ static int qaff_control_list_workers(
       }
     }
 
-    if (copied == workers_cap || reply.worker_id == UINT32_MAX) {
+    if (reply.worker_id == UINT32_MAX) {
       break;
     }
     if (reply.workers_len == 0 || reply.worker_id <= cursor ||

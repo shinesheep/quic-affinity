@@ -1151,6 +1151,69 @@ int main(int argc, char **argv) {
     return 1;
   }
 
+  int registration_rollback_worker = make_worker_socket(&port);
+  if (registration_rollback_worker < 0) {
+    perror("make registration rollback worker");
+    return 1;
+  }
+  uint64_t cleanup_errors_before_registration =
+      cid_config.worker_cleanup_error_count;
+  if (freeze_pinned_map(pin_root, "qaff_worker_generations") != 0) {
+    perror("freeze worker generation map");
+    return 1;
+  }
+  errno = 0;
+  if (control_register_worker(socket_path,
+                              3,
+                              registration_rollback_worker) == 0) {
+    fprintf(stderr, "registration unexpectedly survived frozen generation\n");
+    return 1;
+  }
+  if (control_config(socket_path, &cid_config) != 0 ||
+      cid_config.worker_cleanup_degraded != 1 ||
+      cid_config.worker_cleanup_pending_count != 2 ||
+      cid_config.worker_cleanup_error_count <=
+          cleanup_errors_before_registration) {
+    fprintf(stderr, "failed registration rollback was not quarantined\n");
+    return 1;
+  }
+  struct qaff_control_worker_info cleanup_workers[4];
+  size_t cleanup_workers_len = 0;
+  if (control_workers_info(socket_path,
+                           cleanup_workers,
+                           4,
+                           &cleanup_workers_len) != 0 ||
+      cleanup_workers_len != 4) {
+    fprintf(stderr, "cleanup-pending worker IDs were not inspectable\n");
+    return 1;
+  }
+  int target_cleanup_visible = 0;
+  int rollback_cleanup_visible = 0;
+  for (size_t i = 0; i < cleanup_workers_len; i++) {
+    if ((cleanup_workers[i].flags &
+         QAFF_CONTROL_WORKER_FLAG_CLEANUP_PENDING) == 0) {
+      continue;
+    }
+    target_cleanup_visible |=
+        cleanup_workers[i].worker_id == TARGET_WORKER;
+    rollback_cleanup_visible |= cleanup_workers[i].worker_id == 3;
+  }
+  if (!target_cleanup_visible || !rollback_cleanup_visible) {
+    fprintf(stderr, "qaffctl worker metadata hid cleanup quarantine IDs\n");
+    return 1;
+  }
+  errno = 0;
+  if (control_register_worker(socket_path,
+                              3,
+                              registration_rollback_worker) == 0 ||
+      errno != EBUSY) {
+    fprintf(stderr,
+            "registration-rollback worker ID was reusable errno=%d\n",
+            errno);
+    return 1;
+  }
+  close(registration_rollback_worker);
+
   if (stop_qaffd(socket_path, daemon_pid) != 0) {
     perror("stop_qaffd second");
     return 1;
