@@ -1163,9 +1163,12 @@ int main(int argc, char **argv) {
   }
   for (size_t i = 0; i < restored_worker_infos_len; i++) {
     if ((restored_workers[i].flags &
-         QAFF_CONTROL_WORKER_FLAG_RECOVERING) != 0) {
-      fprintf(stderr, "worker %u remained recovering after reclaim\n",
-              restored_workers[i].worker_id);
+         QAFF_CONTROL_WORKER_FLAG_RECOVERING) != 0 ||
+        restored_workers[i].generation != QAFF_WORKER_GENERATION_DEFAULT) {
+      fprintf(stderr,
+              "worker %u reclaim changed recovery state or generation=%u\n",
+              restored_workers[i].worker_id,
+              restored_workers[i].generation);
       return 1;
     }
   }

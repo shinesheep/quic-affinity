@@ -26,9 +26,14 @@
 
 ## Phase 4: Routable CID Profile
 
-- Define a BPF-friendly CID profile.
-- Add config IDs and rotation.
-- Add keyed tag verification outside the verifier-critical path if needed.
+- Define a BPF-friendly CID profile. (Implemented with one 16-byte,
+  generation-bound format.)
+- Bind profile issuance to durable worker generations and drain-only key
+  rotation. (Implemented.)
+- Add keyed tag verification in userspace and BPF. (Implemented with
+  SipHash-2-4 and shared golden-vector coverage.)
+- Validate real QUIC routing without exact CID registration. (Implemented with
+  quiche source-port rebinding plus stale/new generation coverage.)
 
 ## Functional Correctness Remediation
 

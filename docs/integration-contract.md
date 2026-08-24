@@ -259,6 +259,9 @@ The probe:
 8. Drains `quiche_conn_retired_scid_iter()` and calls `RETIRE_CID` for any retired source CIDs.
 
 This is not a complete QUIC server. It is the first integration checkpoint for CID lifecycle hooks.
+The generated profile-shaped CID is deliberately registered as an exact CID in
+this control-plane probe; profile dataplane routing is covered by the real UDP
+profile smoke below.
 
 ## quiche UDP Smoke
 
@@ -268,12 +271,24 @@ If quiche FFI is available, `qaff_quiche_udp_smoke` runs a real UDP packet loop:
 2. Creates a real quiche client connection.
 3. Sends the first client Initial through a UDP socket.
 4. Receives that packet on the fallback worker.
-5. Creates a real quiche server connection and registers its server SCID through `qaffd`.
+5. Creates a real quiche server connection and, in exact mode, registers its
+   server SCID through `qaffd`.
 6. Sends the server response to the client.
 7. Sends the next client packet from a different UDP source port.
 8. Verifies the dataplane sees at least one CID-map hit and one fallback.
 
 This validates the core migration-affinity path with a real QUIC stack, while remaining smaller than a full HTTP/3 server.
+
+The `quiche_profile_smoke` variant enables the routable profile with durable
+worker generations and uses a generated profile CID directly as quiche's
+server SCID. It never registers that CID in the exact map. The gate verifies a
+real short-header packet after source-port rebinding increments
+`cid_profile_hit` while `cid_map_hit` remains zero. A second active profile CID
+installed with `quiche_conn_new_scid()` is routed by the same path. The gate
+then replaces the full worker group, checks the fallback worker's generation
+advances from 1 to 2, and proves the old profile CID increments
+`cid_profile_reject` while a new CID retained by `quiche_accept()` routes
+successfully.
 
 ## CID Registration
 

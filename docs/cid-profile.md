@@ -100,3 +100,15 @@ generation tombstones across daemon and host restarts. The inline
   generation-bound.
 - Generation values never wrap. After 255 allocations, retire that worker ID
   for the listener instead of reusing an old generation.
+
+## End-to-End Validation
+
+When quiche FFI and privileged eBPF tests are available,
+`quiche_profile_smoke` exercises the complete daemon path. The server SCID
+passed to `quiche_accept()` is generated from the worker registration's
+committed generation and is not inserted into the exact CID map. A real QUIC
+packet after UDP source-port rebinding must produce a profile hit with zero
+exact hits. The same assertion covers an additional active CID accepted by
+`quiche_conn_new_scid()`. The test then replaces the reuseport worker group,
+verifies the generation advances, and checks that the old CID is rejected
+while the new quiche-owned profile CID routes to the replacement worker.
